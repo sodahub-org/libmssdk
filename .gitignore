@@ -1,0 +1,15 @@
+node_modules/
+npm-debug.log*
+.env
+.env.local
+data/
+*.log
+captures/
+*.cookie
+*.har
+.DS_Store
+Thumbs.db
+
+# Official client native files are user-provided and must not be committed.
+vendor/soda-music/*.node
+vendor/soda-music/*.dll

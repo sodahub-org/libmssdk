@@ -1,0 +1,30 @@
+services:
+  libmssdk:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: libmssdk:local
+    container_name: libmssdk
+    restart: unless-stopped
+    # Wine 下的 Node 无法使用管道型 stdio（会 open EBADF），必须分配 TTY
+    tty: true
+    ports:
+      # 只暴露公网时把 LIBMSSDK_BIND 改成 0.0.0.0（配合防火墙/反代 + token）
+      - "${LIBMSSDK_BIND:-127.0.0.1}:${LIBMSSDK_PORT:-8899}:8899"
+    environment:
+      LIBMSSDK_TOKEN: "${LIBMSSDK_TOKEN:?请先在 deploy/.env 里设置 LIBMSSDK_TOKEN（run.sh 会自动生成）}"
+      LIBMSSDK_CLIENT_DIR: /client
+      LIBMSSDK_BIND: 0.0.0.0
+      LIBMSSDK_PORT: 8899
+      LIBMSSDK_STATE_DIR: /app/data
+    volumes:
+      # 用户必须提供自己官方客户端内的 bdms.node + metasecml.dll
+      - ${LIBMSSDK_CLIENT_DIR:?请在 deploy/.env 设置 LIBMSSDK_CLIENT_DIR，指向你的汽水客户端版本目录}:/client:ro
+      # 默认用命名卷；想放到指定磁盘（例如 /data）就在 .env 里写绝对路径
+      - ${LIBMSSDK_DATA_PATH:-libmssdk-data}:/app/data
+      # Wine prefix：首次启动生成（约 1.5GB），之后复用
+      - ${LIBMSSDK_WINE_PATH:-libmssdk-wine}:/wine
+
+volumes:
+  libmssdk-data:
+  libmssdk-wine:

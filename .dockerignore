@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+data
+deploy/.env
+captures
+*.log
+test
+docs
+reference
