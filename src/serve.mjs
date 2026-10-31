@@ -36,13 +36,12 @@ export function workerEnvFor(config, env) {
  */
 export function statResponse({ config, pool, limiter, diagnostics }) {
     const { top, ...rate } = limiter.stats()
-    const busy = typeof pool.busyCount === 'function' ? pool.busyCount() : Number(pool.busyCount) || 0
     return {
         ok: true,
         service: 'libmssdk',
         version: config.version,
         queue: { depth: diagnostics.queueDepth(), limit: diagnostics.queueLimit },
-        workers: { total: pool.size, ready: pool.readyCount, busy },
+        workers: { total: pool.size, ready: pool.readyCount, busy: pool.busyCount },
         rateLimit: {
             ...rate,
             top: top.map(entry => ({

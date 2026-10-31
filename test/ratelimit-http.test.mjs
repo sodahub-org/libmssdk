@@ -12,6 +12,8 @@ import { after, test } from 'node:test'
 
 const { startServe } = await import('../src/serve.mjs')
 const { serveAuthError } = await import('../src/auth.mjs')
+const { createDispatcher } = await import('../src/dispatcher.mjs')
+const { createServer } = await import('../src/server.mjs')
 const { FakeWorker } = await import('./helpers/fake-worker.mjs')
 
 const token = 'test-token'
@@ -262,4 +264,9 @@ test('绑定非回环且没有令牌：拒绝启动并给出明确原因，且�
     assert.equal(serveAuthError({ host: '::1', token: '' }), null)
     assert.equal(serveAuthError({ host: 'localhost', token: '' }), null)
     assert.equal(serveAuthError({ host: '0.0.0.0', token: 'secret' }), null)
+
+    // 直接构造的嵌入用法也守同一条规则，而不是只有 CLI 的 serve 才检查
+    const openConfig = { version: 'test', host: '0.0.0.0', token: '', deviceId: '1' }
+    assert.throws(() => createDispatcher({ config: openConfig, pool: { size: 1 } }), /LIBMSSDK_TOKEN/)
+    assert.throws(() => createServer({ config: openConfig, signer }), /LIBMSSDK_TOKEN/)
 })

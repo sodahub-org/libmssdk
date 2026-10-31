@@ -5,7 +5,7 @@
 // 没配令牌时的规则（#8 起）：只有绑定回环地址才放行（本机自用）；绑定非回环地址一律拒绝启动，
 // 而不是静默敞开。命令行的 bridge / selftest / probe 不经过这里，它们本来就不监听。
 import crypto from 'node:crypto'
-import net from 'node:net'
+import { isLoopbackBind } from './dispatch.mjs'
 
 function timingSafeEqual(a, b) {
     const left = Buffer.from(String(a))
@@ -15,21 +15,12 @@ function timingSafeEqual(a, b) {
 }
 
 export function isAuthorized(request, config) {
-    // 没配令牌时恒为放行：能走到这里的前提是 serveAuthError() 已经确认绑定的是回环地址。
+    // 没配令牌时恒为放行：默认服务的启动检查（assertServeAuth）已经确认绑定的是回环地址；
+    // 直接构造 createDispatcher / createLegacyHandler 的嵌入用法也会在构造时过同一道检查。
     if (!config.token) return true
     const header = request.headers.authorization || ''
     const token = header.startsWith('Bearer ') ? header.slice(7) : ''
     return token.length > 0 && timingSafeEqual(token, config.token)
-}
-
-const LOOPBACK_HOSTS = new Set(['localhost', '::1', '0:0:0:0:0:0:0:1', '[::1]'])
-
-/** 绑定地址是不是只有本机能连上。空地址在 Node 里等于监听所有网卡，所以不算回环。 */
-export function isLoopbackBind(host) {
-    const value = String(host || '').trim().toLowerCase()
-    if (!value) return false
-    if (LOOPBACK_HOSTS.has(value)) return true
-    return net.isIPv4(value) && value.startsWith('127.')
 }
 
 /**

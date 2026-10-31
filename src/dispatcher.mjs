@@ -27,7 +27,14 @@ import { errorResponse, normalizeSignRequest, ValidationError } from './contract
 import { GIVE_UP_WINDOW_MS, Queue, deriveWorkerCount, parsePositiveInt, shouldReject } from './dispatch.mjs'
 import { ERROR_KINDS, failureResponse, rateLimitedResponse, retryAfterFromInstant } from './errors.mjs'
 import { logEvent, redactMachinePaths } from './log.mjs'
-import { createRateLimiter, clientKey, maskAddressKey, normalizeMode, rateLimitSettingsFromEnv } from './ratelimit.mjs'
+import {
+    RATE_LIMIT_DEFAULTS,
+    createRateLimiter,
+    clientKey,
+    maskAddressKey,
+    normalizeMode,
+    rateLimitSettingsFromEnv,
+} from './ratelimit.mjs'
 import { requestPathname } from './route.mjs'
 import { createWorkerPool } from './workerpool.mjs'
 
@@ -105,9 +112,11 @@ export function createDispatcher({
     fallback = null,
     limiter = null,
     modeFile = '',
-    modePollMs = 2000,
+    modePollMs = RATE_LIMIT_DEFAULTS.pollMs,
     diagnostics = null,
 } = {}) {
+    // 直接构造分发器的嵌入用法也守同一条规则：非回环 + 没令牌不开门。
+    assertServeAuth(config)
     const waitBudgetMs = parsePositiveInt(config.waitBudgetMs, DEFAULT_WAIT_BUDGET_MS)
     const queueLimit = parsePositiveInt(config.queueLimit, pool.size * QUEUE_LIMIT_PER_WORKER)
     // 只信 config 给的数：一个手抖写成 abc 的 LIBMSSDK_MAX_BODY_BYTES 会让 size > limit

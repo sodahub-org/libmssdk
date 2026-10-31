@@ -14,7 +14,7 @@
 
 import http from 'node:http'
 import { maskDeviceId } from './config.mjs'
-import { isAuthorized } from './auth.mjs'
+import { isAuthorized, assertServeAuth } from './auth.mjs'
 import { errorResponse, normalizeSignRequest, signResponse, ValidationError } from './contract.mjs'
 import { ERROR_KINDS, failureResponse, rateLimitedResponse } from './errors.mjs'
 import { buildTrackV2Request, summarizeTrackV2Response } from './probe.mjs'
@@ -63,6 +63,8 @@ async function postJson(url, body, headers, timeoutMs) {
  * /stat 读同一份装配状态。直接构造 createServer 的老用例不注入时行为不变。
  */
 export function createLegacyHandler({ config, signer, readiness = null, rateLimiter = null, stats = null }) {
+    // 直接构造老处理器（或 createServer）的嵌入用法也守同一条规则：非回环 + 没令牌不开门。
+    assertServeAuth(config)
     return async (request, response) => {
         const started = Date.now()
         // 只取 pathname，且解析本身永不抛：这条 handler 是 async，抛出去就是 unhandled

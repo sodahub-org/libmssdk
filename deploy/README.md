@@ -76,12 +76,13 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    在 `deploy/.env` 里加 `LIBMSSDK_TRUST_PROXY=1`，并确认反代会重写 `X-Forwarded-For`
    （Caddy 默认会）。没开时只认 TCP 对端，这是安全默认。
 
-3. 只放行 `/sign`、`/healthz`（需要的话再加 `/stat`）。`/probe`、`/track/stream` 会拿你的
-   服务去打官方接口，公网部署建议在反代里挡掉：
+3. 只放行 `/sign`、`/healthz`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，
+   公网部署建议在反代里挡掉；`/stat` 是给部署者的诊断端点，建议只在宿主机或内网访问，
+   不要经公网反代暴露（它的地址已经脱敏，但计数仍然暴露使用情况）：
 
    ```caddyfile
    signer.example.com {
-       @deny not path /sign /healthz /stat
+       @deny not path /sign /healthz
        respond @deny 404
        reverse_proxy 127.0.0.1:8899
    }
