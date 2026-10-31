@@ -212,14 +212,34 @@ test('旧诊断端点只回弃用回执：指向命令行，一次上游都不�
     assert.deepEqual(upstreamCalls, [], 'HTTP 层不再有任何向上游发请求的路径')
 })
 
-test('GET /config 已删除：普通 404，既不签名也不带弃用头', async () => {
+test('GET /config 已删除：404 但说清替代做法，且不配到期信号（它没有弃用期）', async () => {
     const { baseUrl } = await serveHandler({ readiness: () => true })
-    for (const path of ['/config', '/never-heard-of-it']) {
-        const response = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(5000) })
-        assert.equal(response.status, 404, `${path} 不再提供`)
-        assert.match(await response.text(), /"code":"not_found"/)
-        assert.equal(response.headers.get('deprecation'), null, `${path} 不是弃用中的端点，不该带信号`)
-    }
+    const response = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(response.status, 404, '/config 不再提供')
+    assert.equal(response.headers.get('deprecation'), null, '本次就删掉了，不是「将要删除」')
+    assert.equal(response.headers.get('sunset'), null)
+    const payload = await response.json()
+    assert.equal(payload.code, 'endpoint_removed', '不是裸的 not_found：#1 用户故事 24 要的是看得懂的删除')
+    assert.match(payload.replacement, /node src\/index\.mjs config/)
+
+    // 没听过的路径仍是那句通用 404
+    const unknown = await fetch(`${baseUrl}/never-heard-of-it`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(unknown.status, 404)
+    assert.match(await unknown.text(), /"code":"not_found"/)
+    assert.equal(unknown.headers.get('deprecation'), null)
+})
+
+// AGENTS.md 的鉴权约定写着「设了 Token 后所有 POST 都要 Bearer」，例外只有探针与「这条路由没有了」
+// 的回执（回执那条在上一组用例里）。这里把例外钉在用例上，免得它变成无意中的洞。
+test('健康探针不看凭据：POST 也一样答，回包里一个 Token 字节都没有', async () => {
+    const { baseUrl } = await serveHandler({ readiness: () => true })
+    const viaPost = await fetch(`${baseUrl}/livez`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+    assert.equal(viaPost.status, 200, '设了 Token 也不挡探针：它回答的是「进程在不在」')
+    assert.deepEqual(await viaPost.json(), { ok: true, service: 'libmssdk', version: config.version })
+
+    const readyViaPost = await fetch(`${baseUrl}/readyz`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+    assert.equal(readyViaPost.status, 200)
+    assert.equal(JSON.stringify(await readyViaPost.json()).includes(config.token), false, 'Token 不该出现在任何探针回包里')
 })
 
 // 两个头是配对的常量，写坏了中间件会整条忽略：日期必须能被重新格式化回原样（星期、月份、
