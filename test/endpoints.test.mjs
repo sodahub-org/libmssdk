@@ -15,7 +15,7 @@ import { after, test } from 'node:test'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-const { createEndpointsHandler, DEPRECATION_HTTP_VALUE, SUNSET_HTTP_DATE } = await import('../src/endpoints.mjs')
+const { createEndpointsHandler, DEPRECATED_AT, DEPRECATION_HTTP_VALUE, SUNSET_HTTP_DATE } = await import('../src/endpoints.mjs')
 const { createDispatcher } = await import('../src/dispatcher.mjs')
 const { startServe } = await import('../src/serve.mjs')
 const { fakePool, signedBody } = await import('./helpers/fake-pool.mjs')
@@ -193,8 +193,9 @@ test('旧诊断端点只回弃用回执：指向命令行，一次上游都不�
             assert.equal(payload.ok, false)
             assert.equal(payload.code, 'endpoint_removed', '稳定原因码，不是裸的 not_found')
             assert.match(payload.replacement, replacement, `${path}：回包里要写明替代做法`)
-            // 两个信号在体里也各写一份：客户端读不到响应头时才有兜底（同 Retry-After 的规矩）
-            assert.equal(payload.deprecation, DEPRECATION_HTTP_VALUE, `${path}：体里也要有弃用时刻`)
+            // 两个时刻在体里也各写一份（同 Retry-After 的规矩），但写的是日期本身，
+            // 不是头里那个 `@<秒>` 的编码 —— 读 body 的人不该被迫懂 Structured Field 的语法
+            assert.equal(payload.deprecated_at, DEPRECATED_AT, `${path}：体里也要有弃用时刻`)
             assert.equal(payload.sunset, SUNSET_HTTP_DATE, `${path}：体里也要有到期时刻`)
             assert.equal(payload.error.includes('sessionid_ss'), false, '调用方发来的 Cookie 不回显')
             assert.equal(response.headers.get('retry-after'), null, '改用命令行没有「再等一秒」这一说')
@@ -233,8 +234,8 @@ test('GET /config 已删除：404 但说清替代做法，且不配到期信号�
     assert.equal(unknown.headers.get('deprecation'), null)
 })
 
-// AGENTS.md 的鉴权约定写着「设了 Token 后所有 POST 都要 Bearer」，例外只有探针与「这条路由没有了」
-// 的回执（回执那条在上一组用例里）。这里把例外钉在用例上，免得它变成无意中的洞。
+// AGENTS.md 的鉴权约定写着「设了 Token 后所有 POST 都要 Bearer」，不看凭据的回答只有三类：
+// 探针、已删端点的回执（上一组用例）、通用 404。这里把例外钉在用例上，免得它变成无意中的洞。
 test('健康探针不看凭据：POST 也一样答，回包里一个 Token 字节都没有', async () => {
     const { baseUrl } = await serveHandler({ readiness: () => true })
     const viaPost = await fetch(`${baseUrl}/livez`, { method: 'POST', signal: AbortSignal.timeout(5000) })
@@ -248,13 +249,15 @@ test('健康探针不看凭据：POST 也一样答，回包里一个 Token 字�
 
 // 两个头是配对的常量，写坏了中间件会整条忽略：日期必须能被重新格式化回原样（星期、月份、
 // 补零都算），而且 RFC 9745 要求 Sunset 不早于 Deprecation。
-test('弃用与到期两个头的日期自洽且格式合法', () => {
-    assert.equal(new Date(SUNSET_HTTP_DATE).toUTCString(), SUNSET_HTTP_DATE, 'Sunset 不是合法的 HTTP-date')
-    assert.match(DEPRECATION_HTTP_VALUE, /^@\d+$/, 'Deprecation 必须是 @<秒> 的 Structured Field Date')
-    assert.ok(
-        Date.parse(SUNSET_HTTP_DATE) >= Number(DEPRECATION_HTTP_VALUE.slice(1)) * 1000,
-        'Sunset 不能早于 Deprecation（RFC 9745）',
-    )
+// 两个日期各写一份的话，就必须互相自洽：头里的 @<秒> 要等于日期本身，Sunset 不得早于弃用起始
+// （RFC 9745）。写错星期或月份都会在这里翻脸，因为 Date 会把它重新格式化回原样才算通过。
+test('弃用与到期的日期常量自洽，头与体说的是同一个时刻', () => {
+    for (const label of ['deprecated_at', 'sunset']) {
+        const value = label === 'deprecated_at' ? DEPRECATED_AT : SUNSET_HTTP_DATE
+        assert.equal(new Date(value).toUTCString(), value, `${label} 不是合法的 HTTP-date`)
+    }
+    assert.equal(DEPRECATION_HTTP_VALUE, `@${Math.floor(Date.parse(DEPRECATED_AT) / 1000)}`, 'Deprecation 头与弃用日期不是同一时刻')
+    assert.ok(Date.parse(SUNSET_HTTP_DATE) >= Date.parse(DEPRECATED_AT), 'Sunset 不能早于 Deprecation（RFC 9745）')
 })
 
 // 畸形请求目标在修复前是 handler 里的 unhandled rejection（Node 15+ 直接退进程），

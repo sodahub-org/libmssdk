@@ -167,7 +167,7 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…"
 
 | 版本 | `/probe`、`/track/stream` 的回包 |
 | --- | --- |
-| 本版本 | **404** + `Deprecation: @1793404800`（RFC 9745：值是 Structured Field 的 Date，写成 `@<秒>`）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`，`replacement` 写明替代命令 |
+| 本版本 | **404** + `Deprecation: @1793404800`（RFC 9745 要求值是 Structured Field 的 Date，所以头里写成 `@<秒>`；它等于 `Sat, 31 Oct 2026 00:00:00 GMT`，本版本发布之日）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`、`replacement` 写明替代命令，两个时刻也各写一份（`deprecated_at` / `sunset` 用能直接读的 HTTP-date，不把头里的 `@<秒>` 编码抄进 JSON） |
 | 下一版本 | **410**，其余不变 |
 
 `Sunset` 不早于 `Deprecation`，两个日期是一对：如果「下一版本」实际晚于 `Sunset`，发版时要

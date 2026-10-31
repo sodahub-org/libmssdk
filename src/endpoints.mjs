@@ -20,13 +20,16 @@ import { errorResponse } from './contract.mjs'
 import { requestPathname } from './route.mjs'
 
 /**
- * 弃用起始（本版本发布之日，RFC 9745：值是 Structured Field 的 Date，写成 `@<秒>`）与到期时刻（RFC 8594 的 HTTP-date）。
+ * 弃用起始（本版本发布之日）与到期时刻，两个都按 RFC 7231 的 HTTP-date 写。
  *
- * RFC 9745 要求 `Sunset` 不早于 `Deprecation`，所以这两个常量是一对。如果「下一版本改 410」实际晚于
- * SUNSET_HTTP_DATE，发版时要把这一对一起往后推 —— 头里写着「早已到期」比不发这个头更糟。
+ * 头里的 `Deprecation` 要求 Structured Field 的 Date 形式（RFC 9745），也就是 `@<秒>` —— 那是头的
+ * 编码，不该抄进 JSON：回包里给的是能直接读的日期，同一个时刻。RFC 9745 还要求 `Sunset` 不早于
+ * `Deprecation`，所以这一对要一起动：如果「下一版本改 410」实际晚于 SUNSET_HTTP_DATE，
+ * 发版时把两个日期一起往后推 —— 头里写着「早已到期」比不发这个头更糟。
  */
-export const DEPRECATION_HTTP_VALUE = '@1793404800' // Sat, 31 Oct 2026 00:00:00 GMT
+export const DEPRECATED_AT = 'Sat, 31 Oct 2026 00:00:00 GMT'
 export const SUNSET_HTTP_DATE = 'Fri, 30 Apr 2027 23:59:59 GMT'
+export const DEPRECATION_HTTP_VALUE = `@${Math.floor(Date.parse(DEPRECATED_AT) / 1000)}`
 
 /**
  * 从 HTTP 上拿掉的端点：路由还认得，但只回答「这里没有了，改用这个」，而且回包全是常量。
@@ -112,8 +115,9 @@ export function createEndpointsHandler({ config, readiness = () => false }) {
                 code: 'endpoint_removed',
                 endpoint: pathname,
                 replacement: notice.replacement,
-                // 头读不到时的兜底：两个信号在体里各写一份，与错误契约里 Retry-After 同一规矩
-                ...(notice.deprecating ? { deprecation: DEPRECATION_HTTP_VALUE, sunset: SUNSET_HTTP_DATE } : {}),
+                // 头读不到时的兜底：两个时刻在体里各写一份，与错误契约里 Retry-After 同一规矩。
+                // 写的是日期本身，不是头里的 `@<秒>` 编码。
+                ...(notice.deprecating ? { deprecated_at: DEPRECATED_AT, sunset: SUNSET_HTTP_DATE } : {}),
             }, headers)
             return
         }

@@ -101,7 +101,7 @@ Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」
 签名之外的 HTTP 面从此只有一个处理器（`src/endpoints.mjs`）。出网的代码也只剩一处
 （`src/probe.mjs` 的 `fetchTrackV2`），入口只有命令行 `probe` 与手动脚本：HTTP 层不留任何
 「拿调用方输入打上游」的路径，`test/endpoints.test.mjs` 里有一条结构守卫盯着这件事，防止日后
-又有人给 HTTP 加一条诊断路由。
+又有人往 HTTP 上加一条「替调用方做事」的诊断路由（只报服务自身状态的 `/stat` 不算那类，它是 #1 点名要的）。
 
 顺带一条：`src/server.mjs` 里那份进程内 `/sign` 老路径也退场了。签名只有分发器一条路
 （主进程排队、worker 计算），主进程那份 signer 不再进 HTTP 层，只给 `selftest` / `probe` /
