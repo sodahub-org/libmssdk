@@ -23,19 +23,21 @@ src/contract.mjs     SignRequest 校验和 SignResponse 组装
 src/log.mjs          日志与脱敏：凭据只留长度，本机路径一律换掉
 src/auth.mjs         Bearer Token 比对（计时安全；老路径与分发器共用）
 src/route.mjs        路由解析：只从请求行取 pathname，Host 不参与，解析永不抛（两条路径共用）
-src/errors.mjs       失败分类：状态码 / 原因码映射表与等待时长（纯函数，默认路径尚未接线）
+src/errors.mjs       失败分类：状态码 / 原因码映射表与等待时长（纯函数；默认路径与过渡端点共用）
 src/dispatch.mjs     分发的纯判据：等待预算 / 队列上限 / worker 数推导 / 重生退避（时间从参数进来）
 src/warmup.mjs       就绪判据自学习：连续同长 + 结构下限，代码里没有绝对长度数字
 src/workerpool.mjs   worker 池（#5 唯一新增的接缝）：忙闲回收、逐台预热、退避重生、放弃
 src/worker.mjs       worker 进程：不监听，只调原生模块算签名；身份只读
-src/dispatcher.mjs   分发器：主进程独占监听、排队与预拼好的 503（#5 建好，默认路径仍未切）
+src/dispatcher.mjs   分发器：主进程独占监听、排队与预拼好的 503（#7 起是默认 /sign 路径）
+src/serve.mjs        默认服务装配：/sign 走分发器，过渡端点由老处理器承接，/healthz 跟 worker 就绪绑定
 src/probe.mjs        track_v2 真机自检和整曲 / 试听判定
-src/server.mjs       HTTP 路由（默认路径）
+src/server.mjs       过渡端点（/healthz、/config、/probe、/track/stream）与旧 createServer（#9 收拢）
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
 test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例）
 tools/               手动脚本（打真机，不进 npm test，不随包发布）
 verify/wine-multi/   手动验证：Docker + Wine 下多进程（不进 npm test，也不进 CI）
 docs/CONTRACT.md     服务契约
+docs/UPGRADING.md    升级说明：默认多进程与错误契约的行为变化
 docs/DEPLOY-WINDOWS.md Windows 部署
 docs/INVESTIGATION-DEVICE-ENTITLEMENT.md 设备身份与整曲权益的对照实验与结论
 deploy/README.md     Docker 部署

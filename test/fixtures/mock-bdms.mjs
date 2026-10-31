@@ -1,15 +1,21 @@
 // 假的 bdms.node：在 Linux/CI 上跑测试用。
 // 它的输出是确定性的，方便断言"签名确实覆盖了 URL + 请求头"。
 //
-// 两个开关只为「真进程」那组用例服务，默认全关（原有断言看不出差别）：
+// 三个开关只为「真进程」那组用例服务，默认全关（原有断言看不出差别）：
 //   MOCK_BDMS_UNSTABLE_CALLS —— 前 N 次输出比稳态短，复刻真机 init 之后那段短签名窗口
 //   MOCK_BDMS_SIGN_DELAY_MS  —— 每次调用同步阻塞若干毫秒，复刻「一次签名吃满一个核几百毫秒」
+//   MOCK_BDMS_TRACE_DIR      —— 每次调用落一条 {url,startedAt,endedAt}，用来证明并发确实重叠
+
+import fs from 'node:fs'
+import path from 'node:path'
 
 let currentDeviceId = ''
 
 const unstableCalls = Number(process.env.MOCK_BDMS_UNSTABLE_CALLS || 0)
 const signDelayMs = Number(process.env.MOCK_BDMS_SIGN_DELAY_MS || 0)
+const traceDir = String(process.env.MOCK_BDMS_TRACE_DIR || '').trim()
 let calls = 0
+let traceSeq = 0
 
 let sleepSlot
 
@@ -25,7 +31,19 @@ export function init({ deviceId } = {}) {
 
 export function generateHttpSignatureHeaders(url, headerLines) {
     calls += 1
+    const startedAt = Date.now()
     if (signDelayMs > 0) sleepSync(signDelayMs)
+    if (traceDir) {
+        traceSeq += 1
+        try {
+            fs.writeFileSync(
+                path.join(traceDir, `call-${process.pid}-${traceSeq}.json`),
+                JSON.stringify({ url: String(url), startedAt, endedAt: Date.now() }),
+            )
+        } catch {
+            /* 追踪失败不该影响签名本身 */
+        }
+    }
     const digest = (value) => {
         // 不用 crypto，纯字符串散列即可（测试只需要"输入不同 → 输出不同"）
         let hash = 2166136261

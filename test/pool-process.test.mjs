@@ -19,7 +19,10 @@ import { after, test } from 'node:test'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const mockBdms = path.join(here, 'fixtures', 'mock-bdms.mjs')
 
-const { forkWorker, startDispatcher } = await import('../src/dispatcher.mjs')
+const { forkWorker } = await import('../src/dispatcher.mjs')
+const { startServe } = await import('../src/serve.mjs')
+const { BdmsSigner } = await import('../src/bdms.mjs')
+const { maskDeviceId } = await import('../src/config.mjs')
 const { prepareStoredIdentity } = await import('../src/identity.mjs')
 
 const config = {
@@ -44,15 +47,19 @@ after(async () => {
 
 const tempDirs = []
 
-/** 临时 state 目录要活到用例结束（worker 重生时还要再读一次），所以只在收工后统一删。 */
-function tempStateDir() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-worker-'))
+/** 临时目录要活到用例结束（worker 重生时还要再读一次），所以只在收工后统一删。 */
+function tempDir(prefix) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
     tempDirs.push(dir)
     return dir
 }
 
-/** 起一套真的：按 startDispatcher 的生产装配，只把 fork 包一层好拿到进程句柄。 */
-async function startReal({ workers, unstableCalls = 0, signDelayMs = 0, stateDir }) {
+function tempStateDir() {
+    return tempDir('libmssdk-worker-')
+}
+
+/** 起一套真的：按默认服务（src/serve.mjs）的生产装配，只把 fork 包一层好拿到进程句柄。 */
+async function startReal({ workers, unstableCalls = 0, signDelayMs = 0, stateDir, deviceId, traceDir = '' }) {
     const children = []
     const notes = []
     const giveUps = []
@@ -62,17 +69,20 @@ async function startReal({ workers, unstableCalls = 0, signDelayMs = 0, stateDir
         LIBMSSDK_BDMS_MODULE: mockBdms,
         // 给了 stateDir 就不钉设备号：那才是真部署的样子 —— 主进程 fork 之前把身份准备好，
         // worker 那边只有只读入口
-        LIBMSSDK_DEVICE_ID: stateDir ? '' : config.deviceId,
+        LIBMSSDK_DEVICE_ID: stateDir ? '' : deviceId || config.deviceId,
         LIBMSSDK_WORKER_RESPAWN_BASE_MS: '100',
         LIBMSSDK_WORKER_RESPAWN_CAP_MS: '400',
         LIBMSSDK_WARMUP_BUDGET_MS: '20000',
         MOCK_BDMS_UNSTABLE_CALLS: String(unstableCalls),
         MOCK_BDMS_SIGN_DELAY_MS: String(signDelayMs),
+        MOCK_BDMS_TRACE_DIR: traceDir,
     }
     if (stateDir) env.LIBMSSDK_STATE_DIR = stateDir
     if (stateDir) delete env.LIBMSSDK_DEVICE_ID
-    const entry = startDispatcher({
-        config,
+    const signer = new BdmsSigner({ modulePath: mockBdms, deviceId: deviceId || config.deviceId })
+    const entry = startServe({
+        config: { ...config, deviceId: deviceId || config.deviceId },
+        signer,
         env,
         log: (event, detail) => notes.push({ event, detail }),
         spawn: (index, childEnv) => {
@@ -104,11 +114,12 @@ function until(condition, describe, timeoutMs = 20_000) {
     })
 }
 
-const signPayload = () => ({
+const signPayload = (overrides = {}) => ({
     url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088&device_id=7000000000000001',
     method: 'POST',
     body: '{"track_id":"7501674235158431760"}',
     headers: { 'x-ss-stub': 'ABC', cookie: 'sid=1' },
+    ...overrides,
 })
 
 async function post(baseUrl, payload) {
@@ -132,9 +143,23 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
         unstableCalls: 2,
         signDelayMs: 300,
         stateDir: dir,
+        deviceId: prepared.identity.device_id,
     })
 
     await until(() => pool.readyCount === 1, 'worker 自学习到就绪')
+
+    // 默认装配的过渡端点也要在：Docker 健康检查与 verify/wine-multi 都还指着它们（#9 再收拢）
+    const health = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(health.status, 200)
+    const healthPayload = await health.json()
+    assert.equal(healthPayload.ready, true, '至少一台 worker 就绪才回 200')
+    assert.equal(healthPayload.deviceId, maskDeviceId(prepared.identity.device_id))
+
+    const configResponse = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(configResponse.status, 200)
+    const configPayload = await configResponse.json()
+    assert.equal(configPayload.identity.device_id, prepared.identity.device_id, '过渡端点看到的仍是同一份身份')
+
     const anonymous = await post(baseUrl, {
         url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
         method: 'POST',
@@ -174,11 +199,29 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
 
 
 
-test('真进程多开：杀掉一台，其余继续服务，不需要有人介入', async () => {
-    const { pool, children, baseUrl } = await startReal({ workers: 2 })
+test('真进程多开：并发确实重叠，杀掉一台其余继续服务', async () => {
+    const traceDir = tempDir('libmssdk-trace-')
+    const { pool, children, baseUrl } = await startReal({ workers: 2, signDelayMs: 500, traceDir })
 
     await until(() => pool.readyCount === 2, '两台都自学习到就绪')
-    assert.equal((await post(baseUrl, signPayload())).status, 200)
+
+    // 并行性用「两次签名的起止时间是否重叠」证明，不用总耗时阈值 —— 慢 CI 上墙钟断言会自己翻脸。
+    const [left, right] = await Promise.all([
+        post(baseUrl, signPayload({ url: 'https://api.qishui.com/luna/pc/track_v2?probe=parallel-a' })),
+        post(baseUrl, signPayload({ url: 'https://api.qishui.com/luna/pc/track_v2?probe=parallel-b' })),
+    ])
+    assert.equal(left.status, 200)
+    assert.equal(right.status, 200)
+    const traces = fs
+        .readdirSync(traceDir)
+        .map(file => JSON.parse(fs.readFileSync(path.join(traceDir, file), 'utf8')))
+    const a = traces.find(trace => trace.url.includes('parallel-a'))
+    const b = traces.find(trace => trace.url.includes('parallel-b'))
+    assert.ok(a && b, '两次并发签名都该留下起止记录')
+    assert.ok(
+        a.startedAt < b.endedAt && b.startedAt < a.endedAt,
+        `两次签名没有重叠（没有并行）：a=${JSON.stringify(a)} b=${JSON.stringify(b)}`,
+    )
 
     // 两台此刻都闲着：杀其中一台，剩下的那台必须立刻独挑大梁
     children[0].kill()

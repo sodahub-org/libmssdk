@@ -51,7 +51,7 @@ export function signResponse({ headers, deviceId, elapsedMs }) {
     }
 }
 
-export function errorResponse(message, code = 'signer_error') {
+export function errorResponse(message, code) {
     return { ok: false, error: message, code }
 }
 
@@ -59,6 +59,5 @@ export class ValidationError extends Error {
     constructor(message) {
         super(message)
         this.name = 'ValidationError'
-        this.code = 'invalid_request'
     }
 }

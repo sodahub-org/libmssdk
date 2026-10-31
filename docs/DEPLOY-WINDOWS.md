@@ -57,7 +57,7 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…;
 | --- | --- |
 | `accepted: false` + `空响应` | 签名没被接受：`device_id` 与签名器不一致，或 `headers` 与实际发送的不一致 |
 | `streamDurationSeconds ≈ 30` | 只拿到试听：先换一首已知能整曲的曲子复测——实测同一份设备号在别的曲目能拿到整曲，所以别先怀疑设备号。Cookie 有无、真实登录设备这两条在试听级曲目上还没测（见 [`INVESTIGATION-DEVICE-ENTITLEMENT.md`](INVESTIGATION-DEVICE-ENTITLEMENT.md) 第七节） |
-| 502 + `未找到 bdms.node` | `LIBMSSDK_CLIENT_DIR` 指到了错误目录（应指向含 `resources` 的版本目录） |
+| 500 `SIGNER_UNAVAILABLE` / `未找到 bdms.node` | `LIBMSSDK_CLIENT_DIR` 指到了错误目录（应指向含 `resources` 的版本目录） |
 
 ## 3. 常驻服务
 
@@ -72,6 +72,15 @@ nssm start libmssdk
 schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
   /tr "C:\libmssdk\serve.cmd"
 ```
+
+`serve` 默认会拉起 worker 进程：绑定 `127.0.0.1` 时 1 个；绑定局域网地址时按物理核的 75%
+（`availableParallelism() / 2` 估算）。用 `LIBMSSDK_WORKERS` 可以钉死数量。启动日志的
+`event=dispatcher` 写着实际值与来由，`event=serve` 写着监听的 `workers`。
+
+预热期间（首次 `bdms.init`，通常几秒）`GET /healthz` 返回 503，预热完成后才回 200；
+`/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`，已入队的请求超过等待预算也回 503；两者都带
+`Retry-After: 1`。这不影响 `nssm`/计划任务：
+服务进程本身已经起来了，只是还没能接流量。
 
 默认只监听 `127.0.0.1:8899`。跨机访问**优先用 SSH 隧道**：
 

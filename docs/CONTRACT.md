@@ -38,20 +38,37 @@ Meting-API 的远程签名服务保持兼容，
 }
 ```
 
-失败：
+失败按「调用方下一步做什么」分类，原因码是稳定字符串（下表描述默认 `serve` 路径的 `/sign`）：
+
+| 情况 | 状态码 | `code` | `Retry-After` |
+| --- | --- | --- | --- |
+| 请求格式非法（非法 JSON、缺 `url`、请求体超限） | 400 | `INVALID_REQUEST` | 无 |
+| 鉴权失败 | 401 | `UNAUTHORIZED` | 无 |
+| 单 IP 超限（限流启用后） | 429 | `RATE_LIMITED` | 有 |
+| 没有就绪 worker / 队列已满（立即），或已入队请求超过等待预算 | 503 | `BUSY` | 有（固定 1 秒） |
+| 模块没加载 / 配置错 | 500 | `SIGNER_UNAVAILABLE` | 无 |
+| 签名算错 / worker 中途退出 | 500 | `INTERNAL_ERROR` | 无 |
 
 ```json
-{ "ok": false, "error": "未找到 bdms.node：请设置 LIBMSSDK_BDMS_MODULE（或未提供 bdms.node / metasecml.dll）", "code": "signer_error" }
+{ "ok": false, "error": "缺少或错误的 Bearer Token", "code": "UNAUTHORIZED" }
+{ "ok": false, "error": "服务忙：没有空闲的签名槽位", "code": "BUSY", "retry_after_seconds": 1 }
 ```
+
+- 只有 `BUSY` 与 `RATE_LIMITED` 带等待时长；整数秒，响应头与响应体各一份。
+- `details` 这类动态信息是平级扩展字段，客户端可以忽略不认识的键。
+- **502 不再出现**：本进程不是网关，本地配置错误与 worker 故障都按上表收口。
+- 签名接口没有副作用，可以安全重试。没有就绪 worker 或队列已满时**立即**回 503；
+  只有已经入队的请求才会在等待预算（默认 5 秒）用尽后回 503。
+- 上表描述的是 `/sign`；`/healthz` 的 503 是就绪探针结果，不带 `Retry-After` 或原因码。
 
 ## GET /healthz 与 GET /config
 
 ```jsonc
-// /healthz（无需鉴权，设备号脱敏）
-{ "ok": true, "service": "libmssdk", "version": "0.1.0", "bdmsAvailable": true,
-  "deviceId": "746***847", "auth": true, "platform": "win32" }
+// /healthz（无需鉴权，设备号脱敏）。至少一台 worker 就绪才 200；预热中 503 + ready:false。
+{ "ok": true, "ready": true, "service": "libmssdk", "version": "0.1.0",
+  "bdmsAvailable": true, "deviceId": "746***847", "auth": true, "platform": "win32" }
 
-// /config（需鉴权）——客户端可用它对齐设备身份
+// /config（需鉴权）——过渡端点，客户端可用它对齐设备身份；端点收拢版本删除
 { "ok": true, "bdmsModule": "…\\vendor\\soda-music\\bdms.node",
   "bundledBdms": "…", "clientDir": "",
   "deviceId": "746***847",
@@ -125,6 +142,9 @@ URL 参数里，即可保证「签名器 / URL」用同一份设备号。
 ```
 
 `fullTrack` 的判定：`stream_duration + 2s >= track.duration`。
+
+上游返回非 200 时，`/probe` 现在回 **500 `INTERNAL_ERROR`**（诊断字段仍平铺在回包里，例如
+`http`），不再回 502。`/probe` 与 `/track/stream` 都是过渡端点，会按弃用节奏收拢。
 
 ## stdio 模式
 
