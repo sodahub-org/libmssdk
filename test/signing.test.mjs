@@ -22,7 +22,7 @@ process.env.LIBMSSDK_BIND = '127.0.0.1'
 
 const { BdmsSigner, flattenHeaders, parseSignaturePairs } = await import('../src/bdms.mjs')
 const { normalizeSignRequest, ValidationError } = await import('../src/contract.mjs')
-const { buildTrackV2Request, summarizeTrackV2Response } = await import('../src/probe.mjs')
+const { buildTrackV2Request, fetchTrackV2, probeTrack, summarizeTrackV2Response } = await import('../src/probe.mjs')
 const { bundledNative, loadConfig, resolveIdentity } = await import('../src/config.mjs')
 const { randomDeviceId } = await import('../src/identity.mjs')
 const { workerEnvFor } = await import('../src/serve.mjs')
@@ -85,6 +85,68 @@ test('buildTrackV2Request 生成官方形态的 URL 与 X-SS-STUB', () => {
     assert.match(spec.url, /app_name=luna_pc/)
     assert.equal(spec.headers['x-ss-stub'].length, 32)
     assert.equal(spec.headers['x-ss-stub'], spec.headers['x-ss-stub'].toUpperCase())
+})
+
+// 上游调用整票收敛到这一个函数：HTTP 层（src/endpoints.mjs、src/dispatcher.mjs）不再有任何
+// 接受外部输入去打上游的入口，只有命令行 probe 经这里出去。
+test('fetchTrackV2 打一次上游，只把状态与正文交回调用方', async () => {
+    const calls = []
+    const { status, text } = await fetchTrackV2({
+        url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
+        body: '{"track_id":"7501674235158431760"}',
+        headers: { 'x-ss-stub': 'ABC', cookie: 'sid=1' },
+        timeoutMs: 1234,
+        fetchImpl: async (url, init) => {
+            calls.push({ url, init })
+            return new Response('upstream-body', { status: 200 })
+        },
+    })
+    assert.equal(status, 200)
+    assert.equal(text, 'upstream-body')
+    assert.equal(calls.length, 1, '一次调用只打一次上游')
+    assert.equal(calls[0].url, 'https://api.qishui.com/luna/pc/track_v2?aid=386088')
+    assert.equal(calls[0].init.method, 'POST')
+    assert.equal(calls[0].init.body, '{"track_id":"7501674235158431760"}')
+    assert.equal(calls[0].init.headers.cookie, 'sid=1', 'Cookie 原样发出去：签名覆盖全部请求头')
+    assert.ok(calls[0].init.signal, '必须带超时信号，否则挂住的上游会把命令行吊死在这里')
+})
+
+test('probeTrack 把签名头发完再打上游，交回的是 http 与判定', async () => {
+    const signer = new BdmsSigner({ modulePath: mockBdms, deviceId: '7000000000000001' })
+    const payload = JSON.stringify({
+        track: { id: '7501674235158431760', name: '下完这场雨', duration: 236620 },
+        track_player: {
+            video_model: JSON.stringify({
+                video_duration: 236.62,
+                video_list: [
+                    { gear_des_key: '0:M4A|1:audio_encrypt|2:aac|5:highest', video_meta: { quality: 'highest', bitrate: 260286, size: 4408084 } },
+                    { gear_des_key: '0:MP4|1:audio_encrypt|2:flac|5:lossless', video_meta: { quality: 'lossless', bitrate: 1741286, size: 46275289 } },
+                ],
+            }),
+        },
+    })
+    let sent
+    const report = await probeTrack({
+        signer,
+        trackId: '7501674235158431760',
+        deviceId: '7000000000000001',
+        cookie: 'sessionid_ss=caller-cookie',
+        timeoutMs: 5000,
+        fetchImpl: async (url, init) => {
+            sent = { url, init }
+            return new Response(payload, { status: 200 })
+        },
+    })
+    assert.equal(report.http, 200)
+    assert.equal(report.summary.fullTrack, true)
+    assert.equal(report.summary.gears.length, 2)
+    assert.equal(report.summary.bestGear.quality, 'lossless')
+    assert.equal(report.deviceId, '7000000000000001', '签名用的就是这一次的设备号')
+    // 这三样都是一路带上请求的：少了任何一个，上游给的就是「HTTP 200 + 0 字节」
+    assert.match(sent.init.headers['X-Helios'], /mock-helios-/)
+    assert.match(sent.init.headers['X-Medusa'], /mock-medusa-/)
+    assert.equal(sent.init.headers.cookie, 'sessionid_ss=caller-cookie')
+    assert.match(sent.url, /device_id=7000000000000001/, 'URL 里的设备号与签名器同一份')
 })
 
 test('summarizeTrackV2Response 区分整曲与试听', () => {

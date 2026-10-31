@@ -5,12 +5,13 @@
 //                       （给 libresoda 的 CommandSignature 直接调用）
 //   libmssdk selftest   检查 bdms.node / 设备号 / 能否生成签名
 //   libmssdk probe      真机自检：签名后打接口，判断整曲还是试听
+//                       （上游自检只有这一个入口，HTTP 层不再提供 /probe）
 //   libmssdk config     打印当前配置摘要（设备号脱敏）
 
 import { loadConfig, maskDeviceId, VERSION } from './config.mjs'
 import { BdmsSigner } from './bdms.mjs'
 import { startServe } from './serve.mjs'
-import { buildTrackV2Request, summarizeTrackV2Response } from './probe.mjs'
+import { probeTrack } from './probe.mjs'
 import { errorResponse, normalizeSignRequest, signResponse } from './contract.mjs'
 import { logError, logEvent } from './log.mjs'
 
@@ -128,26 +129,20 @@ async function commandProbe() {
     const trackId = argValue('track') || process.env.LIBMSSDK_PROBE_TRACK_ID || process.argv[3]
     const cookie = argValue('cookie') || process.env.LIBMSSDK_COOKIE || ''
     const deviceId = argValue('device') || config.deviceId
-    const spec = buildTrackV2Request({
+    const report = await probeTrack({
+        signer,
         trackId,
         deviceId,
         iid: argValue('iid') || config.iid,
         fp: argValue('fp') || config.fp,
         cookie,
+        timeoutMs: config.requestTimeoutMs,
     })
-    const signed = signer.sign({ url: spec.url, headers: spec.headers, deviceId })
-    const response = await fetch(spec.url, {
-        method: 'POST',
-        headers: { ...spec.headers, ...signed.headers },
-        body: spec.body,
-        signal: AbortSignal.timeout(config.requestTimeoutMs),
-    })
-    const text = await response.text()
-    const summary = summarizeTrackV2Response(text, trackId)
+    // 设备号只以脱敏形式出现：这条命令的输出经常被人直接贴进求助帖
     process.stdout.write(
-        `${JSON.stringify({ http: response.status, deviceId: maskDeviceId(signed.deviceId), ...summary }, null, 2)}\n`,
+        `${JSON.stringify({ http: report.http, deviceId: maskDeviceId(report.deviceId), ...report.summary }, null, 2)}\n`,
     )
-    if (!summary.fullTrack) process.exitCode = 1
+    if (!report.summary.fullTrack) process.exitCode = 1
 }
 
 function commandConfig() {
