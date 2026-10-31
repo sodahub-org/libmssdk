@@ -42,7 +42,8 @@ worker 数按绑定地址推导，环境变量始终优先：
 - 超限返回 **429 `RATE_LIMITED`**，`Retry-After` 是「下次可请求的精确时刻向上取整、最少 1 秒」。
   它和 503 `BUSY` 的区别是：429 是你打得太快，503 是服务容量不够。
 - 只有显式设置 `LIBMSSDK_TRUST_PROXY=1` 才读 `X-Forwarded-For`，取最右边一跳。默认只认
-  TCP 对端地址；挂在反向代理后面又不打开它，所有请求会挤进代理那一个桶。
+  TCP 对端地址；挂在反向代理后面又不打开它，所有请求会挤进代理那一个桶。打开它时，服务
+  端口必须只对反代开放（通常把宿主机端口绑到 127.0.0.1），否则直连请求可以伪造 XFF。
 - 默认强制生效。运行时可把 state 目录下的 `rate-limit.mode` 写成 `enforce` / `log` / `off`，
   约 2 秒内生效：`log` 只记日志不拦（调参期），`off` 完全不参与。`data/rate-limit.mode`
   与 `identity.json` 同目录；文件不存在时使用 `LIBMSSDK_RATE_LIMIT_MODE`（默认 `enforce`）。
@@ -105,7 +106,8 @@ worker 数按绑定地址推导，环境变量始终优先：
 2. 如果之前把 502 配成告警，改成 500 `SIGNER_UNAVAILABLE` / `INTERNAL_ERROR`。
 3. 多进程部署时给每个 `serve` 进程留出内存：每个 worker 都要加载一份原生模块。
 4. Docker 健康检查仍指向 `/healthz`；无需改配置。
-5. 挂反向代理的部署：要么设置 `LIBMSSDK_TRUST_PROXY=1`（并确认代理会重写
-   `X-Forwarded-For`），要么接受所有客户端共用一个桶。
+5. 挂反向代理的部署：设置 `LIBMSSDK_TRUST_PROXY=1`（并确认代理会重写
+   `X-Forwarded-For`），同时把宿主机端口绑到 `127.0.0.1`，只让反代能连；否则直连请求
+   可以伪造 XFF。Docker 部署的 compose 已透传该变量。不挂反代就接受所有客户端共用一个桶。
 6. 绑定非回环地址的部署必须设置 `LIBMSSDK_TOKEN`，否则服务会拒绝启动。
 7. 出问题时先看 `GET /stat`；调参期可把 state 目录下的 `rate-limit.mode` 写成 `log`。

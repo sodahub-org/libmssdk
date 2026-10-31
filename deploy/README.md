@@ -62,8 +62,10 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
 ## 对外暴露（给多台机器/多个人用）
 
-1. `deploy/.env` 里 `LIBMSSDK_BIND=0.0.0.0`（默认就是），并且 `LIBMSSDK_TOKEN`
-   必须是随机长串——**这个 token 等于签名能力**。没配 token 时服务会拒绝启动。
+1. `deploy/.env` 里的 `LIBMSSDK_TOKEN` 必须是随机长串——**这个 token 等于签名能力**；
+   没配 token 时服务会拒绝启动。`LIBMSSDK_BIND` 决定宿主机端口绑到哪：挂反代时写
+   `127.0.0.1`（只有本机反代能连）；不挂反代、直接对外时才用 `0.0.0.0`（务必配防火墙）。
+   run.sh 生成时默认是 `0.0.0.0`，请按部署形态改。
 2. 前面挂一个反向代理做 HTTPS（Caddy 最省事）：
 
    ```caddyfile
@@ -73,8 +75,18 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    ```
 
    反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
-   在 `deploy/.env` 里加 `LIBMSSDK_TRUST_PROXY=1`，并确认反代会重写 `X-Forwarded-For`
-   （Caddy 默认会）。没开时只认 TCP 对端，这是安全默认。
+   **同时**做两件事：
+
+   - `deploy/.env` 里 `LIBMSSDK_BIND=127.0.0.1`，让宿主机端口只有本机反代能连；
+   - `deploy/.env` 里 `LIBMSSDK_TRUST_PROXY=1`（compose 会透传进容器），并确认反代会重写
+     `X-Forwarded-For`（Caddy 默认会）。
+
+   只开 `TRUST_PROXY` 而端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
+   `X-Forwarded-For` 自选分桶键，等于没有限流。两个都不开时只认 TCP 对端，所有客户端会
+   共用反代那一个桶（默认 0.5 次/秒、突发 12）。
+
+   其它 `LIBMSSDK_*` 调优变量不会自动进容器（compose 只透传上面列出的几项）；需要时在
+   `docker-compose.yml` 的 `environment:` 里补同名项。
 
 3. 只放行 `/sign`、`/healthz`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，
    公网部署建议在反代里挡掉；`/stat` 是给部署者的诊断端点（不鉴权），同样不要经公网暴露：

@@ -119,7 +119,7 @@ export LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 | `LIBMSSDK_RATE_LIMIT_PER_SECOND` / `LIBMSSDK_RATE_LIMIT_BURST` | 单 IP 持续速率与突发额度（默认 0.5 次/秒、12） |
 | `LIBMSSDK_RATE_LIMIT_MAX_BUCKETS` | 限流桶上限（默认 4096），满了挤掉最久没动的桶 |
 | `LIBMSSDK_RATE_LIMIT_MODE` | 启动模式：`enforce` / `log` / `off`（默认 `enforce`） |
-| `LIBMSSDK_TRUST_PROXY` | 设为 `1` 才信任 `X-Forwarded-For`（取最右一跳）；默认只认 TCP 对端地址 |
+| `LIBMSSDK_TRUST_PROXY` | 设为 `1` 才信任 `X-Forwarded-For`（取最右一跳）；默认只认 TCP 对端地址。打开时服务端口须只对反代开放（绑 127.0.0.1） |
 
 运行时把 state 目录下的 `rate-limit.mode` 写成 `enforce` / `log` / `off` 即可在不重启的情况下
 切换限流模式（约 2 秒内生效）。
