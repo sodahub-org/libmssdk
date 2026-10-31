@@ -112,7 +112,8 @@ export function createEndpointsHandler({ config, readiness = () => false }) {
                 code: 'endpoint_removed',
                 endpoint: pathname,
                 replacement: notice.replacement,
-                ...(notice.deprecating ? { sunset: SUNSET_HTTP_DATE } : {}),
+                // 头读不到时的兜底：两个信号在体里各写一份，与错误契约里 Retry-After 同一规矩
+                ...(notice.deprecating ? { deprecation: DEPRECATION_HTTP_VALUE, sunset: SUNSET_HTTP_DATE } : {}),
             }, headers)
             return
         }

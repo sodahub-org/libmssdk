@@ -25,6 +25,8 @@ LIBMSSDK_BIND=${LIBMSSDK_BIND:-0.0.0.0}
 LIBMSSDK_PORT=${LIBMSSDK_PORT:-8899}
 # 指向你自己安装的汽水客户端版本目录（内含 resources/）
 LIBMSSDK_CLIENT_DIR=
+# 只在上反向代理那一层时需要（docker compose -f docker-compose.yml -f docker-compose.proxy.yml）
+# SIGNER_HOSTNAME=signer.example.com
 EOF
     chmod 600 .env
     echo "✓ 已生成 deploy/.env（含随机 token）"

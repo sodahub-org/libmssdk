@@ -193,6 +193,9 @@ test('旧诊断端点只回弃用回执：指向命令行，一次上游都不�
             assert.equal(payload.ok, false)
             assert.equal(payload.code, 'endpoint_removed', '稳定原因码，不是裸的 not_found')
             assert.match(payload.replacement, replacement, `${path}：回包里要写明替代做法`)
+            // 两个信号在体里也各写一份：客户端读不到响应头时才有兜底（同 Retry-After 的规矩）
+            assert.equal(payload.deprecation, DEPRECATION_HTTP_VALUE, `${path}：体里也要有弃用时刻`)
+            assert.equal(payload.sunset, SUNSET_HTTP_DATE, `${path}：体里也要有到期时刻`)
             assert.equal(payload.error.includes('sessionid_ss'), false, '调用方发来的 Cookie 不回显')
             assert.equal(response.headers.get('retry-after'), null, '改用命令行没有「再等一秒」这一说')
         }
@@ -221,6 +224,7 @@ test('GET /config 已删除：404 但说清替代做法，且不配到期信号�
     const payload = await response.json()
     assert.equal(payload.code, 'endpoint_removed', '不是裸的 not_found：#1 用户故事 24 要的是看得懂的删除')
     assert.match(payload.replacement, /node src\/index\.mjs config/)
+    assert.equal(payload.sunset, undefined, '没有弃用期的删除不编造到期时间')
 
     // 没听过的路径仍是那句通用 404
     const unknown = await fetch(`${baseUrl}/never-heard-of-it`, { signal: AbortSignal.timeout(5000) })
