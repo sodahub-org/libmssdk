@@ -15,7 +15,8 @@ cd deploy
 启动容器 → 等健康检查通过 → 打印客户端接入方式。首次构建要装 Wine，约 3–5 分钟。
 
 容器默认绑定 `0.0.0.0`，所以会按物理核的 75% 拉起多个 worker；启动日志的
-`event=dispatcher` 写明实际值与来由。worker 预热完成前 `/healthz` 返回 503，预热完成后才回 200。
+`event=dispatcher` 写明实际值与来由。worker 预热完成前 `/readyz` 返回 503，预热完成后才回 200；
+`/livez` 是恒 200 的那个（只看进程在不在，不看能不能干活）。容器健康检查探的是 `/readyz`。
 `/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`；已入队的请求超过等待预算也回 503。两者都带
 `Retry-After: 1`，不会再回 502。
 
@@ -55,26 +56,27 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
 1. `deploy/.env` 里 `LIBMSSDK_BIND=0.0.0.0`（默认就是），并且 `LIBMSSDK_TOKEN`
    必须是随机长串——**这个 token 等于签名能力**。
-2. 前面挂一个反向代理做 HTTPS（Caddy 最省事）：
+2. 前面挂一个反向代理做 HTTPS。仓库里给的是能直接用的两份配置，不用自己拼：
 
-   ```caddyfile
-   signer.example.com {
-       reverse_proxy 127.0.0.1:8899
-   }
-   ```
+   | 形态 | 文件 | 起来的方式 |
+   | --- | --- | --- |
+   | Windows 裸机 | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) | 设好 `SIGNER_HOSTNAME` 与 `LIBMSSDK_UPSTREAM`，`caddy run --config Caddyfile` |
+   | Docker（同主 compose 叠一层） | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) + [`docker-compose.proxy.yml`](docker-compose.proxy.yml) | `docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d` |
+   | 已有 nginx 的 Linux / Docker 主机 | [`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf) | 放进 `conf.d/`，证书路径换成你自己的 |
 
-3. 只放行 `/sign`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，公网部署
-   建议在反代里挡掉：
+   域名能解析到这台机器时 Caddy 自己签、自己续，你不用碰证书文件。只有局域网、没有可解析
+   的域名时，用 Caddy 的 `tls internal`（配置里注释着那行），客户端要导入 Caddy 的根证书。
 
-   ```caddyfile
-   signer.example.com {
-       @deny not path /sign /healthz
-       respond @deny 404
-       reverse_proxy 127.0.0.1:8899
-   }
-   ```
-
-4. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
+3. **本服务进程内不做 TLS**，所以证书归代理。原因不是省事：证书续期意味着重启那个正握着
+   `bdms.node` 的进程，而冷启动恰恰是最危险的一步（预热没完成时每个 `/sign` 都是 503）；
+   进程内做 TLS 也没有任何办法照顾已经发布出去的老客户端。
+4. **明文通道上 token 会泄露**，而它等价于签名能力。**上了 TLS 必须换一个新 token**：
+   旧 token 已经在无数人的历史流量里出现过，换协议不等于换了凭据。
+5. 明文 8899 继续完整服务，代理里**不做 80 → 443 重定向**：308 对不跟随重定向的客户端是
+   直接失败，对已经拿到明文的请求又毫无增益——它只是个提示，不是迁移机制。
+6. `/probe`、`/track/stream`、`/config` 已经从 HTTP 上收掉，反代里不必再专门挡它们；
+   `/sign` 之外只剩 `/livez`、`/readyz`（`/healthz` 是 `/readyz` 的别名）三个探针路径。
+7. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
 
 ## 安全提醒（重要）
 
@@ -82,6 +84,7 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
   之一。多人共用时，服务方（也就是你）能看到使用者的登录态。要么明确告知使用者，
   要么让每个人本地跑一份（同样的镜像，`docker run -t -p 127.0.0.1:8899:8899 …`）。
 * **日志已脱敏**：只记请求形状与签名长度，不落 cookie / X-Helios / X-Medusa。
+* **token 走明文等于公开**：见上面第 4 条；上 TLS 之后换 token，别复用旧的。
 * 公开端点等于公开「应用签名能力」，建议 token + 限速 + 不公开地址。
 
 ## 其他
