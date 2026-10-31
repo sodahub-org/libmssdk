@@ -85,7 +85,6 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
 从本版本起还默认按客户端地址限流（0.5 次/秒、突发 12）：超限回 **429 `RATE_LIMITED`**，
 `Retry-After` 是精确的下次可请求时刻向上取整（最少 1 秒）。`GET /stat` 可看活跃桶数、
 允许/拒绝计数、队列深度与 worker 数；地址脱敏，该端点不鉴权、不过限流。
-绑定非回环地址时必须设置 `LIBMSSDK_TOKEN`，否则 `serve` 拒绝启动。
 若前面挂了同机反向代理，设 `LIBMSSDK_TRUST_PROXY=1` 后务必让服务端口只对反代开放
 （Windows 上绑 `127.0.0.1`），否则可绕过反代伪造 `X-Forwarded-For`、自选分桶键。
 
