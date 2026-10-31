@@ -159,9 +159,10 @@ HTTP 层只做签名这一件事：`/probe`、`/track/stream`、`/config` 三个
 - [`deploy/reverse-proxy/nginx.conf`](deploy/reverse-proxy/nginx.conf) —— 已有 nginx 的主机
 - [`deploy/docker-compose.proxy.yml`](deploy/docker-compose.proxy.yml) —— 容器形态叠一层
 
-两条必须知道：**明文通道上 token 会泄露**，而它等价于签名能力，所以上了 TLS 之后要换一个新 token
-（旧 token 已经在历史流量里出现过，换协议不等于换凭据）；明文 8899 继续完整服务，不配 80 → 443
-重定向（308 对不跟随重定向的客户端是直接失败，对已经拿到明文的请求又毫无增益）。
+三条必须知道：**明文通道上 token 会泄露**，而它等价于签名能力，所以上了 TLS 之后要换一个新 token
+（旧 token 已经在历史流量里出现过，换协议不等于换凭据）；**上了反代就把宿主上的明文 8899 收到
+127.0.0.1**，否则客户端能绕过 443 直连明文端口；「不做重定向」说的是服务自己的明文端口继续完整
+服务，而**代理自己的 80 会跳 443**（自动 HTTPS 的默认行为，要关掉就加 `auto_https disable_redirects`）。
 
 ## 连接 libresoda
 

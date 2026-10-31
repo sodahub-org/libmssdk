@@ -20,7 +20,8 @@ if [ ! -f .env ]; then
     cat >.env <<EOF
 # libmssdk 部署配置（run.sh 生成，勿提交）
 LIBMSSDK_TOKEN=${TOKEN}
-# 0.0.0.0 = 允许外部访问（务必配合防火墙/反向代理）；只想本机用就写 127.0.0.1
+# 宿主上把明文 8899 发布到哪张网卡：0.0.0.0 = 允许外部直连（配合防火墙 + token）；
+# 只想本机用、或前面挂了反向代理，就写 127.0.0.1（代理在容器网络里照样能访问服务）
 LIBMSSDK_BIND=${LIBMSSDK_BIND:-0.0.0.0}
 LIBMSSDK_PORT=${LIBMSSDK_PORT:-8899}
 # 指向你自己安装的汽水客户端版本目录（内含 resources/）

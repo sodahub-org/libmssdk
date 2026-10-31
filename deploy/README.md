@@ -54,14 +54,15 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
 ## 对外暴露（给多台机器/多个人用）
 
-1. `deploy/.env` 里 `LIBMSSDK_BIND=0.0.0.0`（默认就是），并且 `LIBMSSDK_TOKEN`
-   必须是随机长串——**这个 token 等于签名能力**。
+1. `deploy/.env` 里 `LIBMSSDK_TOKEN` 必须是随机长串——**这个 token 等于签名能力**。
+   同一个文件里的 `LIBMSSDK_BIND` 控制的是**宿主**上把 8899 发布到哪张网卡（容器内的进程固定绑
+   `0.0.0.0`，见第 3 步）。`run.sh` 首次生成的默认是 `0.0.0.0`，也就是允许外部直连这个明文端口。
 2. 前面挂一个反向代理做 HTTPS。仓库里给的是能直接用的两份配置，不用自己拼：
 
    | 形态 | 文件 | 起来的方式 |
    | --- | --- | --- |
-   | Windows 裸机 | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) | 设好 `SIGNER_HOSTNAME` 与 `LIBMSSDK_UPSTREAM`，`caddy run --config Caddyfile` |
-   | Docker（同主 compose 叠一层） | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) + [`docker-compose.proxy.yml`](docker-compose.proxy.yml) | `docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d` |
+   | Windows 裸机 | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) | 设好 `SIGNER_HOSTNAME` 与 `LIBMSSDK_UPSTREAM`，先 `caddy validate`，再 `caddy run --config Caddyfile` |
+   | Docker（同主 compose 叠一层） | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) + [`docker-compose.proxy.yml`](docker-compose.proxy.yml) | `docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d`（要 `SIGNER_HOSTNAME`） |
    | 已有 nginx 的 Linux / Docker 主机 | [`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf) | 放进 `conf.d/`，证书路径换成你自己的 |
 
    域名能解析到这台机器时 Caddy 自己签、自己续，你不用碰证书文件。本仓库不自签证书那套教程
@@ -69,19 +70,29 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    TLS）、要么做证书固定，而最后一条在双方都没法强制升级的场景里是明确的反面教材。只有你自己
    用的话，走 SSH 隧道比自签更省事（见 `../docs/DEPLOY-WINDOWS.md`）。
 
-3. **本服务进程内不做 TLS**，所以证书归代理。原因不是省事：证书续期意味着重启那个正握着
+3. **上了反向代理就把宿主明文口收掉**：`deploy/.env` 里写 `LIBMSSDK_BIND=127.0.0.1`。
+   不收的话，任何客户端都能绕过 443 直接打 `http://<host>:8899/sign`，Bearer token 和请求里的
+   cookie 全走明文——正是第 5 步说的那个泄露面，而挂上反代之后人容易以为自己在 HTTPS 后面。
+   收紧只影响宿主上发布的那个地址；容器内进程仍绑 `0.0.0.0`，Caddy 经服务名 `libmssdk:8899`
+   照常访问。**别指望在 `docker-compose.proxy.yml` 里再写一条 `ports:`**：compose 对 `ports` 是
+   合并语义，会变成两条映射并存、明文口照开；真要在文件里改，只能 `!reset` 整段重写。
+4. **本服务进程内不做 TLS**，所以证书归代理。原因不是省事：证书续期意味着重启那个正握着
    `bdms.node` 的进程，而冷启动恰恰是最危险的一步（预热没完成时每个 `/sign` 都是 503）；
    进程内做 TLS 也没有任何办法照顾已经发布出去的老客户端。
-4. **明文通道上 token 会泄露**，而它等价于签名能力。**上了 TLS 必须换一个新 token**：
+5. **明文通道上 token 会泄露**，而它等价于签名能力。**上了 TLS 必须换一个新 token**：
    旧 token 已经在无数人的历史流量里出现过，换协议不等于换了凭据。
-5. 明文 8899 继续完整服务，代理里**不做 80 → 443 重定向**：308 对不跟随重定向的客户端是
-   直接失败，对已经拿到明文的请求又毫无增益——它只是个提示，不是迁移机制。
-6. `/probe`、`/track/stream`、`/config` 已经从 HTTP 上收掉，反代里不必再专门挡它们：那三条路径
+6. 「不重定向」说的是**签名服务自己的明文 8899**：它继续完整服务，不改成跳转——308 对不跟随
+   重定向的客户端是直接失败，对已经拿到明文的请求又毫无增益。**代理自己的 80 端口管不了**：
+   Caddy 的自动 HTTPS 默认就在 80 上放一个到 443 的跳转（`docker-compose.proxy.yml` 的注释写的
+   正是这件事），不跟随 308 的客户端用不了 80。真要让 80 也只应 ACME 质询，在 Caddyfile 顶部
+   全局块加 `auto_https disable_redirects`，加完跑一次 `caddy validate`。nginx 那份只有 443 的
+   server block，80 上压根没监听。
+7. `/probe`、`/track/stream`、`/config` 已经从 HTTP 上收掉，反代里不必再专门挡它们：那三条路径
    现在只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、`/readyz`
    （`/healthz` 是 `/readyz` 的别名）三个探针路径。
    叠反向代理那一层要在 `deploy/.env` 里加一行 `SIGNER_HOSTNAME=<对外域名>`（`run.sh` 生成的模板
    里注释着，取消注释即可）。
-7. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
+8. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
 
 ## 安全提醒（重要）
 
