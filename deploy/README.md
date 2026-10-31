@@ -77,8 +77,7 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    （Caddy 默认会）。没开时只认 TCP 对端，这是安全默认。
 
 3. 只放行 `/sign`、`/healthz`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，
-   公网部署建议在反代里挡掉；`/stat` 是给部署者的诊断端点，建议只在宿主机或内网访问，
-   不要经公网反代暴露（它的地址已经脱敏，但计数仍然暴露使用情况）：
+   公网部署建议在反代里挡掉；`/stat` 是给部署者的诊断端点（不鉴权），同样不要经公网暴露：
 
    ```caddyfile
    signer.example.com {
@@ -88,9 +87,10 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    }
    ```
 
-   `/stat` 不鉴权。宿主机端口是否对外取决于 `LIBMSSDK_BIND`：run.sh 生成的 .env 默认是
-   `0.0.0.0`（对外可达），只想本机用就改成 `127.0.0.1`。公网部署务必在反代挡住 `/stat`。
-   在宿主机上查看：`curl http://127.0.0.1:${LIBMSSDK_PORT:-8899}/stat`。
+   `/stat` 的地址已脱敏，但计数会暴露使用情况。宿主机端口是否对外取决于 `.env` 的
+   `LIBMSSDK_BIND`（run.sh 生成时默认 `0.0.0.0`，只想本机用就改成 `127.0.0.1`）。
+   在宿主机上查看：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
+   `LIBMSSDK_PORT`，默认 8899）。
 
 4. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
 

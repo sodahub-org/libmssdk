@@ -184,8 +184,8 @@ test('服务忙回 503 BUSY，与「你打太多」的 429 明确区分', async 
     })
     const first = post(entry, signPayload())
     await until(() => signCount(entry) === 1, '第一条正在 worker 上算')
-    const inFlight = (await getJson(entry, '/stat')).body
-    assert.equal(inFlight.workers.busy, 1, '/stat 能看出正在算的那台')
+    const duringSign = (await getJson(entry, '/stat')).body
+    assert.equal(duringSign.workers.busy, 1, '/stat 能看出正在算的那台')
 
     const queued = post(entry, signPayload())
     await until(async () => (await getJson(entry, '/stat')).body.queue.depth === 1, '第二条进了队列')
