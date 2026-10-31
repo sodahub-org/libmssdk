@@ -30,6 +30,33 @@ export async function fetchReady(port, probeTimeoutMs = 4000) {
     }
 }
 
+/**
+ * 一个进程自己的身份视图：不点名设备号的 /sign，回包里的 device_id 就是该进程自己解析出来的那一份。
+ *
+ * URL、headers 与请求体里都不许出现设备号 —— 带了就变成比对我们自己发过去的那个值，身份真分裂了
+ * 也照样「一致」，是循环论证。#9 删掉了明文返回整套身份的 /config（完整设备号直接给出去，而没有任何
+ * 客户端在调它），这条是它的替代；两个控制面共用，别各写一份。
+ */
+export async function fetchOwnIdentity(port, timeoutMs) {
+    try {
+        const response = await fetch(`http://127.0.0.1:${port}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
+                method: 'POST',
+                headers: { 'user-agent': 'LunaPC/verify' },
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+        })
+        if (!response.ok) return null
+        const payload = await response.json()
+        return payload?.device_id ? { deviceId: String(payload.device_id) } : null
+    } catch {
+        return null
+    }
+}
+
 /** 返回仍未就绪的进程：seenKinds 只记真的观察到过的形态，lastErrorKind 是最后一次的结果。
  *  用 Set 的插入顺序当「最后一次」是错的：refused→hung→refused 会让 at(-1) 回 hung。 */
 export async function waitForReady(ports, { timeoutMs, intervalMs, probeTimeoutMs }) {

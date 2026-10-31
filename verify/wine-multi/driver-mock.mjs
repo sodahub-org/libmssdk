@@ -11,7 +11,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
+import { fetchOwnIdentity, fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..', '..')
 const MOCK_BDMS = path.join(PROJECT_ROOT, 'test', 'fixtures', 'mock-bdms.mjs')
@@ -186,29 +186,9 @@ export function createMockDriver({ scenario = 'ok', cookie = '' }) {
             return probeReady(ports[index])
         },
 
-        /**
-         * 每个进程自己的身份视图：不点名设备号的 /sign，回包里的 device_id 就是它自己解析出来的
-         * 那一份（原值只在内存比对，不落盘）。URL / headers 里都不带设备号，否则就成了比对
-         * 我们自己发过去的值。#9 删掉了 /config，这条是它的替代。
-         */
+        /** 每个进程自己的身份视图（原值只在内存比对，不落盘）。见 endpoints.mjs 里那段「不点名」的理由。 */
         async ownIdentity(index) {
-            try {
-                const response = await fetch(`http://127.0.0.1:${ports[index]}/sign`, {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({
-                        url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
-                        method: 'POST',
-                        headers: { 'user-agent': 'LunaPC/verify' },
-                    }),
-                    signal: AbortSignal.timeout(15000),
-                })
-                if (!response.ok) return null
-                const payload = await response.json()
-                return payload?.device_id ? { deviceId: String(payload.device_id) } : null
-            } catch {
-                return null
-            }
+            return fetchOwnIdentity(ports[index], 15000)
         },
 
         async waitForReady(timeoutMs) {
