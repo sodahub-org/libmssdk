@@ -1,8 +1,8 @@
 // 分发器的对外形状：主进程独占监听、解析 HTTP、把请求体交给空闲 worker、把 worker 交回的
 // 响应字节写回连接。排队、等待预算、超预算那个预拼好的 503 都在这条路径上。
 //
-// 这一票不接线 —— src/server.mjs 那条老路径还在默认位置上（切换是 #7），所以这里的用例直接
-// 对 createDispatcher 建出来的服务发真 HTTP 请求。
+// 这里的用例直接对 createDispatcher 建出来的服务发真 HTTP 请求；默认服务（src/serve.mjs）
+// 给它注入过渡端点处理器，而直接的单元用例按需注入一个假的。
 //
 // 端口只用 listen(0)：Windows 上自选端口会撞上上一次绑定的 TIME_WAIT，「先探测空闲端口再绑定」
 // 这个两步模式在该平台实测大面积失败。
@@ -226,6 +226,41 @@ test('队列有上限：排不下的当场拒，而不是无限堆积到大家�
 
     const settled = await Promise.all([a, b])
     assert.deepEqual(settled.map(entry => entry.status).sort(), [200, 503], '一条等到服务，一条当场被拒')
+})
+
+test('非 /sign 路由交给过渡处理器；不注入时仍是 404，而且都不占 worker', async () => {
+    const pool = fakePool({ size: 1 })
+    const hits = []
+    const server = createDispatcher({
+        config,
+        pool,
+        log: () => {},
+        fallback: (request, response) => {
+            hits.push(request.url)
+            response.writeHead(200, { 'content-type': 'text/plain' })
+            response.end('legacy')
+        },
+    })
+    servers.push(server)
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    const baseUrl = `http://127.0.0.1:${server.address().port}`
+
+    const health = await fetch(`${baseUrl}/healthz`)
+    assert.equal(health.status, 200)
+    assert.equal(await health.text(), 'legacy')
+    assert.deepEqual(hits, ['/healthz'], '过渡处理器接管了非 /sign 路由')
+    assert.equal(pool.requests.length, 0, '过渡路由不该占签名 worker')
+
+    // /sign 仍然走 worker，不能被过渡处理器截走
+    const pending = post(baseUrl, signPayload())
+    await until(() => pool.requests.length === 1, '请求被派发到 worker')
+    pool.complete(pool.requests[0].slotId, { kind: 'SUCCESS', body: signedBody() })
+    assert.equal((await pending).status, 200)
+
+    const { baseUrl: bareUrl } = await serve(fakePool({ size: 1 }))
+    const missing = await fetch(`${bareUrl}/healthz`)
+    assert.equal(missing.status, 404)
+    assert.match(await missing.text(), /"code":"not_found"/)
 })
 
 test('错误各回各的码：鉴权失败、请求非法、worker 算错、模块没加载，都不是 502', async () => {

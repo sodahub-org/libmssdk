@@ -13,10 +13,15 @@
 ```text
 libresoda / 第三方客户端
   → POST /sign { url, method, headers, body }
-  → libmssdk 调用 bdms.node
+  → 主进程排队，把请求交给空闲 worker
+  → worker 调用 bdms.node，把签名结果交回主进程
   → 返回 { X-Helios, X-Medusa }
   → 客户端用这对请求头发起真实请求
 ```
+
+一次签名会阻塞一个进程一百到几百毫秒，所以默认 `serve` 把「监听」和「计算」拆开：主进程独占
+端口、排队并计时，worker 进程只算签名。worker 数按绑定地址推导（回环 1 个，对局域网开放时按
+物理核的 75%），可用 `LIBMSSDK_WORKERS` 覆盖；启动日志会写明实际值与来由。
 
 签名覆盖 URL 和全部请求头，因此 `/sign` 收到的 headers 必须是实际要发送的那一份。
 
@@ -107,6 +112,13 @@ export LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 | `LIBMSSDK_TOKEN` | HTTP 服务鉴权 Token |
 | `LIBMSSDK_STATE_DIR` | 设备身份 `identity.json` 的保存目录；首次启动用独占创建写入，state 目录可用时多个进程同时首次启动也只生成一份（慢 IO 下的残留窗口见 `docs/DEPLOY-WINDOWS.md`） |
 | `LIBMSSDK_IDENTITY_READ_BUDGET_MS` | 判定身份文件「损坏而非正在被写」的等待预算（默认 1000ms）；慢 IO 部署出现并发误判时可调大（降级路径阻塞随之变长），非正数或非法值回退默认 |
+| `LIBMSSDK_WORKERS` | worker 进程数；不设则按绑定地址推导（回环 1 个，非回环按物理核的 75%） |
+| `LIBMSSDK_WAIT_BUDGET_MS` | `/sign` 排队预算（默认 5000ms），超出回 503 `BUSY` |
+| `LIBMSSDK_QUEUE_LIMIT` | 等待队列上限（默认 worker 数的 4 倍），排不下当场回 503 |
+| `LIBMSSDK_WARMUP_BUDGET_MS` | 单台 worker 的预热预算（默认 30000ms）；超预算它保持未就绪且进程不退出 |
+
+worker 重生退避（`LIBMSSDK_WORKER_RESPAWN_BASE_MS` / `LIBMSSDK_WORKER_RESPAWN_CAP_MS`）见
+[`.env.example`](.env.example)。
 
 Cloudflare Workers 不能运行 `bdms.node` / `metasecml.dll`，因此不能承载本服务的签名
 执行层。Worker 只能作为鉴权、限流或转发网关。
@@ -115,13 +127,22 @@ Cloudflare Workers 不能运行 `bdms.node` / `metasecml.dll`，因此不能承�
 
 | 路由 | 说明 |
 | --- | --- |
-| `GET /healthz` | 健康状态，不泄露凭据 |
-| `GET /config` | 配置摘要和脱敏设备号（需要 Token） |
-| `POST /sign` | `{ url, method, headers, body }` → 签名请求头 |
-| `POST /probe` | 构造 `track_v2` 请求并判断整曲 / 试听 |
-| `POST /track/stream` | `/probe` 的别名 |
+| `GET /healthz` | 至少一台 worker 就绪时 200；预热中 503。不泄露凭据 |
+| `GET /config` | 配置摘要和脱敏设备号（需要 Token）；过渡端点 |
+| `POST /sign` | `{ url, method, headers, body }` → 签名请求头（默认经 worker 计算） |
+| `POST /probe` | 构造 `track_v2` 请求并判断整曲 / 试听；过渡端点 |
+| `POST /track/stream` | `/probe` 的别名；过渡端点 |
 
 请求 / 响应契约见 [`docs/CONTRACT.md`](docs/CONTRACT.md)。
+
+### 行为变化（本版本）
+
+- `/sign` 现在由主进程排队、worker 计算；没有就绪 worker 或队列已满时立即回 503，已入队的请求超过等待预算才回 503。
+- 失败状态码按「时间能否解决」分类：400 / 401 / 429 / 503 / 500，**502 不再出现**。
+- 只有服务忙（503 `BUSY`）与被限流（429 `RATE_LIMITED`）带 `Retry-After`。限流器在后续版本启用。
+- `/healthz` 在 worker 预热完成前返回 503，避免编排器提前放流量。
+
+完整升级影响见 [`docs/UPGRADING.md`](docs/UPGRADING.md)。
 
 ## 连接 libresoda
 
@@ -145,7 +166,8 @@ export QISHUI_SIGNER_TOKEN="<random-long-token>"
 npm test
 ```
 
-CI 使用 mock 签名模块，不依赖官方二进制。
+CI 使用 mock 签名模块，不依赖官方二进制。默认路径的黑盒用例会真 fork worker，覆盖预热、并发重叠、
+杀掉一台后其余继续服务，以及过渡端点仍挂在同一个监听上。
 
 另有一条**手动执行**的部署形态验证（不进 `npm test`、不进 CI）：
 `bash verify/wine-multi/run.sh` 检查 Docker + Wine 下多个进程能否同时工作，

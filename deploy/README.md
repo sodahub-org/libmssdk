@@ -14,6 +14,11 @@ cd deploy
 脚本会：检查 `LIBMSSDK_CLIENT_DIR` → 生成 `deploy/.env`（随机 token）→ 构建镜像 →
 启动容器 → 等健康检查通过 → 打印客户端接入方式。首次构建要装 Wine，约 3–5 分钟。
 
+容器默认绑定 `0.0.0.0`，所以会按物理核的 75% 拉起多个 worker；启动日志的
+`event=dispatcher` 写明实际值与来由。worker 预热完成前 `/healthz` 返回 503，预热完成后才回 200。
+`/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`；已入队的请求超过等待预算也回 503。两者都带
+`Retry-After: 1`，不会再回 502。
+
 常用变体：
 
 ```bash
@@ -84,6 +89,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 | 事项 | 说明 |
 | --- | --- |
 | 设备身份 | 首次启动用独占创建生成 `device_id`/`iid`/`fp`，落在 volume `libmssdk-data` 的 `identity.json`，容器重建不变、state 目录可用时多个进程同时首次启动也只有一份（Wine / 网络卷的慢 IO 下仍有残留窗口，见 `../docs/DEPLOY-WINDOWS.md`）；想重置换新 volume，想钉死用 `LIBMSSDK_DEVICE_ID` |
+| worker 数 | 默认按绑定地址推导；容器里可用 `LIBMSSDK_WORKERS` 覆盖。每个 worker 加载一份原生模块，内存要留够 |
+| 失败状态码 | 400/401/429/503/500；502 不再出现。完整表见 [`../docs/UPGRADING.md`](../docs/UPGRADING.md) |
 | ARM 主机 | 镜像里是 x86_64 的 Wine + Windows Node，ARM 机器上要靠 QEMU 模拟（很慢）；建议部署到 x86_64 主机 |
 | Node 版本 | 钉 `20.18.0`（`24` 在 Wine 下 CSPRNG 断言崩溃） |
 | 日志 | 事件 JSON 行走 stdout，身份降级告警走 stderr；`docker compose logs -f` 两路都收 |

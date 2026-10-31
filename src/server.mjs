@@ -1,15 +1,19 @@
-// HTTP 服务：把签名能力暴露成局域网/本机接口，供 libresoda 等客户端调用。
+// 老 HTTP 服务：/sign 在默认路径上已经切到分发器（src/dispatcher.mjs），这里保留的是
+// 过渡期的其余端点，由 src/serve.mjs 挂到同一个监听上：
 //
-//   GET  /healthz          服务状态（不泄露凭据）
-//   GET  /config           非敏感配置摘要（可选鉴权）
-//   POST /sign             核心：{url,method,body,headers} → {ok,headers:{X-Helios,X-Medusa}}
-//   POST /probe            真机自检：签名 + 打真实接口，判断整曲/试听
-//   POST /track/stream     /probe 的别名，返回更贴近播放器的字段
+//   GET  /healthz          服务状态（预热未完成时 503；#9 再拆成 /livez /readyz）
+//   GET  /config           非敏感配置摘要（可选鉴权；#9 删除）
+//   POST /probe            真机自检（#9 收成命令行子命令）
+//   POST /track/stream     /probe 的别名（#9 删除）
+//
+// 直接构造 createServer 时仍带 /sign，给本地用例与旧路径用；默认服务不会走到它。
+// #7 的验收是「502 从所有出口消失」，所以这里的失败也走同一张分类表。
 
 import http from 'node:http'
 import { maskDeviceId } from './config.mjs'
 import { isAuthorized } from './auth.mjs'
 import { errorResponse, normalizeSignRequest, signResponse, ValidationError } from './contract.mjs'
+import { ERROR_KINDS, failureResponse } from './errors.mjs'
 import { buildTrackV2Request, summarizeTrackV2Response } from './probe.mjs'
 import { logError, logEvent } from './log.mjs'
 import { requestPathname } from './route.mjs'
@@ -21,8 +25,10 @@ function readBody(request, limit) {
         request.on('data', chunk => {
             size += chunk.length
             if (size > limit) {
+                // 不 destroy：客户端要读得到那句 400，而不是在上传中途拿到连接重置。
+                // 剩下的字节继续排掉，只是不再缓冲（与分发器的处理一致）。
                 reject(new ValidationError(`请求体超过 ${limit} 字节`))
-                request.destroy()
+                request.resume()
                 return
             }
             chunks.push(chunk)
@@ -43,8 +49,14 @@ async function postJson(url, body, headers, timeoutMs) {
     return { status: response.status, text }
 }
 
-export function createServer({ config, signer }) {
-    const server = http.createServer(async (request, response) => {
+/**
+ * 过渡期端点处理器。
+ *
+ * `readiness` 由默认服务注入（至少一台 worker 就绪）；不给时保持老行为（只看模块在不在）。
+ * 不提前回 200 很重要：预热期间任何一次 200 都会让编排器的起始宽限期当场作废。
+ */
+export function createLegacyHandler({ config, signer, readiness = null }) {
+    return async (request, response) => {
         const started = Date.now()
         // 只取 pathname，且解析本身永不抛：这条 handler 是 async，抛出去就是 unhandled
         // rejection，而一条匿名请求（`GET // HTTP/1.1`）就够触发。畸形目标按「没这条路由」处理。
@@ -56,12 +68,24 @@ export function createServer({ config, signer }) {
             response.setHeader('Content-Length', Buffer.byteLength(text))
             response.end(text)
         }
+        const sendFailure = failure => {
+            if (response.headersSent || response.writableEnded) return
+            const text = JSON.stringify(failure.body)
+            response.writeHead(failure.status, {
+                ...failure.headers,
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Length': Buffer.byteLength(text),
+            })
+            response.end(text)
+        }
         const authorized = () => isAuthorized(request, config)
 
         try {
             if (pathname === '/healthz') {
-                send(200, {
-                    ok: true,
+                const ready = readiness ? Boolean(readiness()) : true
+                send(ready ? 200 : 503, {
+                    ok: ready,
+                    ready,
                     service: 'libmssdk',
                     version: config.version,
                     bdmsAvailable: signer.available,
@@ -73,7 +97,7 @@ export function createServer({ config, signer }) {
             }
             if (pathname === '/config') {
                 if (!authorized()) {
-                    send(401, errorResponse('unauthorized', 'unauthorized'))
+                    sendFailure(failureResponse(ERROR_KINDS.UNAUTHORIZED, { message: '缺少或错误的 Bearer Token' }))
                     return
                 }
                 send(200, {
@@ -100,12 +124,21 @@ export function createServer({ config, signer }) {
                 return
             }
             if (!authorized()) {
-                send(401, errorResponse('unauthorized', 'unauthorized'))
+                sendFailure(failureResponse(ERROR_KINDS.UNAUTHORIZED, { message: '缺少或错误的 Bearer Token' }))
                 return
             }
 
-            const payload = JSON.parse((await readBody(request, config.maxBodyBytes)) || '{}')
+            // readBody 的 ValidationError（体超限）原样保留；只有 JSON 解析失败才是 400。
+            const text = await readBody(request, config.maxBodyBytes)
+            let payload
+            try {
+                payload = JSON.parse(text || '{}')
+            } catch {
+                throw new ValidationError('请求体不是合法 JSON')
+            }
 
+            // 直接构造 createServer 的 /sign 只给本地用例与旧路径；默认路径的模块/配置错误
+            // 由池子的 blocker 报 SIGNER_UNAVAILABLE，不会走到这里。
             if (pathname === '/sign') {
                 const spec = normalizeSignRequest(payload)
                 const signed = signer.sign({
@@ -150,11 +183,22 @@ export function createServer({ config, signer }) {
                 elapsedMs: Date.now() - started,
             })
             if (pathname === '/probe') {
-                send(upstream.status === 200 ? 200 : 502, {
-                    ok: Boolean(summary.accepted),
-                    http: upstream.status,
-                    ...summary,
-                })
+                if (upstream.status === 200) {
+                    send(200, {
+                        ok: Boolean(summary.accepted),
+                        http: upstream.status,
+                        ...summary,
+                    })
+                    return
+                }
+                // 上游非 200 不再是 502（本进程不是网关）：按「必须有人来修」收口，
+                // 诊断字段照旧平铺在回包里。#9 把 /probe 收成命令行子命令后整条消失。
+                sendFailure(
+                    failureResponse(ERROR_KINDS.INTERNAL_ERROR, {
+                        message: `上游没有接受这次签名（HTTP ${upstream.status}）`,
+                        details: { http: upstream.status, ...summary },
+                    }),
+                )
                 return
             }
             send(200, {
@@ -175,10 +219,14 @@ export function createServer({ config, signer }) {
                 hint: summary.hint,
             })
         } catch (error) {
-            const isValidation = error instanceof ValidationError
+            const kind = error instanceof ValidationError ? ERROR_KINDS.INVALID_REQUEST : ERROR_KINDS.INTERNAL_ERROR
             logError(`${request.method} ${pathname ?? '(畸形请求目标)'}: ${error.message}`)
-            send(isValidation ? 400 : 502, errorResponse(error.message, isValidation ? 'invalid_request' : 'signer_error'))
+            sendFailure(failureResponse(kind, { message: String(error?.message || '内部错误') }))
         }
-    })
-    return server
+    }
+}
+
+/** 直接起一个只跑老处理器的服务（本地用例、旧路径）。默认服务见 src/serve.mjs。 */
+export function createServer({ config, signer, readiness }) {
+    return http.createServer(createLegacyHandler({ config, signer, readiness }))
 }

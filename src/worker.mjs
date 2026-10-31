@@ -123,6 +123,10 @@ function main() {
         else send({ type: 'warmup-failed', kind: ERROR_KINDS.INTERNAL_ERROR, reason: mask(warmup.reason, modulePath) })
     }
 
+    // 主进程没了（被编排器/管理员直接杀掉）：IPC 通道一断就退，别留下还占着原生模块与
+    // Wine prefix 的孤儿。正常关停走下面的 shutdown 消息，不靠这条。
+    process.on('disconnect', () => process.exit(0))
+
     process.on('message', message => {
         if (!message || typeof message !== 'object') return
         if (message.type === 'shutdown') {

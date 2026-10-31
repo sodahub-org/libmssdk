@@ -45,6 +45,30 @@ const healthy = (count, options = {}) => {
 
 const job = { url: 'https://api.qishui.com/luna/pc/track_v2?a=1', headers: {}, deviceId: '7000000000000001' }
 
+test('关池子时不再补进程：start 等在上一台时 stop，后面的槽位不 spawn', async () => {
+    const workers = []
+    const spawnOrder = []
+    const pool = createWorkerPool({
+        workerCount: 3,
+        // 不自动就绪：start 会一直停在第一台的 settled 上，给 stop 留出插进来的窗口
+        spawn: index => {
+            const worker = new FakeWorker(index)
+            workers.push(worker)
+            spawnOrder.push(index)
+            return worker
+        },
+        log: () => {},
+    })
+
+    const starting = pool.start()
+    await waitFor(() => spawnOrder.length === 1, '第一台已经拉起')
+    await pool.stop()
+    workers[0].exit(0)
+    await starting
+
+    assert.deepEqual(spawnOrder, [0], 'stop 之后不该再拉起第二、第三台')
+})
+
 test('分发只发给空闲 worker：报告完成之前不回池', async () => {
     const { pool, byId } = healthy(2)
     await pool.start()
@@ -277,6 +301,62 @@ test('退避途中关池子：不再对已经没了的通道 send', async () => 
         workers.some(worker => worker.sent.some(message => message.type === 'shutdown')),
         '活着的那台要收到关闭指令，不能因为跳过死的就谁都跳过',
     )
+})
+
+test('spawn 同步抛错：start 失败后 stop 仍能安全收尾，不再二次抛错', async () => {
+    const pool = createWorkerPool({
+        workerCount: 1,
+        spawn: () => {
+            throw new Error('spawn boom')
+        },
+        log: () => {},
+    })
+
+    const startError = await pool.start().catch(error => error)
+    assert.match(startError.message, /spawn boom/, 'start 要保留原始 spawn 错误')
+    await pool.stop()
+    assert.equal(pool.readyCount, 0)
+})
+
+test('重生时 spawn 同步抛错也不掀掉主进程：按失败继续退避直到放弃', async () => {
+    let spawns = 0
+    let giveUps = 0
+    const workers = []
+    const pool = createWorkerPool({
+        workerCount: 1,
+        respawnBaseMs: 1,
+        respawnCapMs: 1,
+        log: () => {},
+        onGiveUp: () => {
+            giveUps += 1
+        },
+        spawn: index => {
+            spawns += 1
+            if (spawns === 1) {
+                const worker = new FakeWorker(index)
+                workers.push(worker)
+                setImmediate(() => worker.reportReady())
+                return worker
+            }
+            throw new Error('respawn boom')
+        },
+    })
+    await pool.start()
+    workers[0].exit(1)
+
+    await waitFor(() => giveUps === 1, '连续 spawn 失败攒够次数后整体放弃')
+    await pool.stop()
+    assert.equal(pool.readyCount, 0)
+})
+
+test('关池子时通道已经坏了：send 抛错不能把 stop 带崩', async () => {
+    const { pool, workers } = healthy(1)
+    await pool.start()
+    // 不触发 exit：槽位还被认为是活的，但通道已经关闭（模拟通道比 exit 先坏）
+    workers[0].exited = true
+
+    await pool.stop()
+    assert.ok(workers[0].killed.length > 0, '坏通道的那台要被直接收掉')
 })
 
 test('干净的 exit(0) 不算进「反复退出」：判据数的是非零退出', async () => {

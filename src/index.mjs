@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // libmssdk 入口：
-//   libmssdk serve      启动 HTTP 服务（默认 http://127.0.0.1:8899）
+//   libmssdk serve      启动 HTTP 服务（默认 http://127.0.0.1:8899；主进程监听 + worker 计算）
 //   libmssdk bridge     stdio 模式：stdin 收 SignRequest、stdout 出 SignResponse
 //                       （给 libresoda 的 CommandSignature 直接调用）
 //   libmssdk selftest   检查 bdms.node / 设备号 / 能否生成签名
@@ -9,7 +9,7 @@
 
 import { loadConfig, maskDeviceId, VERSION } from './config.mjs'
 import { BdmsSigner } from './bdms.mjs'
-import { createServer } from './server.mjs'
+import { startServe } from './serve.mjs'
 import { buildTrackV2Request, summarizeTrackV2Response } from './probe.mjs'
 import { errorResponse, normalizeSignRequest, signResponse } from './contract.mjs'
 import { logError, logEvent } from './log.mjs'
@@ -33,17 +33,50 @@ async function readStdin() {
 }
 
 async function commandServe() {
-    const server = createServer({ config, signer })
-    await new Promise(resolve => server.listen(config.port, config.host, resolve))
+    // 默认路径（#7）：/sign 由主进程排队、worker 计算；过渡端点仍由老处理器承接。
+    const { server, pool } = startServe({ config, signer })
+    try {
+        await new Promise((resolve, reject) => {
+            const onError = error => reject(error)
+            server.once('error', onError)
+            server.listen(config.port, config.host, () => {
+                server.off('error', onError)
+                resolve()
+            })
+        })
+    } catch (error) {
+        // 端口没起来也要把已经 fork 的 worker 收掉。预热中的 worker 可能正卡在同步采样里，
+        // shutdown 消息要等它跑完；给一秒宽限，之后强制退出，别让端口错误把进程挂住。
+        // 收尾自己的失败只记一笔，不能盖住真正要报的端口错误。
+        await pool.stop().catch(stopError => logError(`pool.stop: ${stopError?.message || stopError}`))
+        setTimeout(() => process.exit(1), 1000).unref()
+        throw error
+    }
+    const address = server.address()
+    const port = address && typeof address === 'object' ? address.port : config.port
     logEvent('serve', {
-        url: `http://${config.host}:${config.port}`,
+        url: `http://${config.host}:${port}`,
         version: VERSION,
+        workers: pool.size,
         bdmsAvailable: signer.available,
         auth: Boolean(config.token),
         // persisted=false 意味着设备号只在内存里、重启就变：启动日志要当场说出去
         identityPersisted: config.identityPersisted,
     })
-    const shutdown = () => server.close(() => process.exit(0))
+    let closing = false
+    const shutdown = () => {
+        // 第二次 Ctrl+C 是逃生口：第一次已经在等在飞请求收尾了，再按就立刻退。
+        if (closing) {
+            process.exit(1)
+            return
+        }
+        closing = true
+        // 先停止接新连接，等在飞/排队请求收完，再收 worker：反过来会把排队中的请求直接掐掉。
+        server.close(() => {
+            pool.stop().finally(() => process.exit(0))
+        })
+        server.closeIdleConnections?.()
+    }
     process.on('SIGINT', shutdown)
     process.on('SIGTERM', shutdown)
 }

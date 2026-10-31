@@ -4,7 +4,7 @@
 // 包括「读自己的时钟」。拆开之后主进程的事件循环一直是空的，它才可能计时、才可能在超出
 // 等待预算时回那个 503。
 //
-// 这一票只建路径，不接线：默认仍走 src/server.mjs 那条老路（切线是 #7）。
+// 默认路径（#7 起）：src/serve.mjs 把 /sign 交给这里，其余端点由过渡处理器承接。
 //
 // 不传 socket 句柄：Node 现行文档写明不支持在 Windows 上发送 IPC socket，Windows 上逐连接
 // 句柄分发的问题多年未修。这里转的是请求（上限沿用 256 KB）与响应（约 1 KB）的字节。
@@ -91,7 +91,7 @@ function prebuildBusy() {
     }
 }
 
-export function createDispatcher({ config, pool, log = logEvent } = {}) {
+export function createDispatcher({ config, pool, log = logEvent, fallback = null } = {}) {
     const waitBudgetMs = parsePositiveInt(config.waitBudgetMs, DEFAULT_WAIT_BUDGET_MS)
     const queueLimit = parsePositiveInt(config.queueLimit, pool.size * QUEUE_LIMIT_PER_WORKER)
     // 只信 config 给的数：一个手抖写成 abc 的 LIBMSSDK_MAX_BODY_BYTES 会让 size > limit
@@ -237,8 +237,13 @@ export function createDispatcher({ config, pool, log = logEvent } = {}) {
         // rejection，而一条匿名请求（`POST // HTTP/1.1`）就够触发。畸形目标按「没这条路由」处理。
         const pathname = requestPathname(request)
         try {
-            // 分发器只做签名这一件事：健康检查与诊断端点是 #9 的活，其余路由保持老的 404 形状
+            // 分发器只做签名这一件事。默认服务给非 /sign 路由注入过渡处理器（健康检查、
+            // 诊断端点），等 #9 收拢；直接建分发器的用例不注入时仍保持老的 404 形状。
             if (request.method !== 'POST' || pathname !== '/sign') {
+                if (fallback) {
+                    await fallback(request, response)
+                    return
+                }
                 const body = JSON.stringify(errorResponse('not found', 'not_found'))
                 response.writeHead(404, {
                     'Content-Type': 'application/json; charset=utf-8',
@@ -273,7 +278,7 @@ export function createDispatcher({ config, pool, log = logEvent } = {}) {
             item.startedAt = startedAt
 
             if (pool.blocker) {
-                writeFailure(item, failureResponse(pool.blocker, { message: '签名模块没加载或配置错' }))
+                writeFailure(item, failureResponse(pool.blocker, { message: '签名模块没加载或配置错（含设备身份缺失）' }))
                 return
             }
             if (pool.readyCount === 0) {
@@ -322,7 +327,8 @@ export function forkWorker(index, env = process.env) {
 /**
  * 组装生产形态的分发器：算出 worker 数、把来由打进日志、建池子、建服务。
  *
- * 这一票还没人调它 —— 默认路径仍是 src/server.mjs，切线是 #7。
+ * 默认服务（src/serve.mjs）通过 `createFallback(pool)` 注入过渡端点处理器；它需要拿到池子，
+ * 好让 /healthz 反映「至少一台 worker 就绪」—— 预热期间回 200 会让编排器的起始宽限期作废。
  *
  * 端口先开、worker 在后台一台一台预热：预热期间客户端要读到的是那个 503（带 Retry-After），
  * 而不是「没人听这个端口」。反过来说，把 listen 等到所有 worker 预热完，最坏情况是
@@ -335,6 +341,7 @@ export function startDispatcher({
     log = logEvent,
     spawn = forkWorker,
     onGiveUp = () => process.exit(1),
+    createFallback = null,
 } = {}) {
     const parallelism = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length
     const { count, reason } = deriveWorkerCount({
@@ -358,7 +365,12 @@ export function startDispatcher({
     // 实际值与来由都要说出来：绑定地址一变进程数就变，日志不写就等于让人猜。
     log('dispatcher', { workers: count, reason, ...limits, bind: config.host })
 
-    const server = createDispatcher({ config: { ...config, ...limits }, pool, log })
+    const server = createDispatcher({
+        config: { ...config, ...limits },
+        pool,
+        log,
+        fallback: createFallback ? createFallback(pool) : null,
+    })
     // start() 只会 resolve（每台 worker 的 settled 没有 reject 路径），但 spawn 本身可能同步抛
     pool.start().catch(error =>
         log('dispatcher-start-failed', {

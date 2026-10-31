@@ -1,6 +1,6 @@
 // worker 池：分发器唯一认识的「外部世界」。
 //
-// 这一票只建这个模块，不接线 —— 老的 serve 路径还在原地（切换是 #7 的事）。
+// #7 起它是默认服务（src/serve.mjs）的 worker 来源。
 //
 // 池子负责的事：拉起 worker、记住谁在忙、谁就绪、谁已经没了；不负责排队和等待预算
 // （那归分发器），也不负责算签名（那归 worker）。
@@ -118,7 +118,25 @@ export function createWorkerPool({
         const timer = setTimeout(() => {
             timers.delete(timer)
             if (stopping || givenUp) return
-            bind(slot)
+            try {
+                bind(slot)
+            } catch (error) {
+                // 注入的 spawn 可能同步抛错；定时器里抛出去就是未捕获异常，会把主进程掀掉。
+                // 和异步 spawn 失败一样记一次失败，继续按退避重试，攒够次数就整体退出。
+                log('worker-respawn-failed', {
+                    id: slot.id,
+                    message: redactMachinePaths(String(error?.message || error)),
+                })
+                slot.dead = true
+                try {
+                    slot.transport?.kill()
+                } catch {
+                    /* 收尾失败不影响下一次退避 */
+                }
+                slot.counted = false
+                countExit(slot, null)
+                scheduleRespawn(slot)
+            }
         }, delayMs)
         // 退避计时器不该把「本来该退出的进程」留在世上
         timer.unref()
@@ -144,7 +162,20 @@ export function createWorkerPool({
             slot.settle = resolve
         })
         slots.push(slot)
-        bind(slot)
+        try {
+            bind(slot)
+        } catch (error) {
+            // spawn 同步抛错：槽位已经进了 slots，但手上没有 transport。标记为死，stop 才会跳过它，
+            // 否则关池子会在一个没有通道的槽位上二次抛错，把调用方的原始错误盖掉。
+            slot.dead = true
+            slot.settle()
+            try {
+                slot.transport?.kill()
+            } catch {
+                /* 收尾失败不该盖住原始 spawn 错误 */
+            }
+            throw error
+        }
         return slot
     }
 
@@ -244,6 +275,9 @@ export function createWorkerPool({
         /** 一台一台拉：前一台把冷启动的事做完（就绪 / 预热失败 / 没了）才动下一台。 */
         async start() {
             for (let index = 0; index < workerCount; index += 1) {
+                // 关池子 / 整体放弃之后不能再补进程：新进程没人给它发 shutdown，会把主进程一起挂住。
+                // stop() 只通知已经 attach 的槽位，所以检查必须放在每轮 attach 之前。
+                if (stopping || givenUp) return
                 await attach(index).settled
             }
         },
@@ -255,8 +289,22 @@ export function createWorkerPool({
                 reclaim(slot)
                 // 死在退避窗口里的槽位手上还是那个已关闭的通道：对它 send 不是返回 false 就完事，
                 // Node 会在 process 上发一个 'error' 事件，把整个主进程掀掉。关池子时跳过。
-                if (slot.dead) continue
-                slot.transport.send({ type: 'shutdown' })
+                // 同步 spawn 失败的槽位没有通道，同样跳过。
+                if (slot.dead || !slot.transport) continue
+                try {
+                    slot.transport.send({ type: 'shutdown' })
+                } catch (error) {
+                    // 通道在判死之前就坏了：关池子不该被它带崩，直接把这台收掉。
+                    log('worker-send-failed', {
+                        id: slot.id,
+                        message: redactMachinePaths(String(error?.message || error)),
+                    })
+                    try {
+                        slot.transport.kill()
+                    } catch {
+                        /* 收尾失败不再往上抛：stop 的调用方正要处理更重要的原始错误 */
+                    }
+                }
             }
         },
     }
