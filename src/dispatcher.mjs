@@ -491,6 +491,9 @@ export function startDispatcher({
         reason,
         ...limits,
         bind: config.host,
+        // 训练不到「宿主机端口是否只对反代开放」，但至少把「是否信任 XFF」说出来：
+        // 它和宿主机端口绑定一起决定限流能不能被绕过。
+        trustProxy: Boolean(config.trustProxy),
         rateLimit: {
             mode: rateInfo.mode,
             ratePerSecond: rateInfo.ratePerSecond,

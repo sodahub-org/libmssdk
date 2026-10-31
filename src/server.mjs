@@ -125,6 +125,8 @@ export function createLegacyHandler({ config, signer, readiness = null, rateLimi
                     bundledBdms: config.bundledBdms,
                     clientDir: config.clientDir,
                     deviceId: maskDeviceId(config.deviceId),
+                    // 信任 XFF 时必须只让反代能连到服务端口；把开关本身暴露出来便于核对部署
+                    trustProxy: Boolean(config.trustProxy),
                     // 设备身份：客户端可以照抄这份，保证「签名器 / URL 参数」用同一份设备号
                     // （上游不要求它等于账号登录设备，见 docs/INVESTIGATION-DEVICE-ENTITLEMENT.md）
                     identity: {

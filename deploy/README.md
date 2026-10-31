@@ -65,7 +65,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 1. `deploy/.env` 里的 `LIBMSSDK_TOKEN` 必须是随机长串——**这个 token 等于签名能力**；
    没配 token 时服务会拒绝启动。`LIBMSSDK_BIND` 决定宿主机端口绑到哪：挂反代时写
    `127.0.0.1`（只有本机反代能连）；不挂反代、直接对外时才用 `0.0.0.0`（务必配防火墙）。
-   run.sh 生成时默认是 `0.0.0.0`，请按部署形态改。
+   Docker 部署里这个值只决定宿主机端口绑定，容器内始终监听 `0.0.0.0`。run.sh 生成时
+   默认是 `0.0.0.0`，请按部署形态改。
 2. 前面挂一个反向代理做 HTTPS（Caddy 最省事）：
 
    ```caddyfile
@@ -99,10 +100,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    }
    ```
 
-   `/stat` 的地址已脱敏，但计数会暴露使用情况。宿主机端口是否对外取决于 `.env` 的
-   `LIBMSSDK_BIND`（run.sh 生成时默认 `0.0.0.0`，只想本机用就改成 `127.0.0.1`）。
-   在宿主机上查看：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
-   `LIBMSSDK_PORT`，默认 8899）。
+   `/stat` 的地址已脱敏，但计数会暴露使用情况。宿主机端口是否对外见步骤 1 的
+   `LIBMSSDK_BIND`。在宿主机上查看：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见
+   `deploy/.env` 的 `LIBMSSDK_PORT`，默认 8899）。
 
 4. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
 

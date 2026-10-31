@@ -172,6 +172,12 @@ test('默认不信任 X-Forwarded-For；显式打开后按 XFF 最右一跳分�
         config: { trustProxy: true },
         env: { LIBMSSDK_RATE_LIMIT_PER_SECOND: '0.001', LIBMSSDK_RATE_LIMIT_BURST: '1' },
     })
+    assert.equal(trusted.notes.find(note => note.event === 'dispatcher').detail.trustProxy, true, '启动日志要写出信任 XFF')
+    const trustedConfig = await fetch(`${trusted.baseUrl}/config`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000),
+    })
+    assert.equal((await trustedConfig.json()).trustProxy, true, '/config 也要能核对这项部署开关')
     assert.equal((await signOnce(trusted, { 'x-forwarded-for': '198.51.100.1' })).status, 200)
     assert.equal((await signOnce(trusted, { 'x-forwarded-for': '198.51.100.2' })).status, 200, '不同 XFF 是两个桶')
     const repeat = await post(trusted, signPayload(), { 'x-forwarded-for': '198.51.100.1' })

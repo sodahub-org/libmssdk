@@ -162,6 +162,7 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
     assert.equal(configResponse.status, 200)
     const configPayload = await configResponse.json()
     assert.equal(configPayload.identity.device_id, prepared.identity.device_id, '过渡端点看到的仍是同一份身份')
+    assert.equal(configPayload.trustProxy, false, '默认不信任 X-Forwarded-For')
 
     // /stat 走默认装配：真 worker 数、队列深度、限流状态都要对得上，且地址字段不存在完整 IP
     const statResponse = await fetch(`${baseUrl}/stat`, { signal: AbortSignal.timeout(5000) })
@@ -189,6 +190,7 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
     const started = notes.find(note => note.event === 'dispatcher')
     assert.equal(started.detail.workers, 1, '启动日志要写明实际值')
     assert.match(started.detail.reason, /LIBMSSDK_WORKERS=1/, '还要写明这个数是谁给的')
+    assert.equal(started.detail.trustProxy, false, '启动日志要写明是否信任 XFF')
 
     const pending = post(baseUrl, signPayload())
     await until(() => pool.busyCount === 1, '真 worker 正在算这一份签名')
