@@ -77,7 +77,8 @@ Meting-API 的远程签名服务保持兼容，
 - POST 计算端点（`/sign`、`/probe`、`/track/stream`）共用同一个限流器；`/stat`、`/healthz`、
   `/config` 不参与限流计数，也不打访问日志。
 - **绑定非回环地址且没有设置 `LIBMSSDK_TOKEN` 时拒绝启动**，并给出原因；绑定回环地址时
-  不配令牌才放行（本机自用）。
+  不配令牌才放行（本机自用）。直接构造 `createDispatcher` / `createLegacyHandler` 的嵌入
+  用法也走同一道检查。
 
 ## GET /stat
 

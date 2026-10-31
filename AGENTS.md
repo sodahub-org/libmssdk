@@ -25,7 +25,7 @@ src/auth.mjs         Bearer Token 比对（计时安全；老路径与分发器�
 src/ratelimit.mjs    按 IP 的 GCRA 限流、IPv4 单地址与 IPv6 /64 分桶、地址脱敏、XFF 开关
 src/route.mjs        路由解析：只从请求行取 pathname，Host 不参与，解析永不抛（两条路径共用）
 src/errors.mjs       失败分类：状态码 / 原因码映射表与等待时长（纯函数；默认路径与过渡端点共用）
-src/dispatch.mjs     分发的纯判据：等待预算 / 队列上限 / worker 数推导 / 重生退避（时间从参数进来）
+src/dispatch.mjs     分发的纯判据：等待预算 / 队列上限 / worker 数推导 / 回环绑定判据 / 重生退避（时间从参数进来）
 src/warmup.mjs       就绪判据自学习：连续同长 + 结构下限，代码里没有绝对长度数字
 src/workerpool.mjs   worker 池（#5 唯一新增的接缝）：忙闲回收、逐台预热、退避重生、放弃
 src/worker.mjs       worker 进程：不监听，只调原生模块算签名；身份只读
