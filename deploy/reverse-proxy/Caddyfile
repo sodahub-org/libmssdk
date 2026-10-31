@@ -7,24 +7,28 @@
 # Windows 裸机（PowerShell，Caddy 是单文件可执行）：
 #   $env:SIGNER_HOSTNAME   = "signer.example.com"
 #   $env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"
+#   caddy validate --config .\Caddyfile     # 先验一遍再上
 #   caddy run --config .\Caddyfile
-#   # 开机自启：caddy service install --config .\Caddyfile
+#   # 常驻：交给 Windows 服务或计划任务，与 docs/DEPLOY-WINDOWS.md 第 3 节里 nssm / schtasks
+#   # 那两种跑 serve 的方式相同（Caddy 没有 service install 这个子命令）
 #
 # Docker（在 deploy/ 目录，与主 compose 叠一层）：
 #   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
 #
-# 证书：域名能解析到这台机器时，Caddy 自己签发、自己续期，你不用碰证书文件。
-# 只在局域网用（没有可解析的域名）就把下面 `tls internal` 的注释打开，改用 Caddy 内置 CA；
-# 客户端要么导入那个根证书，要么显式信任它 —— 本仓库不教证书固定，双方都没法强制升级的
-# 场景里固定证书是明确的反面教材。HSTS 也不开：明文端口要继续完整服务，
-# 一旦下发 HSTS，不升级的客户端会被直接锁死在浏览器里。
+# 改完任何一行都要跑一次 `caddy validate --config Caddyfile`（或 caddy adapt）：Caddyfile 的
+# 指令表随版本变，这里只写能被验出来的那几行，别照着别人的项目抄半句就跑。
+#
+# 证书：域名能解析到这台机器时，Caddy 自己找 ACME 签、自己续，你不用碰证书文件。
+# 本仓库不来自签证书那套教程（没有可解析域名时的自签 CA + 让客户端导入根证书）：客户端要么导入
+# 那个 CA、要么跳过校验（等于放弃 TLS）、要么做证书固定，而最后一条在双方都没法强制升级的场景里
+# 是明确的反面教材。要让多个客户端信你，就用一个它们本来就信的域名。
 
 {$SIGNER_HOSTNAME} {
-	# tls internal	# 局域网形态：改用 Caddy 内置 CA（没有公网域名时才需要）
-
 	# 代理侧的兜底上限。真正的限制在服务自己身上：LIBMSSDK_MAX_BODY_BYTES（默认 256 KB），
 	# 超了会回可读的 400 而不是把连接掀掉，所以这里要留得比它大。
-	request_body max_size 1MB
+	request_body {
+		max_size 1MB
+	}
 
 	# X-Forwarded-For 与 X-Forwarded-Proto 是 Caddy 默认就会加的，不用手写。
 	# 注意：签名服务今天只认 TCP 对端地址，认不认 XFF 是后续按 IP 限流那一版（#8）的开关。

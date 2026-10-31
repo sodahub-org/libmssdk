@@ -102,12 +102,17 @@ Windows 裸机用仓库里那份 [`deploy/reverse-proxy/Caddyfile`](../deploy/re
 cd C:\libmssdk\deploy\reverse-proxy
 $env:SIGNER_HOSTNAME   = "signer.example.com"      # 对外域名
 $env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"          # 上游地址不给默认值
+caddy validate --config .\Caddyfile               # 先验一遍再上
 caddy run --config .\Caddyfile
-# 开机自启：caddy service install --config .\Caddyfile
 ```
 
-域名能解析到这台机器时 Caddy 自己签、自己续。只有局域网、没有可解析域名时用它内置的 CA：
-把配置里 `tls internal` 那行注释打开，客户端导入 Caddy 的根证书即可。
+常驻就把这条 `caddy run` 交给 Windows 服务或计划任务 —— 与上面第 3 节里 nssm / schtasks 跑
+`serve` 的两种办法相同（Caddy 没有 `service install` 这个子命令）。
+
+域名能解析到这台机器时 Caddy 自己签、自己续。**本仓库不自签证书那套教程**（起一个本地 CA、
+让每个客户端导入根证书）：客户端要么导入那个 CA、要么跳过校验（等于放弃 TLS）、要么做证书固定，
+而最后一条在双方都没法强制升级的场景里是明确的反面教材。要让多个客户端信你，就用一个它们本来就
+信任的域名；只有你自己用就走上一小节的 SSH 隧道。
 
 三条必须知道的：
 

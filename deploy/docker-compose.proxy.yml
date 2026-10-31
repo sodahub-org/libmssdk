@@ -3,10 +3,13 @@
 #   SIGNER_HOSTNAME=signer.example.com \
 #     docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
 #
-# 域名要能解析到这台机器，Caddy 才会自己签、自己续；只在局域网用时把
-# reverse-proxy/Caddyfile 里的 `tls internal` 注释打开即可（客户端要导入 Caddy 的根证书）。
+# 域名要能解析到这台机器，Caddy 才会自己签、自己续。本仓库不自签证书那套教程（起个本地 CA 让
+# 客户端导入根证书）：那等于让每个客户端替你做一次安全决定，理由写在 Caddyfile 的注释里。
 #
-# 80 端口是给 ACME 质询用的，不是「重定向入口」：明文 8899 照旧完整服务，不改成跳转。
+# 80 端口：Caddy 的自动 HTTPS 除了 ACME 质询，还会在 80 上放一个到 443 的跳转。这只影响从代理
+# 进来的流量 —— 签名服务自己的明文 8899 照旧完整服务、不重定向（#1 定的：308 对不跟随重定向的
+# 客户端是直接失败，对已经拿到明文的请求又毫无增益）。不想让 80 跳转就在 Caddyfile 顶部全局块里
+# 加 `auto_https disable_redirects`，加完跑一次 caddy validate。
 services:
   caddy:
     image: caddy:2
