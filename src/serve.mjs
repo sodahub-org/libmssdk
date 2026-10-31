@@ -1,15 +1,15 @@
-// 默认服务的装配：/sign 走分发器（主进程监听 + worker 计算），其余端点暂时由老处理器承接。
+// 默认服务的装配：/sign 走分发器（主进程监听 + worker 计算），签名以外的端点由 src/endpoints.mjs
+// 承接 —— 健康检查、旧诊断端点的弃用回执、其余 404 都在那一个处理器里。
 //
-// 为什么还留着老处理器：Docker 健康检查与 verify/wine-multi 都依赖 /healthz 和 /config，
-// 而「收拢诊断端点、拆分健康检查」是 #9 的活。这一票只翻转 /sign 的行为，过渡端点保持可用，
-// 但 /healthz 的 200 必须跟「至少一台 worker 就绪」绑定 —— 预热未完成就回 200，编排器会
-// 立刻把流量放进来，第一个用户拿到的是 503。
+// 落在这一层的两件事：
+//   1. /readyz 的答案 = 「池子里有就绪 worker」且「没在收尾」。预热没完成或已经开始收尾时谎报
+//      200，编排器的起始宽限期当场作废，跟着被放进来流量的第一个用户拿到的是 503。
+//   2. 主进程那份 signer 不进 HTTP 层：签名只经 worker 算，端点处理器不需要它。
 //
-// /probe 与 /track/stream 过渡期仍在主进程里同步签名。它们都会短暂阻塞事件循环，这是
-// 端点收拢（#9）之前已知的例外；#9 把 /probe 收成命令行子命令并删除 /track/stream 之后，
-// HTTP 层就不再有任何主进程同步签名的路径。
+// 收尾的顺序由 index.mjs 保证：先 markClosing()（让 /readyz 改口），再停监听、等在飞与排队的
+// 请求收完，最后收 worker —— 反过来会把排队中的请求直接掐掉。
 
-import { createLegacyHandler } from './server.mjs'
+import { createServiceHandler } from './endpoints.mjs'
 import { startDispatcher } from './dispatcher.mjs'
 
 /**
@@ -24,16 +24,19 @@ export function workerEnvFor(config, env) {
     return { ...env, LIBMSSDK_DEVICE_ID: config.deviceId }
 }
 
-export function startServe({ config, signer, env = process.env, ...options } = {}) {
-    return startDispatcher({
+export function startServe({ config, env = process.env, ...options } = {}) {
+    const state = { closing: false }
+    const started = startDispatcher({
         config,
         ...options,
         env: workerEnvFor(config, env),
         createFallback: pool =>
-            createLegacyHandler({
+            createServiceHandler({
                 config,
-                signer,
-                readiness: () => pool.readyCount > 0,
+                readiness: () => !state.closing && pool.readyCount > 0,
             }),
     })
+    // 交回给信号处理用：SIGTERM 到达的第一件事就是说「我不再接流量了」，
+    // 而不是等 server.close() 之后才改口 —— 那时排队的请求已经在往里挤了。
+    return { ...started, markClosing: () => { state.closing = true } }
 }

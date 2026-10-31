@@ -21,7 +21,6 @@ const mockBdms = path.join(here, 'fixtures', 'mock-bdms.mjs')
 
 const { forkWorker } = await import('../src/dispatcher.mjs')
 const { startServe } = await import('../src/serve.mjs')
-const { BdmsSigner } = await import('../src/bdms.mjs')
 const { maskDeviceId } = await import('../src/config.mjs')
 const { prepareStoredIdentity } = await import('../src/identity.mjs')
 
@@ -79,10 +78,8 @@ async function startReal({ workers, unstableCalls = 0, signDelayMs = 0, stateDir
     }
     if (stateDir) env.LIBMSSDK_STATE_DIR = stateDir
     if (stateDir) delete env.LIBMSSDK_DEVICE_ID
-    const signer = new BdmsSigner({ modulePath: mockBdms, deviceId: deviceId || config.deviceId })
     const entry = startServe({
         config: { ...config, deviceId: deviceId || config.deviceId },
-        signer,
         env,
         log: (event, detail) => notes.push({ event, detail }),
         spawn: (index, childEnv) => {
@@ -148,18 +145,17 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
 
     await until(() => pool.readyCount === 1, 'worker 自学习到就绪')
 
-    // 默认装配的过渡端点也要在：Docker 健康检查与 verify/wine-multi 都还指着它们（#9 再收拢）
-    const health = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(5000) })
+    // 健康检查拆成两个：/livez 恒 200，/readyz 跟 worker 就绪绑定（Docker 与编排器探的是后者）
+    const live = await fetch(`${baseUrl}/livez`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(live.status, 200)
+    const health = await fetch(`${baseUrl}/readyz`, { signal: AbortSignal.timeout(5000) })
     assert.equal(health.status, 200)
     const healthPayload = await health.json()
     assert.equal(healthPayload.ready, true, '至少一台 worker 就绪才回 200')
-    assert.equal(healthPayload.deviceId, maskDeviceId(prepared.identity.device_id))
+    assert.equal(healthPayload.deviceId, maskDeviceId(prepared.identity.device_id), '就绪端点只出脱敏设备号')
 
-    const configResponse = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(5000) })
-    assert.equal(configResponse.status, 200)
-    const configPayload = await configResponse.json()
-    assert.equal(configPayload.identity.device_id, prepared.identity.device_id, '过渡端点看到的仍是同一份身份')
-
+    // 调用方不点名设备号时，回包里的就是这一个进程自己解析出来的那一份 —— 拿它比对两个进程
+    // 不是循环论证（/config 删掉之后，verify/wine-multi 的判据 5 也改用这条证据）
     const anonymous = await post(baseUrl, {
         url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
         method: 'POST',

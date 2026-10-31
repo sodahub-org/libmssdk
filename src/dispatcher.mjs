@@ -4,7 +4,7 @@
 // 包括「读自己的时钟」。拆开之后主进程的事件循环一直是空的，它才可能计时、才可能在超出
 // 等待预算时回那个 503。
 //
-// 默认路径（#7 起）：src/serve.mjs 把 /sign 交给这里，其余端点由过渡处理器承接。
+// 默认路径（#7 起）：src/serve.mjs 把 /sign 交给这里，签名以外的端点交给 src/endpoints.mjs。
 //
 // 不传 socket 句柄：Node 现行文档写明不支持在 Windows 上发送 IPC socket，Windows 上逐连接
 // 句柄分发的问题多年未修。这里转的是请求（上限沿用 256 KB）与响应（约 1 KB）的字节。
@@ -237,8 +237,9 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
         // rejection，而一条匿名请求（`POST // HTTP/1.1`）就够触发。畸形目标按「没这条路由」处理。
         const pathname = requestPathname(request)
         try {
-            // 分发器只做签名这一件事。默认服务给非 /sign 路由注入过渡处理器（健康检查、
-            // 诊断端点），等 #9 收拢；直接建分发器的用例不注入时仍保持老的 404 形状。
+            // 分发器只做签名这一件事：非 /sign 的路由全数交给注入的端点处理器
+            // （src/endpoints.mjs：健康检查、旧诊断端点的弃用回执、其余 404）。
+            // 直接建分发器的用例不注入时，这里仍保持老的 404 形状。
             if (request.method !== 'POST' || pathname !== '/sign') {
                 if (fallback) {
                     await fallback(request, response)
@@ -327,8 +328,8 @@ export function forkWorker(index, env = process.env) {
 /**
  * 组装生产形态的分发器：算出 worker 数、把来由打进日志、建池子、建服务。
  *
- * 默认服务（src/serve.mjs）通过 `createFallback(pool)` 注入过渡端点处理器；它需要拿到池子，
- * 好让 /healthz 反映「至少一台 worker 就绪」—— 预热期间回 200 会让编排器的起始宽限期作废。
+ * 默认服务（src/serve.mjs）通过 `createFallback(pool)` 注入签名以外的端点处理器；它需要拿到池子，
+ * 好让 /readyz 反映「至少一台 worker 就绪」—— 预热期间回 200 会让编排器的起始宽限期作废。
  *
  * 端口先开、worker 在后台一台一台预热：预热期间客户端要读到的是那个 503（带 Retry-After），
  * 而不是「没人听这个端口」。反过来说，把 listen 等到所有 worker 预热完，最坏情况是
