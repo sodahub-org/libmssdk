@@ -256,7 +256,7 @@ test('弃用与到期的日期常量自洽，头与体说的是同一个时刻',
         const value = label === 'deprecated_at' ? DEPRECATED_AT : SUNSET_HTTP_DATE
         assert.equal(new Date(value).toUTCString(), value, `${label} 不是合法的 HTTP-date`)
     }
-    assert.equal(DEPRECATION_HTTP_VALUE, `@${Math.floor(Date.parse(DEPRECATED_AT) / 1000)}`, 'Deprecation 头与弃用日期不是同一时刻')
+    assert.equal(DEPRECATION_HTTP_VALUE, '@1793404800', 'Deprecation 的头编码与弃用日期不是同一时刻')
     assert.ok(Date.parse(SUNSET_HTTP_DATE) >= Date.parse(DEPRECATED_AT), 'Sunset 不能早于 Deprecation（RFC 9745）')
 })
 
