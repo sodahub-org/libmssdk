@@ -303,6 +303,20 @@ test('退避途中关池子：不再对已经没了的通道 send', async () => 
     )
 })
 
+test('spawn 同步抛错：start 失败后 stop 仍能安全收尾，不再二次抛错', async () => {
+    const pool = createWorkerPool({
+        workerCount: 1,
+        spawn: () => {
+            throw new Error('spawn boom')
+        },
+        log: () => {},
+    })
+
+    await pool.start().catch(() => {})
+    await pool.stop()
+    assert.equal(pool.readyCount, 0)
+})
+
 test('关池子时通道已经坏了：send 抛错不能把 stop 带崩', async () => {
     const { pool, workers } = healthy(1)
     await pool.start()

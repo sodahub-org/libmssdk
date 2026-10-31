@@ -47,7 +47,8 @@ async function commandServe() {
     } catch (error) {
         // 端口没起来也要把已经 fork 的 worker 收掉。预热中的 worker 可能正卡在同步采样里，
         // shutdown 消息要等它跑完；给一秒宽限，之后强制退出，别让端口错误把进程挂住。
-        await pool.stop()
+        // 收尾自己的失败只记一笔，不能盖住真正要报的端口错误。
+        await pool.stop().catch(stopError => logError(`pool.stop: ${stopError?.message || stopError}`))
         setTimeout(() => process.exit(1), 1000).unref()
         throw error
     }

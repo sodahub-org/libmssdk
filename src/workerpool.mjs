@@ -144,7 +144,20 @@ export function createWorkerPool({
             slot.settle = resolve
         })
         slots.push(slot)
-        bind(slot)
+        try {
+            bind(slot)
+        } catch (error) {
+            // spawn 同步抛错：槽位已经进了 slots，但手上没有 transport。标记为死，stop 才会跳过它，
+            // 否则关池子会在一个没有通道的槽位上二次抛错，把调用方的原始错误盖掉。
+            slot.dead = true
+            slot.settle()
+            try {
+                slot.transport?.kill()
+            } catch {
+                /* 收尾失败不该盖住原始 spawn 错误 */
+            }
+            throw error
+        }
         return slot
     }
 
@@ -258,7 +271,8 @@ export function createWorkerPool({
                 reclaim(slot)
                 // 死在退避窗口里的槽位手上还是那个已关闭的通道：对它 send 不是返回 false 就完事，
                 // Node 会在 process 上发一个 'error' 事件，把整个主进程掀掉。关池子时跳过。
-                if (slot.dead) continue
+                // 同步 spawn 失败的槽位没有通道，同样跳过。
+                if (slot.dead || !slot.transport) continue
                 try {
                     slot.transport.send({ type: 'shutdown' })
                 } catch (error) {
@@ -267,7 +281,11 @@ export function createWorkerPool({
                         id: slot.id,
                         message: redactMachinePaths(String(error?.message || error)),
                     })
-                    slot.transport.kill()
+                    try {
+                        slot.transport.kill()
+                    } catch {
+                        /* 收尾失败不再往上抛：stop 的调用方正要处理更重要的原始错误 */
+                    }
                 }
             }
         },

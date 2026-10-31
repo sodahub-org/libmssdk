@@ -39,7 +39,7 @@ worker 数按绑定地址推导，环境变量始终优先：
 | 请求格式非法（非法 JSON、缺 `url`、请求体超限） | 400 | `INVALID_REQUEST` | 无 |
 | 鉴权失败 | 401 | `UNAUTHORIZED` | 无 |
 | 单 IP 超限（限流启用后） | 429 | `RATE_LIMITED` | 有 |
-| 槽位满 / 预热中 / 队列满 | 503 | `BUSY` | 有（固定 1 秒） |
+| 没有就绪 worker / 队列已满（立即），或已入队请求超过等待预算 | 503 | `BUSY` | 有（固定 1 秒） |
 | 模块没加载 / 配置错 | 500 | `SIGNER_UNAVAILABLE` | 无 |
 | 签名算错 / worker 中途退出 | 500 | `INTERNAL_ERROR` | 无 |
 
