@@ -96,7 +96,7 @@ ssh -N -L 18899:127.0.0.1:8899 win-box
 export QISHUI_SIGNER_URL=http://127.0.0.1:18899/sign
 ```
 
-确需监听局域网时，务必同时设置 `LIBMSSDK_TOKEN` 并用防火墙限制来源网段。
+确需监听局域网时，必须设置 `LIBMSSDK_TOKEN`（否则 `serve` 拒绝启动），并用防火墙限制来源网段。
 
 服务以 SYSTEM/服务账号运行时，若仓库目录不可写，用 `LIBMSSDK_STATE_DIR`
 指一个可写目录放 `identity.json`。目录不可用时设备号只在内存里、重启就变，
