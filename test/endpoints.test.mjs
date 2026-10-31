@@ -292,4 +292,3 @@ test('默认装配：worker 报告就绪才 200，开始收尾就 503', async ()
     assert.equal(live.status, 200, '轻量端点不看关闭状态：进程还在就是还在')
     await entry.pool.stop()
 })
-
