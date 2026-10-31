@@ -23,6 +23,8 @@ LIBMSSDK_TOKEN=${TOKEN}
 # 0.0.0.0 = 允许外部访问（务必配合防火墙/反向代理）；只想本机用就写 127.0.0.1
 LIBMSSDK_BIND=${LIBMSSDK_BIND:-0.0.0.0}
 LIBMSSDK_PORT=${LIBMSSDK_PORT:-8899}
+# 前面挂同机反向代理时改成 1，并把上面的 LIBMSSDK_BIND 改成 127.0.0.1
+# LIBMSSDK_TRUST_PROXY=0
 # 指向你自己安装的汽水客户端版本目录（内含 resources/）
 LIBMSSDK_CLIENT_DIR=
 EOF

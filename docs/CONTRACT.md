@@ -118,7 +118,8 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
   "bdmsAvailable": true, "deviceId": "746***847", "auth": true, "platform": "win32" }
 
 // /config（需鉴权）——过渡端点，客户端可用它对齐设备身份；端点收拢版本删除
-{ "ok": true, "bdmsModule": "…\\vendor\\soda-music\\bdms.node",
+{ "ok": true, "version": "0.1.0", "trustProxy": false,
+  "bdmsModule": "…\\vendor\\soda-music\\bdms.node",
   "bundledBdms": "…", "clientDir": "",
   "deviceId": "746***847",
   "identity": { "device_id": "<device_id>", "iid": "<install_id>",
