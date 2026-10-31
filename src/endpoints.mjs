@@ -4,7 +4,7 @@
 //   GET /livez    只回答「进程还在不在」：恒 200，不碰任何依赖，不做任何计算
 //   GET /readyz   至少一台 worker 就绪、且不在关闭过程中才 200，否则 503
 //   GET /healthz  /readyz 的别名 —— 已有的编排配置不改也还能用
-//   /probe 与 /track/stream 只回弃用回执，不再打上游（下一版本改成 410）
+//   /probe 与 /track/stream 只回弃用回执，不再签名也不打上游（下一版本改成 410）
 //
 // 为什么要拆健康检查：探针问「你还活着吗」和「你能干活吗」是两件事。合成一个端点时，预热期
 // 里的探活要么误报「活着」（其实还没法服务），要么误报「死了」（把还在起的服务判死）。
@@ -18,7 +18,15 @@ import { maskDeviceId } from './config.mjs'
 import { errorResponse } from './contract.mjs'
 import { requestPathname } from './route.mjs'
 
-/** 到期时刻（RFC 8594 的 `Sunset`）：下一版本把这两个端点改成 410 的最晚时间。 */
+/**
+ * 弃用起始时刻（RFC 9745：`Deprecation` 是 Item Structured Header，值必须是 Date，写成 `@<秒>`）
+ * 与到期时刻（RFC 8594 的 `Sunset`，HTTP-date）。
+ *
+ * RFC 9745 要求 `Sunset` 不早于 `Deprecation`，所以下面两个常量是一对的：如果「下一版本改 410」
+ * 实际晚于 SUNSET_HTTP_DATE，发版时必须把这一对一起往后推 —— 头里的日期一旦过期，中间件会
+ * 把它当成「早该删了」，比没有这个头更糟。
+ */
+export const DEPRECATION_HTTP_VALUE = '@1793491200' // Sun, 01 Nov 2026 00:00:00 GMT
 export const SUNSET_HTTP_DATE = 'Fri, 30 Apr 2027 23:59:59 GMT'
 
 /**
@@ -46,10 +54,12 @@ const DEPRECATED_ENDPOINTS = {
  * 没注入时按「没就绪」处理：宁可一直 503，也绝不在没人确认就绪时谎报 200 —— 编排器的起始
  * 宽限期只要看到过一次 200 就当场作废，后面预热未完的 503 再也不会保护你了。
  */
-export function createServiceHandler({ config, readiness = () => false }) {
+export function createEndpointsHandler({ config, readiness = () => false }) {
     return (request, response) => {
         // 只从请求行取 pathname，Host 不参与，解析永不抛（畸形目标在这里就是「没这条路由」）
-        const pathname = requestPathname(request)
+        // 尾斜杠认成同一条路由：代理与手敲的 curl 常带上它，把它读成「没有这条路由」正是静默 404
+        const raw = requestPathname(request)
+        const pathname = raw === null ? null : raw.replace(/(?<=.)\/+$/, '')
         const send = (status, payload, headers = {}) => {
             const text = JSON.stringify(payload)
             response.writeHead(status, {
@@ -78,8 +88,9 @@ export function createServiceHandler({ config, readiness = () => false }) {
             })
             return
         }
-        // 认不认得这条路由与有没有凭据无关：回执里没有服务侧数据，而它的用途正是让还在敲这扇
-        // 门的人看懂改用什么 —— 今天通用 404 也不看凭据，这条不是新开的免鉴权口子。
+        // 弃用回执放在鉴权之前，是因为它本来就属于「这条路由没有了」这一类回答：回包全是常量，
+        // 没有一条服务侧数据，而今天通用的 404 也不看凭据。它不是免鉴权的能力入口 ——
+        // 能力（签名、打上游）都已经不在这条路上了。AGENTS.md 的鉴权约定把这句写死在这儿。
         if (pathname !== null && Object.hasOwn(DEPRECATED_ENDPOINTS, pathname)) {
             const notice = DEPRECATED_ENDPOINTS[pathname]
             send(
@@ -92,7 +103,7 @@ export function createServiceHandler({ config, readiness = () => false }) {
                     replacement: notice.replacement,
                     sunset: SUNSET_HTTP_DATE,
                 },
-                { Deprecation: 'true', Sunset: SUNSET_HTTP_DATE },
+                { Deprecation: DEPRECATION_HTTP_VALUE, Sunset: SUNSET_HTTP_DATE },
             )
             return
         }

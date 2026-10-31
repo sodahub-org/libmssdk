@@ -30,7 +30,7 @@ src/workerpool.mjs   worker 池（#5 唯一新增的接缝）：忙闲回收、�
 src/worker.mjs       worker 进程：不监听，只调原生模块算签名；身份只读
 src/dispatcher.mjs   分发器：主进程独占监听、排队与预拼好的 503（#7 起是默认 /sign 路径）
 src/serve.mjs        默认服务装配：/sign 走分发器，其余端点交给 endpoints，/readyz 跟就绪与收尾状态绑定
-src/probe.mjs        track_v2 真机自检与整曲 / 试听判定；全仓库唯一一处出网代码（fetchTrackV2）
+src/probe.mjs        track_v2 真机自检与整曲 / 试听判定；src 下唯一一处出网代码（fetchTrackV2）
 src/endpoints.mjs    签名之外的 HTTP 面：/livez、/readyz（/healthz 是别名）、旧诊断端点的弃用回执、404
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
 test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例）
@@ -61,10 +61,13 @@ deploy/README.md     Docker 部署
    Cookie、`X-Helios`、`X-Medusa` 一律不落盘。
 8. **零运行时依赖**：服务只用 Node 内置模块；测试也使用 mock。
 9. **鉴权默认可用**：设置 `LIBMSSDK_TOKEN` 后所有 POST 路由都需要 Bearer Token。
+   唯一的例外是「这条路由没有了」那一类回答（404 与弃用回执）：回包全是常量、不含任何服务侧数据，
+   也不做签名、不出网 —— 免鉴权的只能是「没有了」这句话，能力本身一律要 Token。
 10. **改签名或部署逻辑必须测试**：至少 `npm test`；有原生模块时再跑
     `node src/index.mjs selftest` 和真机 `probe` 命令。
-11. **出网只此一处，HTTP 层不留入口**：向官方接口发请求的代码只有 `src/probe.mjs`
-    （`fetchTrackV2` / `probeTrack`），入口只有命令行 `probe` 与手动脚本。
+11. **出网只此一处，HTTP 层不留入口**：`src/` 里向官方接口发请求的代码只有 `src/probe.mjs`
+    （`fetchTrackV2` / `probeTrack`），入口只有命令行 `probe`；`tools/` 与 `verify/` 下的手动脚本
+    要打上游也经这个模块。
     诊断能力不许再变成 HTTP 端点——那等于任何人借这台机器去打上游，被封的是这台服务器，
     而 `/sign` 的正常用户跟着一起失败。`test/endpoints.test.mjs` 有结构守卫盯着这件事。
 

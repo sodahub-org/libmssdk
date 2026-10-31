@@ -164,8 +164,14 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…"
 
 | 版本 | `/probe`、`/track/stream` 的回包 |
 | --- | --- |
-| 本版本 | **404** + `Deprecation: true` + `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`，回包里的 `replacement` 写明替代命令 |
+| 本版本 | **404** + `Deprecation: @1793491200`（RFC 9745：值是 Structured Field 的 Date，写成 `@<秒>`）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`，`replacement` 写明替代命令 |
 | 下一版本 | **410**，其余不变 |
+
+`Sunset` 不早于 `Deprecation`，两个日期是一对：如果「下一版本」实际晚于 `Sunset`，发版时要
+`src/endpoints.mjs` 里这一对常量一起往后推 —— 头里写着「早已到期」比不发这个头更糟。
+
+回执对没带凭据的调用方也回（与通用 404 同一条路径）：回包全是常量，没有任何服务侧数据，
+也不签名、不出网。鉴权守的是能力，能力已经不在这条路上了。
 
 两条路由都认得，但都不再签名、也不再打上游 —— 它们只回答「这里没有了，改用这个」。
 

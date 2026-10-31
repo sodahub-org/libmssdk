@@ -15,7 +15,7 @@ import { after, test } from 'node:test'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-const { createServiceHandler, SUNSET_HTTP_DATE } = await import('../src/endpoints.mjs')
+const { createEndpointsHandler, DEPRECATION_HTTP_VALUE, SUNSET_HTTP_DATE } = await import('../src/endpoints.mjs')
 const { createDispatcher } = await import('../src/dispatcher.mjs')
 const { startServe } = await import('../src/serve.mjs')
 const { fakePool, signedBody } = await import('./helpers/fake-pool.mjs')
@@ -38,7 +38,7 @@ after(async () => {
 
 /** 只挂端点处理器：默认服务里它是分发器的 fallback，这里单独建服务就是为了真 HTTP 观察。 */
 async function serveHandler(options) {
-    const server = http.createServer(createServiceHandler({ config, ...options }))
+    const server = http.createServer(createEndpointsHandler({ config, ...options }))
     servers.push(server)
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     return { server, baseUrl: `http://127.0.0.1:${server.address().port}` }
@@ -87,43 +87,36 @@ test('GET /livez 恒 200，而且一次都不问就绪判据', async () => {
     assert.equal(response.headers.get('retry-after'), null, '探针的回包不参与 /sign 的错误契约')
 })
 
-test('GET /readyz：有就绪 worker 才 200，零 worker 或正在关闭时 503', async () => {
+test('GET /readyz：有就绪 worker 才 200，零 worker 或正在关闭时 503；/healthz 是它的别名', async () => {
     let ready = false
     let closing = false
     const { baseUrl } = await serveHandler({ readiness: () => ready && !closing })
 
     const warming = await fetch(`${baseUrl}/readyz`, { signal: AbortSignal.timeout(5000) })
     assert.equal(warming.status, 503, '预热未完成时不能让编排器以为已就绪')
-    assert.equal((await warming.json()).ready, false)
+    const warmingPayload = await warming.json()
+    assert.equal(warmingPayload.ready, false)
+    // 别名必须是同一份答案：老编排配置不改也还能用
+    const legacyWarming = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(legacyWarming.status, 503, '/healthz 未就绪时与 /readyz 同口')
+    assert.deepEqual(await legacyWarming.json(), warmingPayload)
 
     ready = true
     const serving = await fetch(`${baseUrl}/readyz`, { signal: AbortSignal.timeout(5000) })
     assert.equal(serving.status, 200)
-    assert.equal((await serving.json()).ready, true)
+    const servingPayload = await serving.json()
+    assert.equal(servingPayload.ready, true)
+    const legacy = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(legacy.status, 200)
+    assert.deepEqual(await legacy.json(), servingPayload)
 
     closing = true
     const shutting = await fetch(`${baseUrl}/readyz`, { signal: AbortSignal.timeout(5000) })
     assert.equal(shutting.status, 503, '已经在收尾了就不该再被当成能服务')
     assert.equal((await shutting.json()).ready, false)
-})
 
-test('GET /healthz 保留为 /readyz 的别名：两种状态都一样', async () => {
-    let ready = false
-    const { baseUrl } = await serveHandler({ readiness: () => ready })
-
-    for (const path of ['/healthz', '/readyz']) {
-        const warming = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(5000) })
-        assert.equal(warming.status, 503, `${path} 未就绪`)
-        assert.equal((await warming.json()).ready, false)
-    }
-
-    ready = true
-    const [legacy, canonical] = await Promise.all([
-        fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
-        fetch(`${baseUrl}/readyz`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
-    ])
-    assert.equal(legacy.ready, true, '老编排配置不改也还能用')
-    assert.deepEqual(legacy, canonical, '别名与规范端点回的是同一份内容')
+    // 尾斜杠算同一条路由：代理与手敲的 curl 常带上它
+    assert.equal((await fetch(`${baseUrl}/readyz/`, { signal: AbortSignal.timeout(5000) })).status, 503)
 })
 
 test('GET /readyz 不泄露凭据：设备号只出脱敏值，令牌一个字节都不出现', async () => {
@@ -144,7 +137,7 @@ test('忙到当场拒 /sign 的时候，/readyz 仍说「能服务」', async ()
         config: { ...config, waitBudgetMs: 5000, queueLimit: 1 },
         pool,
         log: () => {},
-        fallback: createServiceHandler({ config, readiness: () => pool.readyCount > 0 }),
+        fallback: createEndpointsHandler({ config, readiness: () => pool.readyCount > 0 }),
     })
     servers.push(server)
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -194,7 +187,7 @@ test('旧诊断端点只回弃用回执：指向命令行，一次上游都不�
                 signal: AbortSignal.timeout(5000),
             })
             assert.equal(response.status, 404, `${path}：本版本还没到 410`)
-            assert.equal(response.headers.get('deprecation'), 'true', `${path}：要带弃用信号`)
+            assert.equal(response.headers.get('deprecation'), DEPRECATION_HTTP_VALUE, `${path}：要带弃用信号`)
             assert.equal(response.headers.get('sunset'), SUNSET_HTTP_DATE, `${path}：要带到场时间`)
             const payload = await response.json()
             assert.equal(payload.ok, false)
@@ -203,11 +196,16 @@ test('旧诊断端点只回弃用回执：指向命令行，一次上游都不�
             assert.equal(payload.error.includes('sessionid_ss'), false, '调用方发来的 Cookie 不回显')
             assert.equal(response.headers.get('retry-after'), null, '改用命令行没有「再等一秒」这一说')
         }
-        // 认得这条路就行，不看方法：拿 GET 敲旧端点的人同样要看得懂发生了什么
-        const viaGet = await originalFetch(`${baseUrl}/probe`, { signal: AbortSignal.timeout(5000) })
-        assert.equal(viaGet.status, 404)
-        assert.equal(viaGet.headers.get('deprecation'), 'true')
-        assert.equal(viaGet.headers.get('sunset'), SUNSET_HTTP_DATE)
+        // 上面这些请求一个 Authorization 都没带，而 config.token 是设着的：回执属于
+        // 「这条路由没有了」这一类回答（通用 404 今天也不看凭据），不是免鉴权的能力入口。
+        // 能力（签名、打上游）都已经不在这条路上了 —— AGENTS.md 的鉴权约定写明了这个边界。
+        // 认得这条路就行，不看方法；尾斜杠也算同一条：拿 GET 或带斜杠敲旧端点的人要看懂发生了什么
+        for (const probe of ['/probe', '/probe/', '/track/stream/']) {
+            const receipt = await originalFetch(`${baseUrl}${probe}`, { signal: AbortSignal.timeout(5000) })
+            assert.equal(receipt.status, 404, `${probe}：不给凭据也回得懂`)
+            assert.equal(receipt.headers.get('deprecation'), DEPRECATION_HTTP_VALUE, `${probe}：带弃用信号`)
+            assert.equal(receipt.headers.get('sunset'), SUNSET_HTTP_DATE, `${probe}：带到场时间`)
+        }
     } finally {
         globalThis.fetch = originalFetch
     }
@@ -224,9 +222,15 @@ test('GET /config 已删除：普通 404，既不签名也不带弃用头', asyn
     }
 })
 
-test('Sunset 头是合法的 HTTP-date', () => {
-    assert.match(SUNSET_HTTP_DATE, /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/)
-    assert.equal(Number.isNaN(Date.parse(SUNSET_HTTP_DATE)), false, '日期写错了编排器会整个忽略这个头')
+// 两个头是配对的常量，写坏了中间件会整条忽略：日期必须能被重新格式化回原样（星期、月份、
+// 补零都算），而且 RFC 9745 要求 Sunset 不早于 Deprecation。
+test('弃用与到期两个头的日期自洽且格式合法', () => {
+    assert.equal(new Date(SUNSET_HTTP_DATE).toUTCString(), SUNSET_HTTP_DATE, 'Sunset 不是合法的 HTTP-date')
+    assert.match(DEPRECATION_HTTP_VALUE, /^@\d+$/, 'Deprecation 必须是 @<秒> 的 Structured Field Date')
+    assert.ok(
+        Date.parse(SUNSET_HTTP_DATE) >= Number(DEPRECATION_HTTP_VALUE.slice(1)) * 1000,
+        'Sunset 不能早于 Deprecation（RFC 9745）',
+    )
 })
 
 // 畸形请求目标在修复前是 handler 里的 unhandled rejection（Node 15+ 直接退进程），
@@ -250,16 +254,25 @@ test('畸形请求目标与畸形 Host 不会退掉进程', async () => {
 
 // 这条是结构守卫，不是行为断言：#1 要的是「上游调用收敛到一个内部模块，HTTP 层不留任何入口
 // —— 防止日后又有人给它加一个路由」。行为用例只能证明「现在这几条路由不发请求」，
-// 挡不住下一个人新加一条。
-test('出网只此一处：HTTP 层与命令行都不自己向上游发请求', () => {
-    const source = name => fs.readFileSync(path.join(here, '..', 'src', name), 'utf8')
-    // fetch() 只许出现在 src/probe.mjs：命令行经 probeTrack，手动脚本也走同一条
-    for (const name of ['endpoints.mjs', 'dispatcher.mjs', 'serve.mjs', 'auth.mjs', 'route.mjs', 'worker.mjs', 'index.mjs']) {
-        assert.equal(/\bfetch\(/.test(source(name)), false, `${name} 里不该出现 fetch()：上游调用只许在 src/probe.mjs`)
-    }
-    // HTTP 层连「引用上游模块」都不该有：留了 import，下一个人就知道怎么加路由
-    for (const name of ['endpoints.mjs', 'dispatcher.mjs', 'serve.mjs', 'worker.mjs', 'contract.mjs', 'errors.mjs']) {
-        assert.equal(/probe\.mjs/.test(source(name)), false, `${name} 不该引用 src/probe.mjs`)
+// 挡不住下一个人新加一条。文件表用目录扫出来，新增的 src/*.mjs 自动在守卫范围内。
+test('出网只此一处：src 里除 probe.mjs 外没人向上游发请求', () => {
+    const sources = fs
+        .readdirSync(path.join(here, '..', 'src'))
+        .filter(name => name.endsWith('.mjs'))
+        .map(name => [name, fs.readFileSync(path.join(here, '..', 'src', name), 'utf8')])
+    assert.ok(sources.length > 10, `扫到的 src 模块数不对（${sources.length}），守卫可能已经失效`)
+    for (const [name, source] of sources) {
+        if (name === 'probe.mjs') continue
+        // fetch / http.request / https.request：出网的三种写法都堵掉
+        assert.equal(
+            /\bfetch\(|\bhttps?\.(?:request|get)\(/.test(source),
+            false,
+            `src/${name} 不该向上游发请求：出网只许在 src/probe.mjs`,
+        )
+        // index.mjs 是命令行入口，它就是那个唯一合法的引用方；其余模块连引用都不该有 ——
+        // 留了 import，下一个人就知道怎么往 HTTP 层加路由
+        if (name === 'index.mjs') continue
+        assert.equal(/probe\.mjs/.test(source), false, `src/${name} 不该引用 src/probe.mjs`)
     }
 })
 

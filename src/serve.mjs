@@ -9,7 +9,7 @@
 // 收尾的顺序由 index.mjs 保证：先 markClosing()（让 /readyz 改口），再停监听、等在飞与排队的
 // 请求收完，最后收 worker —— 反过来会把排队中的请求直接掐掉。
 
-import { createServiceHandler } from './endpoints.mjs'
+import { createEndpointsHandler } from './endpoints.mjs'
 import { startDispatcher } from './dispatcher.mjs'
 
 /**
@@ -31,7 +31,7 @@ export function startServe({ config, env = process.env, ...options } = {}) {
         ...options,
         env: workerEnvFor(config, env),
         createFallback: pool =>
-            createServiceHandler({
+            createEndpointsHandler({
                 config,
                 readiness: () => !state.closing && pool.readyCount > 0,
             }),

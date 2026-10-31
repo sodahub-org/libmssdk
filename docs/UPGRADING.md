@@ -68,6 +68,13 @@ worker 数按绑定地址推导，环境变量始终优先：
 **队列饱满不进就绪判定。** 过载时把自己从上游摘掉，剩下的实例只会更忙，这是标准的死亡螺旋。
 过载的信号走普通请求路径的 503 `BUSY`。
 
+**「不在收尾过程中」这一条只在能收到信号的形态生效。** `SIGTERM` / `SIGINT` 到达的第一件事就是让
+`/readyz` 改口（`src/index.mjs` 的 shutdown），之后才停监听、等在飞与排队的请求收完、最后收 worker。
+容器形态要留意：`deploy/entrypoint.sh` 是 `exec wine … node.exe`，而 Wine 不把 POSIX 信号投给那个
+Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」而不是优雅关停 —— 编排器看到的表现从
+连接被拒开始，而不是从 503 开始。裸机（nssm / 计划任务 / 前台 Ctrl+C）这条是生效的。要闭合它得给
+容器换一个能转信号的入口，那是部署侧另一件事，不在本票范围。
+
 ## 5. 诊断端点收拢（#9）
 
 三个端点从 HTTP 上拿掉了。原因不是一个字节的浪费，而是「任何人都能借这台机器去打上游」：
@@ -77,7 +84,7 @@ worker 数按绑定地址推导，环境变量始终优先：
 
 | 端点 | 现在 | 替代 |
 | --- | --- | --- |
-| `POST /probe` | 只回 404 + `Deprecation` + `Sunset` 的回执，指向命令行 | `node src/index.mjs probe --track <track_id>`（输出字段与之前一致，多一个脱敏 `deviceId`） |
+| `POST /probe` | 只回 404 + `Deprecation`（RFC 9745 的 `@<秒>`）+ `Sunset` 的回执，`code: "endpoint_removed"`，指向命令行 | `node src/index.mjs probe --track <track_id>`（输出字段与之前一致，多一个脱敏 `deviceId`） |
 | `POST /track/stream` | 同上 | 客户端自己判断：用 `/sign` 取到签名头后请求上游，比较 `video_duration` 与 `track.duration` |
 | `GET /config` | 直接删（没有弃用期） | 服务自己的 `device_id`：`/sign` 时不点名设备号，回包里就是它；整套身份看 `data/identity.json` 或 `node src/index.mjs config` |
 
