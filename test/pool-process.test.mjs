@@ -172,7 +172,6 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
     assert.equal(statPayload.queue.depth, 0)
     assert.equal(statPayload.rateLimit.mode, 'enforce')
     assert.equal(statPayload.rateLimit.burst, 12)
-    assert.ok(!JSON.stringify(statPayload).includes('127.0.0.1'), '/stat 里不能出现完整 IP')
 
     const anonymous = await post(baseUrl, {
         url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',

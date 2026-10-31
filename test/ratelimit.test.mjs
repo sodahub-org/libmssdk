@@ -17,6 +17,7 @@ const {
     rateLimitSettingsFromEnv,
 } = await import('../src/ratelimit.mjs')
 const { retryAfterFromInstant } = await import('../src/errors.mjs')
+const { loadConfig } = await import('../src/config.mjs')
 
 const request = (remoteAddress, forwarded) => ({
     socket: { remoteAddress },
@@ -66,8 +67,10 @@ test('默认参数宽松可用；非法环境变量退回默认而不是把限�
 
 test('IPv4 按单地址、IPv6 按 /64 聚合；IPv4-mapped 折回 IPv4', () => {
     assert.equal(normalizeAddress('::ffff:203.0.113.9'), '203.0.113.9')
+    assert.equal(normalizeAddress('::ffff:cb00:7109'), '203.0.113.9', 'mapped 的十六进制写法也要折回')
     assert.equal(addressKey('203.0.113.9'), 'v4:203.0.113.9')
     assert.equal(addressKey('::ffff:203.0.113.9'), 'v4:203.0.113.9')
+    assert.equal(addressKey('::ffff:cb00:7109'), 'v4:203.0.113.9')
     assert.notEqual(addressKey('203.0.113.10'), addressKey('203.0.113.9'), 'IPv4 不聚合')
 
     assert.equal(addressKey('2001:DB8:1:2:3:4:5:6'), 'v6:2001:db8:1:2::/64')
@@ -105,8 +108,35 @@ test('X-Forwarded-For 只在显式信任时生效；生效时取最右边一跳'
         'v4:198.51.100.7',
         'XFF 全是垃圾时退回可验证的 TCP 对端',
     )
+    assert.equal(
+        clientKey(request('::ffff:cb00:7109'), { trustProxy: false }),
+        'v4:203.0.113.9',
+        '双栈监听下的 mapped 对端也要折回 IPv4',
+    )
     assert.equal(forwardedAddress(undefined), '')
     assert.equal(clientKey({ headers: {} }, { trustProxy: true }), 'unknown')
+})
+
+test('LIBMSSDK_TRUST_PROXY 是显式开关，默认关闭', () => {
+    const savedTrust = process.env.LIBMSSDK_TRUST_PROXY
+    const savedDevice = process.env.LIBMSSDK_DEVICE_ID
+    // 钉死设备号，避免这个用例去碰 state 目录
+    process.env.LIBMSSDK_DEVICE_ID = '7000000000000001'
+    try {
+        delete process.env.LIBMSSDK_TRUST_PROXY
+        assert.equal(loadConfig().trustProxy, false, '默认只认 TCP 对端地址')
+        for (const value of ['1', 'true', 'yes', 'on']) {
+            process.env.LIBMSSDK_TRUST_PROXY = value
+            assert.equal(loadConfig().trustProxy, true, `LIBMSSDK_TRUST_PROXY=${value}`)
+        }
+        process.env.LIBMSSDK_TRUST_PROXY = '0'
+        assert.equal(loadConfig().trustProxy, false)
+    } finally {
+        if (savedTrust === undefined) delete process.env.LIBMSSDK_TRUST_PROXY
+        else process.env.LIBMSSDK_TRUST_PROXY = savedTrust
+        if (savedDevice === undefined) delete process.env.LIBMSSDK_DEVICE_ID
+        else process.env.LIBMSSDK_DEVICE_ID = savedDevice
+    }
 })
 
 test('GCRA：突发边界、补充、精确的下次可请求时刻', () => {

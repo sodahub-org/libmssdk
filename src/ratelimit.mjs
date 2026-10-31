@@ -59,17 +59,25 @@ function stripBracketsAndZone(raw) {
 }
 
 /**
- * 归一化成一个可比较的地址：IPv4 原样，IPv4-mapped IPv6（`::ffff:1.2.3.4`）折回 IPv4，
- * 其余 IPv6 转小写。认不出来返回 ''，由调用方决定退回对端地址还是归进 unknown 桶。
+ * 归一化成一个可比较的地址：IPv4 原样，IPv4-mapped IPv6 折回 IPv4，其余 IPv6 转小写。
+ *
+ * mapped 有两种写法：`::ffff:1.2.3.4` 和 `::ffff:102:304`。只认前者的话，经代理转发的
+ * IPv4 客户端会全部落进 `::/64` 一个桶 —— 正是「换一个地址就烧一个桶」的反面。
+ * 认不出来返回 ''，由调用方决定退回对端地址还是归进 unknown 桶。
  */
 export function normalizeAddress(raw) {
     const value = stripBracketsAndZone(raw)
     if (!value) return ''
     if (net.isIPv4(value)) return value
     if (!net.isIPv6(value)) return ''
-    const mapped = value.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i)
-    if (mapped && net.isIPv4(mapped[1])) return mapped[1]
-    return value.toLowerCase()
+    const lower = value.toLowerCase()
+    const groups = ipv6Groups(lower)
+    if (groups && groups.slice(0, 5).every(group => group === 0) && groups[5] === 0xffff) {
+        const high = groups[6]
+        const low = groups[7]
+        return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
+    }
+    return lower
 }
 
 /** 展开成 8 个 16 位分组；`::` 靠补零补齐。net.isIPv6 已经验过格式，这里只做拆分。 */

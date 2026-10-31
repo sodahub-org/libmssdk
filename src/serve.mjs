@@ -12,7 +12,6 @@
 // 端点收拢（#9）之前已知的例外；#9 把 /probe 收成命令行子命令并删除 /track/stream 之后，
 // HTTP 层就不再有任何主进程同步签名的路径。
 
-import { assertServeAuth } from './auth.mjs'
 import { maskAddressKey } from './ratelimit.mjs'
 import { createLegacyHandler } from './server.mjs'
 import { startDispatcher } from './dispatcher.mjs'
@@ -56,8 +55,7 @@ export function statResponse({ config, pool, limiter, diagnostics }) {
 }
 
 export function startServe({ config, signer, env = process.env, ...options } = {}) {
-    // 先判「没令牌能不能开门」，再 fork：别拉起一堆 worker 之后才发现服务不该启动。
-    assertServeAuth(config)
+    // 令牌检查在 startDispatcher 的最前面（fork 之前）：这里只做默认服务的装配。
     return startDispatcher({
         config,
         ...options,

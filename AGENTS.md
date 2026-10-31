@@ -30,9 +30,9 @@ src/warmup.mjs       就绪判据自学习：连续同长 + 结构下限，代�
 src/workerpool.mjs   worker 池（#5 唯一新增的接缝）：忙闲回收、逐台预热、退避重生、放弃
 src/worker.mjs       worker 进程：不监听，只调原生模块算签名；身份只读
 src/dispatcher.mjs   分发器：主进程独占监听、排队与预拼好的 503（#7 起是默认 /sign 路径）
-src/serve.mjs        默认服务装配：/sign 走分发器，过渡端点由老处理器承接，/healthz 跟 worker 就绪绑定
+src/serve.mjs        默认服务装配：/sign 走分发器，过渡端点由老处理器承接，/stat 与限流状态在此装配，/healthz 跟 worker 就绪绑定
 src/probe.mjs        track_v2 真机自检和整曲 / 试听判定
-src/server.mjs       过渡端点（/healthz、/config、/probe、/track/stream）与旧 createServer（#9 收拢）
+src/server.mjs       过渡端点（/healthz、/stat、/config、/probe、/track/stream）与旧 createServer（#9 收拢）
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
 test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例）
 tools/               手动脚本（打真机，不进 npm test，不随包发布）

@@ -16,7 +16,7 @@ import http from 'node:http'
 import { maskDeviceId } from './config.mjs'
 import { isAuthorized } from './auth.mjs'
 import { errorResponse, normalizeSignRequest, signResponse, ValidationError } from './contract.mjs'
-import { ERROR_KINDS, failureResponse } from './errors.mjs'
+import { ERROR_KINDS, failureResponse, rateLimitedResponse } from './errors.mjs'
 import { buildTrackV2Request, summarizeTrackV2Response } from './probe.mjs'
 import { logError, logEvent } from './log.mjs'
 import { clientKey, maskAddressKey } from './ratelimit.mjs'
@@ -148,11 +148,7 @@ export function createLegacyHandler({ config, signer, readiness = null, rateLimi
                 const key = clientKey(request, { trustProxy: config.trustProxy })
                 const decision = rateLimiter.check(key, now)
                 if (decision.wouldDeny) {
-                    const failure = failureResponse(ERROR_KINDS.RATE_LIMITED, {
-                        message: '请求过于频繁：这个地址的额度已用完',
-                        retryAtMs: decision.retryAtMs,
-                        nowMs: now,
-                    })
+                    const failure = rateLimitedResponse({ retryAtMs: decision.retryAtMs, nowMs: now })
                     logEvent('rate-limited', {
                         path: pathname,
                         method: request.method,

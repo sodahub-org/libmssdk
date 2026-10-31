@@ -21,11 +21,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isAuthorized } from './auth.mjs'
+import { isAuthorized, assertServeAuth } from './auth.mjs'
 import { maskDeviceId } from './config.mjs'
 import { errorResponse, normalizeSignRequest, ValidationError } from './contract.mjs'
 import { GIVE_UP_WINDOW_MS, Queue, deriveWorkerCount, parsePositiveInt, shouldReject } from './dispatch.mjs'
-import { ERROR_KINDS, failureResponse, retryAfterFromInstant } from './errors.mjs'
+import { ERROR_KINDS, failureResponse, rateLimitedResponse, retryAfterFromInstant } from './errors.mjs'
 import { logEvent, redactMachinePaths } from './log.mjs'
 import { createRateLimiter, clientKey, maskAddressKey, normalizeMode, rateLimitSettingsFromEnv } from './ratelimit.mjs'
 import { requestPathname } from './route.mjs'
@@ -237,16 +237,16 @@ export function createDispatcher({
         if (!decision.wouldDeny) return true
 
         const ip = maskAddressKey(key)
-        const retryAfterSeconds = retryAfterFromInstant(decision.retryAtMs, now)
         if (decision.allowed) {
-            log('rate-limited', { ...item.shape, ip, mode: decision.mode, retryAfterSeconds })
+            log('rate-limited', {
+                ...item.shape,
+                ip,
+                mode: decision.mode,
+                retryAfterSeconds: retryAfterFromInstant(decision.retryAtMs, now),
+            })
             return true
         }
-        const failure = failureResponse(ERROR_KINDS.RATE_LIMITED, {
-            message: '请求过于频繁：这个地址的额度已用完',
-            retryAtMs: decision.retryAtMs,
-            nowMs: now,
-        })
+        const failure = rateLimitedResponse({ retryAtMs: decision.retryAtMs, nowMs: now })
         // 请求体还没读：先把剩余字节排掉再关连接，客户端才读得到这个 429 而不是连接重置。
         request.resume()
         writeFailure(item, failure, {
@@ -445,6 +445,9 @@ export function startDispatcher({
     onGiveUp = () => process.exit(1),
     createFallback = null,
 } = {}) {
+    // 非回环 + 没令牌 = 服务不该开门。放在这里而不是只放在 serve 装配层：任何直接调用
+    // startDispatcher 的入口都受同一条约束，而且检查发生在 fork 任何 worker 之前。
+    assertServeAuth(config)
     const parallelism = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length
     const { count, reason } = deriveWorkerCount({
         bind: config.host,
