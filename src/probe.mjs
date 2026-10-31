@@ -72,7 +72,7 @@ export function buildTrackV2Request({
 }
 
 /**
- * 打一次 track_v2 上游：全仓库唯一向外发请求的地方。
+ * 打一次 track_v2 上游：src 里唯一向外发请求的地方。
  *
  * 只回 `{status, text}`，判定交给 summarizeTrackV2Response —— 命令行与手动验证脚本共用同一条
  * 出网路径，别让人再给 HTTP 层加一条「顺便帮我打个上游」的路由。

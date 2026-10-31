@@ -2,7 +2,7 @@
 #
 # 为什么要 Wine：bdms.node 是 Windows PE，只能由 Windows 版 Node/Electron 加载。
 # 实测 Wine 11 + Windows Node 20 可以正常加载并出签名，服务端也接受
-#（/probe 返回 fullTrack: true）。注意 Node 24 在 Wine 下会 CSPRNG 断言崩溃，钉 20。
+#（`node src/index.mjs probe` 返回 fullTrack: true）。注意 Node 24 在 Wine 下会 CSPRNG 断言崩溃，钉 20。
 
 FROM debian:bookworm-slim
 
