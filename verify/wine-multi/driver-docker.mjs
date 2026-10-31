@@ -6,7 +6,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fetchHealthz, probeHealthz, tailLines, waitForReady } from './endpoints.mjs'
+import { fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -99,26 +99,38 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
                 .filter(line => /node\.exe|wineserver/.test(line))
         },
 
-        async healthz(index) {
-            return fetchHealthz(publicPorts[index])
+        async readyz(index) {
+            return fetchReady(publicPorts[index])
         },
 
         /** ready / http / refused / hung —— 判据 4 用它确认被杀方真的不再应答。 */
         async probePort(index) {
-            return probeHealthz(publicPorts[index])
+            return probeReady(publicPorts[index])
         },
 
         /**
-         * 这个进程自己 resolveIdentity() 出来的设备号（原值，只在内存里比对）。
-         * 不能拿 /sign 的回包做这个比对——那回的是我们发过去的那个 id，永远同一个。
+         * 这个进程自己的身份视图：不点名设备号的 /sign，回包里的 device_id 就是它自己解析出来
+         * 的那一份（原值只在内存里比对，不落盘）。
+         *
+         * URL 与 headers 里刻意不带 device_id / fp / did —— 带了就变成比对我们发过去的那个 id，
+         * 身份真分裂了也照样「一致」，是循环论证。#9 删掉了明文返回整套身份的 /config，这条是它的替代。
          */
-        async configIdentity(index) {
+        async ownIdentity(index) {
             try {
-                const response = await fetch(`http://127.0.0.1:${publicPorts[index]}/config`, { signal: AbortSignal.timeout(5000) })
+                const response = await fetch(`http://127.0.0.1:${publicPorts[index]}/sign`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
+                        method: 'POST',
+                        headers: { 'user-agent': 'LunaPC/verify' },
+                    }),
+                    // 签一次名在 Wine 冷启动下要几十秒，别用探活那档的超时
+                    signal: AbortSignal.timeout(60000),
+                })
                 if (!response.ok) return null
                 const payload = await response.json()
-                const identity = payload?.identity
-                return identity?.device_id ? identity : null
+                return payload?.device_id ? { deviceId: String(payload.device_id) } : null
             } catch {
                 return null
             }
