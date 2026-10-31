@@ -61,9 +61,9 @@ fi
 
 # 3) 等健康检查
 echo -n "• 等待服务就绪"
-# /healthz 现在要等至少一台 worker 预热完成；Docker 的起始宽限期是 180 秒，这里给到约 200 秒
+# /readyz 要等至少一台 worker 预热完成（/livez 才是恒 200 的那个）；Docker 的起始宽限期是 180 秒，这里给到约 200 秒
 for _ in $(seq 1 100); do
-    if curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/healthz" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/readyz" >/dev/null 2>&1; then
         echo " ✓"
         break
     fi
@@ -71,7 +71,7 @@ for _ in $(seq 1 100); do
     sleep 2
 done
 
-if ! curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/healthz" >/dev/null 2>&1; then
+if ! curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/readyz" >/dev/null 2>&1; then
     echo
     echo "✗ 服务未在约 3 分钟内就绪，看日志： $COMPOSE logs -f" >&2
     exit 1
@@ -80,7 +80,7 @@ fi
 # 4) 自检 + 打印用法
 echo
 echo "── 状态 ─────────────────────────────────────────────"
-curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/healthz"; echo
+curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/readyz"; echo
 
 echo "── 签名自检（POST /sign，真跑一次）──────────────────"
 SIGN=$(curl -fsS -X POST "http://127.0.0.1:${LIBMSSDK_PORT}/sign" \

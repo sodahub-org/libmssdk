@@ -1,0 +1,32 @@
+# 签名服务的 TLS 终结示例：Windows 裸机与 Docker 用同一份文件。
+#
+# 两个必填的环境变量（故意不给默认值：悄悄反代到别处的签名器，比启动失败危险得多）
+#   SIGNER_HOSTNAME     对外域名，例如 signer.example.com
+#   LIBMSSDK_UPSTREAM   签名服务地址：本机裸机填 127.0.0.1:8899，compose 里填 libmssdk:8899
+#
+# Windows 裸机（PowerShell，Caddy 是单文件可执行）：
+#   $env:SIGNER_HOSTNAME   = "signer.example.com"
+#   $env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"
+#   caddy run --config .\Caddyfile
+#   # 开机自启：caddy service install --config .\Caddyfile
+#
+# Docker（在 deploy/ 目录，与主 compose 叠一层）：
+#   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+#
+# 证书：域名能解析到这台机器时，Caddy 自己签发、自己续期，你不用碰证书文件。
+# 只在局域网用（没有可解析的域名）就把下面 `tls internal` 的注释打开，改用 Caddy 内置 CA；
+# 客户端要么导入那个根证书，要么显式信任它 —— 本仓库不教证书固定，双方都没法强制升级的
+# 场景里固定证书是明确的反面教材。HSTS 也不开：明文端口要继续完整服务，
+# 一旦下发 HSTS，不升级的客户端会被直接锁死在浏览器里。
+
+{$SIGNER_HOSTNAME} {
+	# tls internal	# 局域网形态：改用 Caddy 内置 CA（没有公网域名时才需要）
+
+	# 代理侧的兜底上限。真正的限制在服务自己身上：LIBMSSDK_MAX_BODY_BYTES（默认 256 KB），
+	# 超了会回可读的 400 而不是把连接掀掉，所以这里要留得比它大。
+	request_body max_size 1MB
+
+	# X-Forwarded-For 与 X-Forwarded-Proto 是 Caddy 默认就会加的，不用手写。
+	# 注意：签名服务今天只认 TCP 对端地址，认不认 XFF 是后续按 IP 限流那一版（#8）的开关。
+	reverse_proxy {$LIBMSSDK_UPSTREAM}
+}

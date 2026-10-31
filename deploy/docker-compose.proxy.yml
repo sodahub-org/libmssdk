@@ -1,0 +1,30 @@
+# TLS 终结叠一层（可选）。在 deploy/ 目录与主 compose 一起用：
+#
+#   SIGNER_HOSTNAME=signer.example.com \
+#     docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+#
+# 域名要能解析到这台机器，Caddy 才会自己签、自己续；只在局域网用时把
+# reverse-proxy/Caddyfile 里的 `tls internal` 注释打开即可（客户端要导入 Caddy 的根证书）。
+#
+# 80 端口是给 ACME 质询用的，不是「重定向入口」：明文 8899 照旧完整服务，不改成跳转。
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SIGNER_HOSTNAME: "${SIGNER_HOSTNAME:?请先在 deploy/.env 里设置 SIGNER_HOSTNAME，例如 signer.example.com}"
+      # 同一个 compose 网络里直接走服务名，不经宿主端口
+      LIBMSSDK_UPSTREAM: libmssdk:8899
+    volumes:
+      - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - libmssdk
+
+volumes:
+  caddy-data:
+  caddy-config:
