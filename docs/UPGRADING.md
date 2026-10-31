@@ -65,6 +65,10 @@ worker 数按绑定地址推导，环境变量始终优先：
 时保护，预热期间只要有一次 200，宽限当场作废，后面的 503 就不再保护你了 —— 所以
 `/readyz` 在没有就绪 worker 时绝不谎报 200。
 
+回包字段相对旧的 `/healthz` 少了一个 `bdmsAvailable`：它量的是「主进程看得到模块文件吗」，而默认路径
+上签名发生在 worker 里，那个字段会让人以为它说的是「能不能签名」。就绪与否只看 `ready`；worker 数与
+队列深度属于诊断端点（#8 的 `/stat`），不挤进就绪判定。
+
 **队列饱满不进就绪判定。** 过载时把自己从上游摘掉，剩下的实例只会更忙，这是标准的死亡螺旋。
 过载的信号走普通请求路径的 503 `BUSY`。
 
@@ -72,8 +76,10 @@ worker 数按绑定地址推导，环境变量始终优先：
 `/readyz` 改口（`src/index.mjs` 的 shutdown），之后才停监听、等在飞与排队的请求收完、最后收 worker。
 容器形态要留意：`deploy/entrypoint.sh` 是 `exec wine … node.exe`，而 Wine 不把 POSIX 信号投给那个
 Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」而不是优雅关停 —— 编排器看到的表现从
-连接被拒开始，而不是从 503 开始。裸机（nssm / 计划任务 / 前台 Ctrl+C）这条是生效的。要闭合它得给
-容器换一个能转信号的入口，那是部署侧另一件事，不在本票范围。
+连接被拒开始，而不是从 503 开始。同理，`schtasks /end` 走的是 TerminateProcess，也拿不到信号。
+真正生效的是前台 Ctrl+C 与 nssm 的停止动作（默认发 Ctrl+C / 窗口关闭事件，Node 会把它变成 SIGINT）。
+要闭合容器与计划任务这两条，得给入口换一层能转信号的东西（tini/dumb-init 也解决不了 Wine 那一跳），
+那是部署侧另一件事，不在本票范围。
 
 ## 5. 诊断端点收拢（#9）
 
@@ -86,7 +92,7 @@ Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」
 | --- | --- | --- |
 | `POST /probe` | 只回 404 + `Deprecation`（RFC 9745 的 `@<秒>`）+ `Sunset` 的回执，`code: "endpoint_removed"`，指向命令行 | `node src/index.mjs probe --track <track_id>`（输出字段与之前一致，多一个脱敏 `deviceId`） |
 | `POST /track/stream` | 同上 | 客户端自己判断：用 `/sign` 取到签名头后请求上游，比较 `video_duration` 与 `track.duration` |
-| `GET /config` | 直接删（没有弃用期） | 服务自己的 `device_id`：`/sign` 时不点名设备号，回包里就是它；整套身份看 `data/identity.json` 或 `node src/index.mjs config` |
+| `GET /config` | 删（没有弃用期，所以不带到期头），但同样回一句「没有了 + 替代做法」，不是静默 404 | 服务自己的 `device_id`：`/sign` 时不点名设备号，回包里就是它；整套身份看 `data/identity.json` 或 `node src/index.mjs config` |
 
 弃用节奏：**本版本**给「弃用 + 到期」信号并写明替代命令，**下一版本**才让这两条路由返回 410。
 两个版本都不许退成静默 404 —— 自托管的人各自控制升级节奏，回包看不懂就等于没有过渡。

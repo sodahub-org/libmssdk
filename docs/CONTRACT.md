@@ -164,7 +164,7 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…"
 
 | 版本 | `/probe`、`/track/stream` 的回包 |
 | --- | --- |
-| 本版本 | **404** + `Deprecation: @1793491200`（RFC 9745：值是 Structured Field 的 Date，写成 `@<秒>`）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`，`replacement` 写明替代命令 |
+| 本版本 | **404** + `Deprecation: @1793404800`（RFC 9745：值是 Structured Field 的 Date，写成 `@<秒>`）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`，`replacement` 写明替代命令 |
 | 下一版本 | **410**，其余不变 |
 
 `Sunset` 不早于 `Deprecation`，两个日期是一对：如果「下一版本」实际晚于 `Sunset`，发版时要
@@ -178,7 +178,8 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…"
 `/track/stream` 的替代不在命令行里：它产出的「整曲还是试听」，客户端本来就拿得到响应，判断逻辑应该
 在客户端 —— 用 `/sign` 取到签名头后自己请求上游，比较 `video_duration` 与 `track.duration`。
 
-`GET /config` 没有弃用期，直接删：没有任何客户端调用它，而它明文返回完整设备号与安装号。
+`GET /config` 没有这一对头，因为它不是「将要移除」而是「本次就没了」：它把完整设备号与安装号明文交出去，
+而没有任何客户端在调用它。它同样回 404 + `code: "endpoint_removed"` 与替代做法，不是静默的 not_found。
 
 ## stdio 模式
 
