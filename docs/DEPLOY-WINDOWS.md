@@ -78,7 +78,7 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
 `event=dispatcher` 写着实际值与来由，`event=serve` 写着监听的 `workers`。
 
 预热期间（首次 `bdms.init`，通常几秒）`GET /healthz` 返回 503，预热完成后才回 200；
-`/sign` 在预热中或队列满时**立即**回 503 `BUSY`，已入队的请求超过等待预算也回 503；两者都带
+`/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`，已入队的请求超过等待预算也回 503；两者都带
 `Retry-After: 1`。这不影响 `nssm`/计划任务：
 服务进程本身已经起来了，只是还没能接流量。
 
