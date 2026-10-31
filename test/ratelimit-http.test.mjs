@@ -147,7 +147,7 @@ test('单 IP 超限回 429 与等待时长；/stat 暴露计数且地址脱敏',
     assert.equal(stat.ok, true)
     assert.equal(stat.workers.total, 1, '当前 worker 数')
     assert.equal(stat.workers.ready, 1)
-    assert.equal(stat.workers.busy, 0)
+    assert.equal(stat.workers.busy, 0, '空闲时没有在飞的签名')
     assert.equal(stat.queue.depth, 0, '队列深度')
     assert.equal(stat.rateLimit.mode, 'enforce')
     assert.equal(stat.rateLimit.activeBuckets, 1, '活跃桶数')
@@ -184,7 +184,8 @@ test('服务忙回 503 BUSY，与「你打太多」的 429 明确区分', async 
     })
     const first = post(entry, signPayload())
     await until(() => signCount(entry) === 1, '第一条正在 worker 上算')
-    assert.equal((await getJson(entry, '/stat')).body.workers.busy, 1, '/stat 能看出正在算的那台')
+    const inFlight = (await getJson(entry, '/stat')).body
+    assert.equal(inFlight.workers.busy, 1, '/stat 能看出正在算的那台')
 
     const queued = post(entry, signPayload())
     await until(async () => (await getJson(entry, '/stat')).body.queue.depth === 1, '第二条进了队列')
