@@ -2,7 +2,7 @@
 // 响应字节写回连接。排队、等待预算、超预算那个预拼好的 503 都在这条路径上。
 //
 // 这里的用例直接对 createDispatcher 建出来的服务发真 HTTP 请求；默认服务（src/serve.mjs）
-// 给它注入过渡端点处理器，而直接的单元用例按需注入一个假的。
+// 给它注入签名之外的端点处理器（src/endpoints.mjs），而直接的单元用例按需注入一个假的。
 //
 // 端口只用 listen(0)：Windows 上自选端口会撞上上一次绑定的 TIME_WAIT，「先探测空闲端口再绑定」
 // 这个两步模式在该平台实测大面积失败。
@@ -228,7 +228,7 @@ test('队列有上限：排不下的当场拒，而不是无限堆积到大家�
     assert.deepEqual(settled.map(entry => entry.status).sort(), [200, 503], '一条等到服务，一条当场被拒')
 })
 
-test('非 /sign 路由交给过渡处理器；不注入时仍是 404，而且都不占 worker', async () => {
+test('非 /sign 路由交给注入的端点处理器；不注入时仍是 404，而且都不占 worker', async () => {
     const pool = fakePool({ size: 1 })
     const hits = []
     const server = createDispatcher({
@@ -245,20 +245,20 @@ test('非 /sign 路由交给过渡处理器；不注入时仍是 404，而且都
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const baseUrl = `http://127.0.0.1:${server.address().port}`
 
-    const health = await fetch(`${baseUrl}/healthz`)
+    const health = await fetch(`${baseUrl}/readyz`)
     assert.equal(health.status, 200)
     assert.equal(await health.text(), 'legacy')
-    assert.deepEqual(hits, ['/healthz'], '过渡处理器接管了非 /sign 路由')
-    assert.equal(pool.requests.length, 0, '过渡路由不该占签名 worker')
+    assert.deepEqual(hits, ['/readyz'], '端点处理器接管了非 /sign 路由')
+    assert.equal(pool.requests.length, 0, '端点处理器的路由不该占签名 worker')
 
-    // /sign 仍然走 worker，不能被过渡处理器截走
+    // /sign 仍然走 worker，不能被端点处理器截走
     const pending = post(baseUrl, signPayload())
     await until(() => pool.requests.length === 1, '请求被派发到 worker')
     pool.complete(pool.requests[0].slotId, { kind: 'SUCCESS', body: signedBody() })
     assert.equal((await pending).status, 200)
 
     const { baseUrl: bareUrl } = await serve(fakePool({ size: 1 }))
-    const missing = await fetch(`${bareUrl}/healthz`)
+    const missing = await fetch(`${bareUrl}/readyz`)
     assert.equal(missing.status, 404)
     assert.match(await missing.text(), /"code":"not_found"/)
 })

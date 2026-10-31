@@ -1,5 +1,5 @@
 // 错误分类的纯函数单测：映射全枚举、等待时长的来由与落点、未知原因的默认出口。
-// 这些用例不碰 HTTP 写出路径；默认路径与过渡端点怎么调用它们，归 dispatcher / signing 的用例。
+// 这些用例不碰 HTTP 写出路径；默认路径怎么调用它们，归 dispatcher / endpoints 的用例。
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
