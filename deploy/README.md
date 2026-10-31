@@ -19,6 +19,15 @@ cd deploy
 `/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`；已入队的请求超过等待预算也回 503。两者都带
 `Retry-After: 1`，不会再回 502。
 
+从本版本起还默认按客户端地址限流：单 IP 持续 0.5 次/秒、突发 12，超限回 **429 `RATE_LIMITED`**，
+`Retry-After` 是精确的下次可请求时刻向上取整（最少 1 秒）。`GET /stat` 能看到活跃桶数、
+允许/拒绝计数、队列深度和 worker 数，地址脱敏，且它自己不过限流、不打访问日志。
+调参期把数据卷里的 `rate-limit.mode` 写成 `log`（只记日志）或 `off`（关闭）即可，约 2 秒生效：
+
+```bash
+docker compose exec libmssdk sh -c 'echo log > /app/data/rate-limit.mode'
+```
+
 常用变体：
 
 ```bash
@@ -54,7 +63,7 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 ## 对外暴露（给多台机器/多个人用）
 
 1. `deploy/.env` 里 `LIBMSSDK_BIND=0.0.0.0`（默认就是），并且 `LIBMSSDK_TOKEN`
-   必须是随机长串——**这个 token 等于签名能力**。
+   必须是随机长串——**这个 token 等于签名能力**。没配 token 时服务会拒绝启动。
 2. 前面挂一个反向代理做 HTTPS（Caddy 最省事）：
 
    ```caddyfile
@@ -63,12 +72,16 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    }
    ```
 
-3. 只放行 `/sign`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，公网部署
-   建议在反代里挡掉：
+   反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
+   在 `deploy/.env` 里加 `LIBMSSDK_TRUST_PROXY=1`，并确认反代会重写 `X-Forwarded-For`
+   （Caddy 默认会）。没开时只认 TCP 对端，这是安全默认。
+
+3. 只放行 `/sign`、`/healthz`（需要的话再加 `/stat`）。`/probe`、`/track/stream` 会拿你的
+   服务去打官方接口，公网部署建议在反代里挡掉：
 
    ```caddyfile
    signer.example.com {
-       @deny not path /sign /healthz
+       @deny not path /sign /healthz /stat
        respond @deny 404
        reverse_proxy 127.0.0.1:8899
    }
@@ -81,8 +94,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 * **调用方会把 cookie 发给签名服务**：签名覆盖「URL + 全部请求头」，cookie 是其中
   之一。多人共用时，服务方（也就是你）能看到使用者的登录态。要么明确告知使用者，
   要么让每个人本地跑一份（同样的镜像，`docker run -t -p 127.0.0.1:8899:8899 …`）。
-* **日志已脱敏**：只记请求形状与签名长度，不落 cookie / X-Helios / X-Medusa。
-* 公开端点等于公开「应用签名能力」，建议 token + 限速 + 不公开地址。
+* **日志已脱敏**：只记请求形状、签名长度与脱敏设备号/IP，不落 cookie / X-Helios / X-Medusa。
+* 公开端点等于公开「应用签名能力」，建议 token + 限速 + 不公开地址。限流默认生效，
+  但阈值故意宽松（共享出口后面几十个人共用一个地址），不能替代 token 与网络隔离。
 
 ## 其他
 

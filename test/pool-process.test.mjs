@@ -73,6 +73,9 @@ async function startReal({ workers, unstableCalls = 0, signDelayMs = 0, stateDir
         LIBMSSDK_WORKER_RESPAWN_BASE_MS: '100',
         LIBMSSDK_WORKER_RESPAWN_CAP_MS: '400',
         LIBMSSDK_WARMUP_BUDGET_MS: '20000',
+        // 限流默认生效；这里固定成强制模式，避免外部 shell 的环境变量影响用例
+        LIBMSSDK_RATE_LIMIT_MODE: 'enforce',
+        LIBMSSDK_RATE_LIMIT_MODE_FILE: '',
         MOCK_BDMS_UNSTABLE_CALLS: String(unstableCalls),
         MOCK_BDMS_SIGN_DELAY_MS: String(signDelayMs),
         MOCK_BDMS_TRACE_DIR: traceDir,
@@ -159,6 +162,17 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
     assert.equal(configResponse.status, 200)
     const configPayload = await configResponse.json()
     assert.equal(configPayload.identity.device_id, prepared.identity.device_id, '过渡端点看到的仍是同一份身份')
+
+    // /stat 走默认装配：真 worker 数、队列深度、限流状态都要对得上，且地址字段不存在完整 IP
+    const statResponse = await fetch(`${baseUrl}/stat`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(statResponse.status, 200)
+    const statPayload = await statResponse.json()
+    assert.equal(statPayload.workers.total, 1)
+    assert.equal(statPayload.workers.ready, 1)
+    assert.equal(statPayload.queue.depth, 0)
+    assert.equal(statPayload.rateLimit.mode, 'enforce')
+    assert.equal(statPayload.rateLimit.burst, 12)
+    assert.ok(!JSON.stringify(statPayload).includes('127.0.0.1'), '/stat 里不能出现完整 IP')
 
     const anonymous = await post(baseUrl, {
         url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',

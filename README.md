@@ -116,6 +116,13 @@ export LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 | `LIBMSSDK_WAIT_BUDGET_MS` | `/sign` 排队预算（默认 5000ms），超出回 503 `BUSY` |
 | `LIBMSSDK_QUEUE_LIMIT` | 等待队列上限（默认 worker 数的 4 倍），排不下当场回 503 |
 | `LIBMSSDK_WARMUP_BUDGET_MS` | 单台 worker 的预热预算（默认 30000ms）；超预算它保持未就绪且进程不退出 |
+| `LIBMSSDK_RATE_LIMIT_PER_SECOND` / `LIBMSSDK_RATE_LIMIT_BURST` | 单 IP 持续速率与突发额度（默认 0.5 次/秒、12） |
+| `LIBMSSDK_RATE_LIMIT_MAX_BUCKETS` | 限流桶上限（默认 4096），满了挤掉最久没动的桶 |
+| `LIBMSSDK_RATE_LIMIT_MODE` | 启动模式：`enforce` / `log` / `off`（默认 `enforce`） |
+| `LIBMSSDK_TRUST_PROXY` | 设为 `1` 才信任 `X-Forwarded-For`（取最右一跳）；默认只认 TCP 对端地址 |
+
+运行时把 state 目录下的 `rate-limit.mode` 写成 `enforce` / `log` / `off` 即可在不重启的情况下
+切换限流模式（约 2 秒内生效）。
 
 worker 重生退避（`LIBMSSDK_WORKER_RESPAWN_BASE_MS` / `LIBMSSDK_WORKER_RESPAWN_CAP_MS`）见
 [`.env.example`](.env.example)。
@@ -128,6 +135,7 @@ Cloudflare Workers 不能运行 `bdms.node` / `metasecml.dll`，因此不能承�
 | 路由 | 说明 |
 | --- | --- |
 | `GET /healthz` | 至少一台 worker 就绪时 200；预热中 503。不泄露凭据 |
+| `GET /stat` | 诊断：活跃限流桶、允许/拒绝计数、队列深度、worker 数；IP 脱敏、不过限流 |
 | `GET /config` | 配置摘要和脱敏设备号（需要 Token）；过渡端点 |
 | `POST /sign` | `{ url, method, headers, body }` → 签名请求头（默认经 worker 计算） |
 | `POST /probe` | 构造 `track_v2` 请求并判断整曲 / 试听；过渡端点 |
@@ -139,7 +147,10 @@ Cloudflare Workers 不能运行 `bdms.node` / `metasecml.dll`，因此不能承�
 
 - `/sign` 现在由主进程排队、worker 计算；没有就绪 worker 或队列已满时立即回 503，已入队的请求超过等待预算才回 503。
 - 失败状态码按「时间能否解决」分类：400 / 401 / 429 / 503 / 500，**502 不再出现**。
-- 只有服务忙（503 `BUSY`）与被限流（429 `RATE_LIMITED`）带 `Retry-After`。限流器在后续版本启用。
+- 只有服务忙（503 `BUSY`）与被限流（429 `RATE_LIMITED`）带 `Retry-After`。限流默认生效：
+  按 TCP 对端地址分桶（IPv6 按 /64），超限回 429，等待时长是下次可请求时刻向上取整、最少 1 秒。
+- 绑定非回环地址又没有设置 `LIBMSSDK_TOKEN` 时拒绝启动；绑定回环地址才允许无令牌访问（本机自用）。
+- 新增 `GET /stat`，没有监控系统时用它看桶数、拒绝数、队列深度与 worker 数；地址全部脱敏。
 - `/healthz` 在 worker 预热完成前返回 503，避免编排器提前放流量。
 
 完整升级影响见 [`docs/UPGRADING.md`](docs/UPGRADING.md)。

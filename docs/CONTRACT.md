@@ -44,7 +44,7 @@ Meting-API 的远程签名服务保持兼容，
 | --- | --- | --- | --- |
 | 请求格式非法（非法 JSON、缺 `url`、请求体超限） | 400 | `INVALID_REQUEST` | 无 |
 | 鉴权失败 | 401 | `UNAUTHORIZED` | 无 |
-| 单 IP 超限（限流启用后） | 429 | `RATE_LIMITED` | 有 |
+| 单 IP 超限（默认启用，可用控制文件降级） | 429 | `RATE_LIMITED` | 有 |
 | 没有就绪 worker / 队列已满（立即），或已入队请求超过等待预算 | 503 | `BUSY` | 有（固定 1 秒） |
 | 模块没加载 / 配置错 | 500 | `SIGNER_UNAVAILABLE` | 无 |
 | 签名算错 / worker 中途退出 | 500 | `INTERNAL_ERROR` | 无 |
@@ -60,6 +60,51 @@ Meting-API 的远程签名服务保持兼容，
 - 签名接口没有副作用，可以安全重试。没有就绪 worker 或队列已满时**立即**回 503；
   只有已经入队的请求才会在等待预算（默认 5 秒）用尽后回 503。
 - 上表描述的是 `/sign`；`/healthz` 的 503 是就绪探针结果，不带 `Retry-After` 或原因码。
+- 429 的等待时长是「下次可请求的精确时刻向上取整」，最少 1 秒；503 固定 1 秒。两者都能重试，
+  但 429 说明是调用方自己打得太快，503 说明是服务容量不够。
+
+## 准入控制
+
+- 分桶键是 TCP 对端地址：IPv4 一个地址一个桶，IPv6 按 /64 聚合。鉴权令牌写在公开的客户端
+  源码里，不是凭据，不参与分桶。
+- 默认持续 0.5 次/秒、突发 12。阈值故意宽松：共享出口后面几十个人共用一个地址，紧阈值会
+  把整栋楼的人挡在门外。桶总数有上限，满了挤掉最久没动的桶；过期桶会被回收。
+- 只有在显式设置 `LIBMSSDK_TRUST_PROXY=1` 时才读 `X-Forwarded-For`，并取最右边一跳 ——
+  直接对端反向代理亲眼看到的地址。默认只认 TCP 对端地址。
+- 默认强制生效。运行时可把 state 目录下的 `rate-limit.mode` 写成 `enforce` / `log` / `off`
+  （约 2 秒内生效，不用重启）：`log` 只记日志不拦，`off` 完全不参与。
+- POST 计算端点（`/sign`、`/probe`、`/track/stream`）共用同一个限流器；`/stat`、`/healthz`、
+  `/config` 不参与限流计数，也不打访问日志。
+- **绑定非回环地址且没有设置 `LIBMSSDK_TOKEN` 时拒绝启动**，并给出原因；绑定回环地址时
+  不配令牌才放行（本机自用）。
+
+## GET /stat
+
+诊断端点：不鉴权、不参与限流计数、不打访问日志。没有监控系统时，用它判断出了什么事。
+
+```json
+{
+  "ok": true,
+  "service": "libmssdk",
+  "version": "0.1.0",
+  "queue": { "depth": 0, "limit": 4 },
+  "workers": { "total": 1, "ready": 1, "busy": 0 },
+  "rateLimit": {
+    "mode": "enforce",
+    "ratePerSecond": 0.5,
+    "burst": 12,
+    "maxBuckets": 4096,
+    "activeBuckets": 3,
+    "allowed": 128,
+    "denied": 12,
+    "evicted": 0,
+    "top": [{ "address": "203.0.*.*", "allowed": 2, "denied": 15 }]
+  }
+}
+```
+
+`top` 只列有拒绝记录的桶（最多 5 个），按拒绝次数排序；`address` 已脱敏（IPv4 留两段、
+IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能回答，此时 `workers.ready` 为 0。
 
 ## GET /healthz 与 GET /config
 
