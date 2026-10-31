@@ -312,7 +312,39 @@ test('spawn 同步抛错：start 失败后 stop 仍能安全收尾，不再二�
         log: () => {},
     })
 
-    await pool.start().catch(() => {})
+    const startError = await pool.start().catch(error => error)
+    assert.match(startError.message, /spawn boom/, 'start 要保留原始 spawn 错误')
+    await pool.stop()
+    assert.equal(pool.readyCount, 0)
+})
+
+test('重生时 spawn 同步抛错也不掀掉主进程：按失败继续退避直到放弃', async () => {
+    let spawns = 0
+    let giveUps = 0
+    const workers = []
+    const pool = createWorkerPool({
+        workerCount: 1,
+        respawnBaseMs: 1,
+        respawnCapMs: 1,
+        log: () => {},
+        onGiveUp: () => {
+            giveUps += 1
+        },
+        spawn: index => {
+            spawns += 1
+            if (spawns === 1) {
+                const worker = new FakeWorker(index)
+                workers.push(worker)
+                setImmediate(() => worker.reportReady())
+                return worker
+            }
+            throw new Error('respawn boom')
+        },
+    })
+    await pool.start()
+    workers[0].exit(1)
+
+    await waitFor(() => giveUps === 1, '连续 spawn 失败攒够次数后整体放弃')
     await pool.stop()
     assert.equal(pool.readyCount, 0)
 })

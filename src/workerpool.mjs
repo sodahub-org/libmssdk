@@ -118,7 +118,25 @@ export function createWorkerPool({
         const timer = setTimeout(() => {
             timers.delete(timer)
             if (stopping || givenUp) return
-            bind(slot)
+            try {
+                bind(slot)
+            } catch (error) {
+                // 注入的 spawn 可能同步抛错；定时器里抛出去就是未捕获异常，会把主进程掀掉。
+                // 和异步 spawn 失败一样记一次失败，继续按退避重试，攒够次数就整体退出。
+                log('worker-respawn-failed', {
+                    id: slot.id,
+                    message: redactMachinePaths(String(error?.message || error)),
+                })
+                slot.dead = true
+                try {
+                    slot.transport?.kill()
+                } catch {
+                    /* 收尾失败不影响下一次退避 */
+                }
+                slot.counted = false
+                countExit(slot, null)
+                scheduleRespawn(slot)
+            }
         }, delayMs)
         // 退避计时器不该把「本来该退出的进程」留在世上
         timer.unref()
