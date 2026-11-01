@@ -155,8 +155,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    里，新的 location 继承不到（nginx 只在某一层一条都没写时才整组继承上一层的），要提到 `server`
    一级或逐条重写；少了 `X-Forwarded-For`，开了 `LIBMSSDK_TRUST_PROXY=1` 之后所有客户端会缩成
    一个限流桶（见第 3 步与 `nginx.conf` 里的注释）。现成的 `= /livez` / `= /readyz` 也没带这几行，
-   但限流只覆盖 `/sign`，探针不进取数桶，所以现在这样没问题。改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，
-   多出来的白名单同样得有人维护，而现成的这份是 CI 按原样验过的。
+   但限流只覆盖 `/sign`，探针不进取数桶，所以现在这样没问题。
+   改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，多出来的白名单同样得有人维护，而现成的这份
+   是 CI 按原样验过的。
 
    在宿主机上直接看诊断：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
    `LIBMSSDK_PORT`，默认 8899）。
