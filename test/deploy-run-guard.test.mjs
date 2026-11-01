@@ -268,6 +268,11 @@ test('.env 里 bash 读不进去的那一行：宁可停，也不按缺省放行
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['export LIBMSSDK_BIND = 0.0.0.0'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = "0.0.0.0"'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND= 0.0.0.0'] }),
+        // 同一个键写两行、后一行是坏形状：bash 留着前一行的好值继续跑，compose 却按「后写盖先写」生效。
+        // 只看「变量是不是空」就会把这种配置放过去，所以判据只看行形状。
+        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND: 0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
         // YAML 式的 `KEY: 值` 是 compose 认、bash 不认的第二种写法：compose-go 的 dotenv 解析把
         // '=' 和 ':' 都当分隔符，bash 只会把 `LIBMSSDK_BIND:` 当成一个命令名
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: 0.0.0.0'] }),
@@ -301,6 +306,10 @@ test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND=""'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ["LIBMSSDK_BIND=''"] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND= # 留空按缺省走回环'] }),
+        // 冒号那一种也一样：没有真实值的行不算「读不进去」（compose 读成空 = 没写 = 缺省回环）
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND:'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: ""'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: # 留着当备忘'] }),
     ]
     for (const lines of empties) {
         const { status, stderr, started } = runDeployScript(lines)

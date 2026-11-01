@@ -55,10 +55,21 @@ set +a
 #      而 compose 用它自己那套 .env 解析，两边读到的不一定是同一份配置。脚本读不动这份文件时不能替它担保。
 #      `LIBMSSDK_BIND: 0.0.0.0` 是同一类的第二种写法：compose 认 YAML 式的冒号（compose-go 的 dotenv
 #      解析把 '=' 和 ':' 都当分隔符），bash 只把 `LIBMSSDK_BIND:` 当成一个命令名 —— 所以分隔符两种都认。
-#      只管脚本自己会读的那几个变量；值写成 "" 或 '' 是「设了但为空」，与没写这一行同义，不算读不进去。
+#      判据只看这一行的形状（bash 读得进去的那一种只有 KEY=值，等号两侧不留空白、也不用冒号），
+#      不看变量现在的值：同一个键写了两行、后一行是坏形状时，bash 会留着前一行的好值继续跑，而
+#      compose 按「后写的盖掉先写的」生效 —— 只看「变量非空」就会把这种配置放过去。
+#      值为空（KEY=、KEY=""、KEY: ）与没写这一行同义，两边都按缺省走，不算读不进去；注释行不算。
+#      只管脚本自己会读的那几个变量。
+env_unreadable_shape() {
+    # $1 = 变量名。三种 bash 读不进去的分隔符形状：冒号、等号前有空白、等号后有空白；
+    # 后面必须跟得到一个真实的值（引号包住的算，空的、只剩注释的不算）。
+    local key=$1
+    grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}([[:space:]]*:[[:space:]]*|[[:space:]]+=|[[:space:]]*=[[:space:]]+)[[:space:]]*[\"']?[^[:space:]\"'#]" .env
+}
+
 for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
     LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
-    if [ -z "${!unread_key:-}" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${unread_key}[[:space:]]*[=:][[:space:]]*[\"']?[^[:space:]\"'#]" .env; then
+    if env_unreadable_shape "$unread_key"; then
         echo "错误：deploy/.env 里写了 ${unread_key}，但 bash 没能把它读进来 —— 等号两侧带空格、加 export 前缀，" >&2
         echo "      或者写成 YAML 式的 ${unread_key}: 值，都会这样。" >&2
         echo "      compose 有自己的 .env 解析，脚本没法确认它看到的就是真正生效的那份，这条检查也就没法替你把关。" >&2
