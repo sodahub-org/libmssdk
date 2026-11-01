@@ -11,7 +11,8 @@ cd deploy
 ./run.sh
 ```
 
-脚本会：检查 `LIBMSSDK_CLIENT_DIR` → 生成 `deploy/.env`（随机 token）→ 构建镜像 →
+脚本会：生成 `deploy/.env`（随机 token）→ 确认这份 `.env` 里脚本要用的每一行 bash 都读得进去 →
+检查 `LIBMSSDK_CLIENT_DIR` → 检查「要挂反向代理却把宿主明文口开着」这一组合（第 2 步）→ 构建镜像 →
 启动容器 → 等健康检查通过 → 打印客户端接入方式。首次构建要装 Wine，约 3–5 分钟。
 
 容器默认绑定 `0.0.0.0`，所以会按物理核的 75% 拉起多个 worker；启动日志的
@@ -71,6 +72,23 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    `run.sh` 首次生成的默认是 `0.0.0.0`，请按部署形态改。不收的后果：任何客户端都能绕过 443 直接打
    `http://<host>:8899/sign`，Bearer token 与请求里的 cookie 全走明文 —— 挂上反代之后人容易以为
    自己已经在 HTTPS 后面。这一条同时是下面第 3 步（按真实客户端限流）的前提。
+   **这一步不再靠人读注释完成了**：`run.sh` 在构建与起容器之前自己检查 —— `.env` 里填了
+   `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（取值集合与服务里 `envFlag` 一致：`1`/`true`/
+   `yes`/`on`，不分大小写；两者都等于声明「前面挂了同机反代」），而 `LIBMSSDK_BIND` 不是回环
+   （`127/8` 的点分四段、`::1` 与它的方括号／全写形式、`localhost`）时直接退出，并点名触发的变量与改法。
+   判据落在部署脚本侧而不是服务里：容器内的进程永远看到 `0.0.0.0`，在服务里判会把推荐的 Docker
+   形态误判成违规。`.env` 里某一行如果 bash 压根读不进去，`run.sh` 也在起容器之前停下 —— 四种写法：
+   等号前有空白（`LIBMSSDK_BIND = 0.0.0.0`，加 `export` 前缀同理）、等号后有空白、YAML 式的
+   `LIBMSSDK_BIND: 0.0.0.0`（冒号那种 compose 认、bash 不认），以及形状没错但值里有空格却没加引号
+   （`LIBMSSDK_CLIENT_DIR=C:\Program Files\…` 就是这么被 bash 整行丢掉的）。脚本读不懂这份配置时不替
+   它担保 —— 带空格的值用双引号包住即可。这条管的是 `run.sh` 自己要用到的那几个变量，不只
+   `LIBMSSDK_BIND`，且只看同一个键最后一次声明的那一行。
+   逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：**你故意同时保留对外的
+   明文入口，且它在内网防火墙后面**。设了它 `run.sh` 放行，但在 stderr 留一句提醒 —— token 等价于
+   签名能力，它与 cookie 走的都是明文。绕过 `run.sh` 直接敲 `docker compose -f ... -f ...` 的人
+   不受这条检查保护，第 2 步本身照旧要自己做。
+   （这条检查由 `npm test` 里的 [`../test/deploy-run-guard.test.mjs`](../test/deploy-run-guard.test.mjs)
+   跑真实 `run.sh` 盯着。）
 3. 反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
    **同时**做两件事：
 
@@ -79,8 +97,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
      `X-Forwarded-For`（Caddy 与 nginx 的例子都会）。
 
    只开 `TRUST_PROXY` 而宿主端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
-   `X-Forwarded-For` 自选分桶键，等于没有限流。两个都不开时只认 TCP 对端，所有客户端会共用反代
-   那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
+   `X-Forwarded-For` 自选分桶键，等于没有限流。这一条现在同样由 `run.sh` 拦住：`LIBMSSDK_TRUST_PROXY`
+   打开（`1`/`true`/`yes`/`on`）配上非回环的 `LIBMSSDK_BIND` 直接拒启动（放行条件与逃生舱见第 2 步）。
+   两个都不开时只认 TCP 对端，所有客户端会共用反代那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
    其它 `LIBMSSDK_*` 调优变量不会自动进容器（compose 只透传上面列出的几项）；需要时在
    `docker-compose.yml` 的 `environment:` 里补同名项。
 4. 前面挂一个反向代理做 HTTPS。仓库里给的是能直接用的配置，不用自己拼：
