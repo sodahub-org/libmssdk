@@ -136,20 +136,22 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
    放这三条是为了保住回执，不是放行能力：它们只回一句固定的「没有了 + 改用哪个命令」，不签名、
    不出网、也不看凭据，`/stat` 仍留在被挡的一侧。把它们挡在代理层就成了裸 404 —— 没有
-   `code: "endpoint_removed"`、没有 `replacement`，也没有 `Deprecation` / `Sunset`，正好毁掉
-   `../docs/UPGRADING.md` 里那段过渡。
+   `code: "endpoint_removed"`、没有 `replacement`，`/probe` 与 `/track/stream` 还会少掉
+   `Deprecation` / `Sunset` 两个头（`/config` 本就没有这一对，它不是弃用期而是当场删除），
+   正好毁掉 `../docs/UPGRADING.md` 里那段过渡。
 
-   三条回执各写了带尾斜杠与不带尾斜杠两种，是因为 Caddy 的 `path` 是整段精确匹配、尾斜杠也算数
-   （文档原话 `Slashes are significant`），`/probe` 不覆盖 `/probe/`；而服务侧把 `/probe/` 认成
-   同一条路由（`../src/endpoints.mjs`）。手敲的 curl 与部分客户端会带尾斜杠，漏掉就又是一个裸 404。
-   探针路径由编排器按固定值打，通常不带尾斜杠；你的探针若会带，照这个办法补一条 `/livez/` 之类。
-   `/sign` 不用补：服务侧只认 `/sign`，`/sign/` 本来就是 404。
+   三条回执各写了带尾斜杠与不带尾斜杠两种，是因为 Caddy 的 `path` 是整段精确匹配、大小写不敏感，
+   尾斜杠也算数（文档原话 `Slashes are significant`），所以 `/probe` 不覆盖 `/probe/`；而服务侧
+   把 `/probe/` 认成同一条路由（`../src/endpoints.mjs`）。手敲的 curl 很容易多带一个尾斜杠，漏掉
+   就又是一个裸 404。探针路径由编排器按固定值打，通常不带尾斜杠；你的探针若会带，照这个办法补
+   一条 `/livez/` 之类。`/sign` 不用补：服务侧只认 `/sign`，`/sign/` 本来就是 404。
 
    nginx 那份示例（[`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf)）**不含路径白名单**：
    它的 `location /` 把全部路径都转给上游，三条回执照样到得了服务、由服务自己回答，但 `/stat`
-   也因此经公网可达 —— 要像上面这样收紧，按同一份清单加精确匹配的 `location`（`= /probe` 与
-   `= /probe/` 各一条，`/track/stream` 同理），改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，
-   因为它不在 CI 的校验里。
+   也因此经公网可达。要跟上面这样收紧，得把兜底的 `location /` 换成 `return 404`，再给清单里
+   每条路径写一条精确匹配的 `location`（`= /probe` 与 `= /probe/` 各一条，其余同理）—— 只加
+   `location` 而不动那个兜底块等于什么也没挡。改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，
+   多出来的白名单同样得有人维护，而现成的这份是 CI 按原样验过的。
 
    在宿主机上直接看诊断：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
    `LIBMSSDK_PORT`，默认 8899）。
