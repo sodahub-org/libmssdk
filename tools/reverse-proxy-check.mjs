@@ -130,7 +130,7 @@ export function extractCaddyWhitelistPaths(markdown, source = 'Markdown') {
 export const STRUCTURE_CHECKS = Object.freeze({
     nginxProbes: 'nginx.conf：免访问日志的 location 覆盖全部探针',
     whitelist: 'deploy/README.md：白名单放行 /sign 与全部探针',
-    statBlocked: 'deploy/README.md：白名单没放行 /stat',
+    statBlocked: 'deploy/README.md：白名单挡住 /stat',
 })
 
 /**

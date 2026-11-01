@@ -135,7 +135,7 @@ test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处�
     )
 })
 
-test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名单放行 /stat 才算', () => {
+test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名单挡住 /stat 才算', () => {
     const nginxConf = [
         'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }',
         'location = /stat { access_log off; proxy_pass http://libmssdk; }',
@@ -157,6 +157,6 @@ test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名�
     const withStat = readme.replace('/sign /livez', '/sign /stat /livez')
     assert.deepEqual(
         reverseProxyStructureProblems({ nginxConf, readme: withStat }).map(p => p.check),
-        ['deploy/README.md：白名单没放行 /stat'],
+        ['deploy/README.md：白名单挡住 /stat'],
     )
 })
