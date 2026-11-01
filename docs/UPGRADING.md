@@ -125,7 +125,9 @@ Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM` 
 
 **收尾前留一个排空窗口。** 改口与停监听如果发生在同一刻，探针根本读不到那个 503。
 `LIBMSSDK_DRAIN_DELAY_MS`（默认 0，即旧行为）让 `markClosing()` 之后先保持监听；容器 compose 已设
-8 秒并配 `stop_grace_period: 30s`。两者之和要小于编排器的停止宽限期，否则进程会被硬杀。
+8 秒并配 `stop_grace_period: 30s`。排空窗口 + 在飞请求的收尾时间要小于编排器的停止宽限期，否则进程
+会被硬杀。容器形态的「先 503」还要在你实际使用的 Wine 版本上用 `verify/wine-multi` 复验一次
+（Wine 9.x 曾有 Ctrl+C 转发的回归）。
 
 **计划任务那一半仍然不优雅。** `schtasks /end` 先发 `WM_CLOSE`（控制台程序收不到），再按
 `AllowHardTerminate` 用 `TerminateProcess`；官方文档明确它立即终止、不执行任何终止处理块。要优雅停止

@@ -35,10 +35,15 @@ set -m
 # 判据 7 观察到的形态会永远是连接被拒。trap 先于 spawn 安装，避免「子进程已起、
 # trap 没装」的空档把入口脚本直接带走。
 SERVE_PIDS=()
+stop_requested=0
+declare -A signaled=()
 forward_stop() {
-    [ ${#SERVE_PIDS[@]} -gt 0 ] || return 0
-    echo "[verify] 收到停止信号：把 SIGINT 转给每个 serve（Wine 会映射为 CTRL_C_EVENT）" >&2
+    stop_requested=1
+    local pid
     for pid in "${SERVE_PIDS[@]}"; do
+        # 同一个 pid 只送一次 SIGINT：第二次会被 Node 当成「逃生口」直接退出，丢掉排空
+        [ -z "${signaled[$pid]:-}" ] || continue
+        signaled[$pid]=1
         kill -INT "$pid" 2>/dev/null || true
     done
 }
@@ -52,6 +57,9 @@ for port in $PORTS; do
     echo "$pid" >"/logs/serve-$port.pid"
     echo "[verify] serve pid=$pid port=$port" >&2
 done
+
+# trap 抢在 spawn 之前到达时，循环里已启动的那些进程还没收到 SIGINT：这里补一次。
+[ "$stop_requested" = 0 ] || forward_stop
 
 # wait 会被信号打断：trap 跑完后再等一次，直到子进程真的退出。
 # 不写这个循环，PID 1 会在转发完 SIGINT 后立刻走到脚本结尾退出，Docker 随即把还在

@@ -7,7 +7,8 @@
 // 不能让它写进仓库的 data/。
 
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { once } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -57,3 +58,103 @@ test('config 命令的 stdout 是一个可解析的对象，设备号只出脱�
     assert.equal(/\d{16}/.test(stdout), false, '完整设备号（16 位）不该出现在输出里')
     assert.equal(payload.identity.persisted, true, '临时 state 目录可写，身份应当落盘')
 })
+
+// 真进程的信号那一段：/readyz 之所以会「当场改口」，靠的是 index.mjs 的 SIGTERM 处理器
+// 调到收尾序列。前面的用例只测到 beginShutdown() 那一层，管线和信号之间还隔着一条缝。
+// Windows 不把 SIGTERM 投给进程（Node 文档写明不支持），这一条只在能收信号的平台跑。
+const mockBdms = path.join(here, 'fixtures', 'mock-bdms.mjs')
+
+test(
+    '真进程收到 SIGTERM：先改口 /readyz，排空窗口结束后才退出',
+    { skip: process.platform === 'win32' ? 'Windows 不投递 SIGTERM（Node 文档写明不支持）' : false, timeout: 60000 },
+    async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-sigterm-'))
+        const child = spawn(process.execPath, [cli, 'serve'], {
+            env: {
+                ...process.env,
+                LIBMSSDK_STATE_DIR: dir,
+                LIBMSSDK_DEVICE_ID: '7000000000000001',
+                LIBMSSDK_BDMS_MODULE: mockBdms,
+                LIBMSSDK_BIND: '127.0.0.1',
+                // 端口交给系统分配：自选端口在 Windows CI 上会撞上一次绑定的 TIME_WAIT
+                LIBMSSDK_PORT: '0',
+                LIBMSSDK_WORKERS: '1',
+                LIBMSSDK_WARMUP_BUDGET_MS: '20000',
+                LIBMSSDK_RATE_LIMIT_MODE: 'off',
+                LIBMSSDK_RATE_LIMIT_MODE_FILE: '',
+                // 排空窗口给足，客户端才追得上「改口」那一下
+                LIBMSSDK_DRAIN_DELAY_MS: '1000',
+                LIBMSSDK_TOKEN: '',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let stderr = ''
+        child.stderr.setEncoding('utf8')
+        child.stderr.on('data', chunk => {
+            stderr += chunk
+        })
+        const exited = once(child, 'exit')
+        try {
+            // 启动日志的 event=serve 带着实际监听地址，端口是 listen(0) 分配的那个
+            let stdout = ''
+            child.stdout.setEncoding('utf8')
+            const port = await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error(`10 秒内没等到 event=serve\nstderr: ${stderr}`)), 10000)
+                child.stdout.on('data', chunk => {
+                    stdout += chunk
+                    for (const line of stdout.split('\n')) {
+                        try {
+                            const event = JSON.parse(line)
+                            if (event.event === 'serve') {
+                                clearTimeout(timer)
+                                resolve(Number(new URL(event.url).port))
+                            }
+                        } catch {
+                            // 半行 JSON：下一块数据到齐再解析
+                        }
+                    }
+                })
+                child.once('exit', code => {
+                    clearTimeout(timer)
+                    reject(new Error(`serve 提前退出 code=${code}\nstderr: ${stderr}`))
+                })
+            })
+
+            const base = `http://127.0.0.1:${port}`
+            let ready = 0
+            for (let attempt = 0; attempt < 400; attempt += 1) {
+                try {
+                    ready = (await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(2000) })).status
+                } catch {
+                    ready = 0
+                }
+                if (ready === 200) break
+                await new Promise(resolve => setTimeout(resolve, 50))
+            }
+            assert.equal(ready, 200, `worker 没在预算内就绪\nstderr: ${stderr}`)
+
+            child.kill('SIGTERM')
+            // 信号处理器是异步落地的：在排空窗口内轮询，直到读到 503
+            let shutting = 0
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+                try {
+                    shutting = (await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(2000) })).status
+                } catch {
+                    shutting = 0
+                }
+                if (shutting === 503) break
+                await new Promise(resolve => setTimeout(resolve, 20))
+            }
+            assert.equal(shutting, 503, 'SIGTERM 之后第一件事是让 /readyz 改口')
+
+            const [code] = await exited
+            assert.equal(code, 0, `收尾应当正常退出\nstderr: ${stderr}`)
+
+            // 排空窗口之后才停监听：此刻已经连不上了，且不是又一个 503
+            await assert.rejects(fetch(`${base}/readyz`, { signal: AbortSignal.timeout(2000) }))
+        } finally {
+            child.kill('SIGKILL')
+            fs.rmSync(dir, { recursive: true, force: true })
+        }
+    },
+)

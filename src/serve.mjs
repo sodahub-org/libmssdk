@@ -66,7 +66,7 @@ export function statResponse({ config, pool, limiter, diagnostics }) {
  * 0（默认）就是原先的行为，容器形态在 compose 里显式给一个几秒的值。
  *
  * 这里再收一遍口：config 可能来自 loadConfig（已归一化），也可能是测试/嵌入方直接给的
- * 普通对象 —— 收尾计时不该因为一个 NaN 变成「永不关监听」。
+ * 普通对象 —— 收尾计时不该因为一个 NaN 或负数把窗口算错（NaN 在比较里会被当成 0）。
  */
 export function resolveDrainDelay(config) {
     const value = Math.trunc(Number(config?.drainDelayMs))
