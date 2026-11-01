@@ -72,6 +72,9 @@ async function startReal({ workers, unstableCalls = 0, signDelayMs = 0, stateDir
         LIBMSSDK_WORKER_RESPAWN_BASE_MS: '100',
         LIBMSSDK_WORKER_RESPAWN_CAP_MS: '400',
         LIBMSSDK_WARMUP_BUDGET_MS: '20000',
+        // 限流默认生效；这里固定成强制模式，避免外部 shell 的环境变量影响用例
+        LIBMSSDK_RATE_LIMIT_MODE: 'enforce',
+        LIBMSSDK_RATE_LIMIT_MODE_FILE: '',
         MOCK_BDMS_UNSTABLE_CALLS: String(unstableCalls),
         MOCK_BDMS_SIGN_DELAY_MS: String(signDelayMs),
         MOCK_BDMS_TRACE_DIR: traceDir,
@@ -154,6 +157,19 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
     assert.equal(healthPayload.ready, true, '至少一台 worker 就绪才回 200')
     assert.equal(healthPayload.deviceId, maskDeviceId(prepared.identity.device_id), '就绪端点只出脱敏设备号')
 
+    // /stat 走默认装配：真 worker 数、队列深度、限流状态都要对得上，且地址字段不存在完整 IP
+    const statResponse = await fetch(`${baseUrl}/stat`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(statResponse.status, 200)
+    const statPayload = await statResponse.json()
+    assert.equal(statPayload.workers.total, 1)
+    assert.equal(statPayload.workers.ready, 1)
+    assert.equal(statPayload.queue.depth, 0)
+    assert.equal(statPayload.rateLimit.mode, 'enforce')
+    assert.equal(statPayload.rateLimit.burst, 12)
+    // #8 的 XFF 开关运行时也得能核对：#9 删掉明文返回整套身份的 /config 之后，这条挪进 /stat
+    assert.equal(statPayload.rateLimit.trustProxy, false, '默认不信任 X-Forwarded-For')
+    assert.equal(JSON.stringify(statPayload).includes(prepared.identity.device_id), false, '诊断端点不带出设备号原值')
+
     // 调用方不点名设备号时，回包里的就是这一个进程自己解析出来的那一份 —— 拿它比对两个进程
     // 不是循环论证（/config 删掉之后，verify/wine-multi 的判据 5 也改用这条证据）
     const anonymous = await post(baseUrl, {
@@ -172,6 +188,7 @@ test('真进程：身份只读、预热自学习、杀在飞的那台之后槽�
     const started = notes.find(note => note.event === 'dispatcher')
     assert.equal(started.detail.workers, 1, '启动日志要写明实际值')
     assert.match(started.detail.reason, /LIBMSSDK_WORKERS=1/, '还要写明这个数是谁给的')
+    assert.equal(started.detail.trustProxy, false, '启动日志要写明是否信任 XFF')
 
     const pending = post(baseUrl, signPayload())
     await until(() => pool.busyCount === 1, '真 worker 正在算这一份签名')

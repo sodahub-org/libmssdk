@@ -283,13 +283,15 @@ test('畸形请求目标与畸形 Host 不会退掉进程', async () => {
 // —— 防止日后又有人给它加一个路由」。行为用例只能证明「现在这几条路由不发请求」，
 // 挡不住下一个人新加一条。文件表用目录扫出来，新增的 src/*.mjs 自动在守卫范围内。
 test('出网只此一处：src 里除 probe.mjs 外没人向上游发请求', () => {
+    // 递归扫：src 下将来开出子目录也自动在范围内，别留一条「放进子目录就查不到」的缝
+    const root = path.join(here, '..', 'src')
     const sources = fs
-        .readdirSync(path.join(here, '..', 'src'))
-        .filter(name => name.endsWith('.mjs'))
-        .map(name => [name, fs.readFileSync(path.join(here, '..', 'src', name), 'utf8')])
+        .readdirSync(root, { recursive: true })
+        .filter(entry => typeof entry === 'string' && entry.endsWith('.mjs'))
+        .map(entry => [entry, fs.readFileSync(path.join(root, entry), 'utf8')])
     assert.ok(sources.length > 10, `扫到的 src 模块数不对（${sources.length}），守卫可能已经失效`)
     for (const [name, source] of sources) {
-        if (name === 'probe.mjs') continue
+        if (path.basename(name) === 'probe.mjs') continue
         // fetch / http.request / https.request：出网的三种写法都堵掉
         assert.equal(
             /\bfetch\(|\bhttps?\.(?:request|get)\(/.test(source),

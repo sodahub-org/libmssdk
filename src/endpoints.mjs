@@ -4,6 +4,7 @@
 //   GET /livez    只回答「进程还在不在」：恒 200，不碰任何依赖，不做任何计算
 //   GET /readyz   至少一台 worker 就绪、且不在关闭过程中才 200，否则 503
 //   GET /healthz  /readyz 的别名 —— 已有的编排配置不改也还能用
+//   GET /stat     诊断状态：队列深度、worker 数、限流桶计数（地址脱敏）
 //   /probe 与 /track/stream 只回弃用回执，不再签名也不打上游（下一版本改成 410）
 //   /config 只回「已删除 + 替代做法」，不带到期头：它没有弃用期，本次就没有了
 //
@@ -67,8 +68,11 @@ const REMOVED_ENDPOINTS = {
  *
  * 没注入时按「没就绪」处理：宁可一直 503，也绝不在没人确认就绪时谎报 200 —— 编排器的起始
  * 宽限期只要看到过一次 200 就当场作废，后面预热未完的 503 再也不会保护你了。
+ *
+ * `stats()` 同样由装配方注入（同一份池子 + 限流器 + 队列的快照）。没注入时 `/stat` 就是「没这条
+ * 路由」：直接构造这个处理器的嵌入用法手里没有那些状态，编一个空诊断出来只会骗人。
  */
-export function createEndpointsHandler({ config, readiness = () => false }) {
+export function createEndpointsHandler({ config, readiness = () => false, stats = null }) {
     return (request, response) => {
         // 只从请求行取 pathname，Host 不参与，解析永不抛（畸形目标在这里就是「没这条路由」）
         // 尾斜杠认成同一条路由：代理与手敲的 curl 常带上它，把它读成「没有这条路由」正是静默 404
@@ -102,10 +106,20 @@ export function createEndpointsHandler({ config, readiness = () => false }) {
             })
             return
         }
-        // 回执放在鉴权之前，是因为它本来就属于「这条路由没有了」这一类回答：回包全是常量，
-        // 没有一条服务侧数据，而今天通用的 404 也不看凭据（健康探针同理，只看方法不看凭据）。
-        // 它不是免鉴权的能力入口 —— 能力（签名、打上游）都已经不在这条路上了。
-        // AGENTS.md 的鉴权约定把这个边界写死在这儿。
+        if (pathname === '/stat') {
+            // 只认 GET：它读的是运行状态，没有副作用，让 POST 也答等于多开一个不用凭据的写法。
+            if (request.method !== 'GET' || !stats) {
+                send(404, errorResponse('not found', 'not_found'))
+                return
+            }
+            // 诊断端点：不过限流计数、不打访问日志；地址在 statResponse 里已经脱敏。
+            // 它是 AGENTS 第 11 条允许的那一类 —— 只报服务自身的状态，不替调用方做任何事。
+            send(200, stats())
+            return
+        }
+        // 探针与回执都不看凭据，也不看方法：它们属于「回答一个问题」那一类，不是能力入口。
+        // 回包里没有任何调用方数据或凭据；能力（签名、打上游）都已经不在这条路上了。
+        // AGENTS.md 第 9 条把这个边界写死在这儿，用例钉着 POST 也照样答。
         if (pathname !== null && Object.hasOwn(REMOVED_ENDPOINTS, pathname)) {
             const notice = REMOVED_ENDPOINTS[pathname]
             const headers = notice.deprecating ? { Deprecation: DEPRECATION_HTTP_VALUE, Sunset: SUNSET_HTTP_DATE } : {}

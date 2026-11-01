@@ -156,7 +156,7 @@ function commandConfig() {
                 host: config.host,
                 port: config.port,
                 auth: Boolean(config.token),
-                allowAnonymous: config.allowAnonymous,
+                trustProxy: config.trustProxy,
                 clientDir: config.clientDir,
                 bdmsModule: config.bdmsModule,
                 identity: {

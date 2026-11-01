@@ -10,17 +10,31 @@
 // 句柄分发的问题多年未修。这里转的是请求（上限沿用 256 KB）与响应（约 1 KB）的字节。
 //
 // 等待预算与队列上限只从 config 来：同一数字有两个来源（参数 + 环境变量）迟早会对不上。
+//
+// #8 起这里还负责按客户端地址限流：鉴权之后、读请求体之前问一次限流器（429 与 BUSY 是
+// 两件事，前者是调用方打得太快，后者是服务容量不够）。限流器本身在 src/ratelimit.mjs，
+// 这里只做「拿当前时间调纯函数」和写出。运行时模式开关轮询一个控制文件（同样只读时钟）。
 
 import http from 'node:http'
 import { fork } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isAuthorized } from './auth.mjs'
+import { isAuthorized, assertServeAuth } from './auth.mjs'
 import { maskDeviceId } from './config.mjs'
 import { errorResponse, normalizeSignRequest, ValidationError } from './contract.mjs'
 import { GIVE_UP_WINDOW_MS, Queue, deriveWorkerCount, parsePositiveInt, shouldReject } from './dispatch.mjs'
-import { ERROR_KINDS, failureResponse } from './errors.mjs'
+import { ERROR_KINDS, failureResponse, rateLimitedResponse, retryAfterFromInstant } from './errors.mjs'
 import { logEvent, redactMachinePaths } from './log.mjs'
+import {
+    RATE_LIMIT_DEFAULTS,
+    createRateLimiter,
+    clientKey,
+    maskAddressKey,
+    normalizeMode,
+    rateLimitSettingsFromEnv,
+} from './ratelimit.mjs'
 import { requestPathname } from './route.mjs'
 import { createWorkerPool } from './workerpool.mjs'
 
@@ -91,7 +105,18 @@ function prebuildBusy() {
     }
 }
 
-export function createDispatcher({ config, pool, log = logEvent, fallback = null } = {}) {
+export function createDispatcher({
+    config,
+    pool,
+    log = logEvent,
+    fallback = null,
+    limiter = null,
+    modeFile = '',
+    modePollMs = RATE_LIMIT_DEFAULTS.pollMs,
+    diagnostics = null,
+} = {}) {
+    // 直接构造分发器的嵌入用法也守同一条规则：非回环 + 没令牌不开门。
+    assertServeAuth(config)
     const waitBudgetMs = parsePositiveInt(config.waitBudgetMs, DEFAULT_WAIT_BUDGET_MS)
     const queueLimit = parsePositiveInt(config.queueLimit, pool.size * QUEUE_LIMIT_PER_WORKER)
     // 只信 config 给的数：一个手抖写成 abc 的 LIBMSSDK_MAX_BODY_BYTES 会让 size > limit
@@ -99,6 +124,12 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
     const maxBodyBytes = parsePositiveInt(config.maxBodyBytes, DEFAULT_MAX_BODY_BYTES)
     const queue = new Queue(queueLimit)
     const busy503 = prebuildBusy()
+    // /stat 由过渡处理器承接，但它要读分发器自己的队列深度：装配期把这个口子交出去，
+    // 而不是让两边各存一份会漂移的数字。
+    if (diagnostics) {
+        diagnostics.queueDepth = () => queue.depth
+        diagnostics.queueLimit = queueLimit
+    }
 
     /**
      * 每条连接一个 item，close 监听挂在**返回的那个对象**上。
@@ -141,9 +172,9 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
     }
 
     /** `close` 用在「这条连接的请求体都读不完」那种情况：留着 keep-alive 只会把框架搞乱。 */
-    function writeFailure(item, failure, { close = false } = {}) {
+    function writeFailure(item, failure, { close = false, event = 'sign-failed', detail = {} } = {}) {
         if (item.closed) return
-        log('sign-failed', { ...item.shape, code: failure.body.code, reason: failure.body.error })
+        log(event, { ...item.shape, code: failure.body.code, reason: failure.body.error, ...detail })
         const body = JSON.stringify(failure.body)
         item.response.writeHead(failure.status, {
             ...failure.headers,
@@ -201,6 +232,41 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
     }
 
     /**
+     * 鉴权之后、读体之前问一次限流器。
+     *
+     * 429 与 503 的区别在这里：429 是「这个地址打得太快」，与 worker 忙不忙无关，所以它先于
+     * 队列判断。log 模式下把「本来会被拒」的请求放过去，但仍然记一条带脱敏地址的日志 ——
+     * 否则调参期开了开关什么都看不到。
+     */
+    function admit(request, item) {
+        if (!limiter) return true
+        const now = Date.now()
+        const key = clientKey(request, { trustProxy: config.trustProxy })
+        const decision = limiter.check(key, now)
+        if (!decision.wouldDeny) return true
+
+        const ip = maskAddressKey(key)
+        if (decision.allowed) {
+            log('rate-limited', {
+                ...item.shape,
+                ip,
+                mode: decision.mode,
+                retryAfterSeconds: retryAfterFromInstant(decision.retryAtMs, now),
+            })
+            return true
+        }
+        const failure = rateLimitedResponse({ retryAtMs: decision.retryAtMs, nowMs: now })
+        // 请求体还没读：先把剩余字节排掉再关连接，客户端才读得到这个 429 而不是连接重置。
+        request.resume()
+        writeFailure(item, failure, {
+            close: true,
+            event: 'rate-limited',
+            detail: { ip, mode: decision.mode, retryAfterSeconds: failure.body.retry_after_seconds },
+        })
+        return false
+    }
+
+    /**
      * 有槽位空出来就清队列：先进先出，队头超预算之前它一直是队头。
      *
      * 挂断的连接由 begin() 里的 close 监听当场从队列摘走，所以这里不需要再认一遍连接状态：
@@ -253,10 +319,12 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
                 response.end(body)
                 return
             }
+            const item = begin(response, { path: pathname, method: request.method })
             if (!isAuthorized(request, config)) {
-                writeFailure(begin(response, { path: '/sign' }), failureResponse(ERROR_KINDS.UNAUTHORIZED, { message: '缺少或错误的 Bearer Token' }))
+                writeFailure(item, failureResponse(ERROR_KINDS.UNAUTHORIZED, { message: '缺少或错误的 Bearer Token' }))
                 return
             }
+            if (!admit(request, item)) return
 
             let spec
             try {
@@ -265,7 +333,7 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
             } catch (error) {
                 // 非法 JSON、缺 url、体太长 —— 都是「改请求，别重试」
                 writeFailure(
-                    begin(response, { path: pathname }),
+                    item,
                     failureResponse(ERROR_KINDS.INVALID_REQUEST, {
                         message: error instanceof ValidationError ? error.message : '请求体不是合法 JSON',
                     }),
@@ -274,7 +342,8 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
                 return
             }
 
-            const item = begin(response, requestShape(spec, config))
+            // 形状等解析完才有设备号与体长；限流日志在解析之前，只记路径与方法。
+            item.shape = requestShape(spec, config)
             item.request = spec
             item.startedAt = startedAt
 
@@ -313,7 +382,48 @@ export function createDispatcher({ config, pool, log = logEvent, fallback = null
     const sweepMs = Math.max(10, Math.min(100, Math.floor(waitBudgetMs / 4)))
     const sweeper = setInterval(expireQueue, sweepMs)
     sweeper.unref()
-    server.on('close', () => clearInterval(sweeper))
+
+    // 运行时模式开关：部署者在 state 目录里改写 rate-limit.mode（enforce / log / off），
+    // 这里每 pollMs 读一次；每个请求都不碰文件。顺带回收过期桶，内存不随运行时长上涨。
+    let housekeeping = null
+    if (limiter) {
+        let lastInvalid = null
+        const applyModeFromFile = () => {
+            if (!modeFile) return
+            let raw
+            try {
+                raw = fs.readFileSync(modeFile, 'utf8')
+            } catch {
+                return // 没有控制文件：保持启动时的模式
+            }
+            const next = normalizeMode(raw)
+            if (!next) {
+                // 写到一半的控制文件（例如重定向还没落完）按「这次没写」处理；同一份坏内容只报一次。
+                if (raw !== lastInvalid) {
+                    lastInvalid = raw
+                    log('rate-limit-mode-invalid', { mode: limiter.mode })
+                }
+                return
+            }
+            lastInvalid = null
+            if (next !== limiter.mode) {
+                limiter.setMode(next)
+                log('rate-limit-mode', { mode: next, source: 'file' })
+            }
+        }
+        // 启动时先认一次文件：重启之后不该等下一个节拍才回到部署者设定的模式。
+        applyModeFromFile()
+        housekeeping = setInterval(() => {
+            limiter.sweep(Date.now())
+            applyModeFromFile()
+        }, Math.max(100, modePollMs))
+        housekeeping.unref()
+    }
+
+    server.on('close', () => {
+        clearInterval(sweeper)
+        if (housekeeping) clearInterval(housekeeping)
+    })
 
     return server
 }
@@ -328,8 +438,10 @@ export function forkWorker(index, env = process.env) {
 /**
  * 组装生产形态的分发器：算出 worker 数、把来由打进日志、建池子、建服务。
  *
- * 默认服务（src/serve.mjs）通过 `createFallback(pool)` 注入签名以外的端点处理器；它需要拿到池子，
- * 好让 /readyz 反映「至少一台 worker 就绪」—— 预热期间回 200 会让编排器的起始宽限期作废。
+ * 默认服务（src/serve.mjs）通过 `createFallback({ pool, limiter, diagnostics })` 注入签名以外的
+ * 端点处理器（src/endpoints.mjs）；它需要拿到池子，好让 /readyz 反映「至少一台 worker 就绪」——
+ * 预热期间回 200 会让编排器的起始宽限期作废；也需要限流器与队列深度，好让 /stat 与 /sign
+ * 看到同一份状态。
  *
  * 端口先开、worker 在后台一台一台预热：预热期间客户端要读到的是那个 503（带 Retry-After），
  * 而不是「没人听这个端口」。反过来说，把 listen 等到所有 worker 预热完，最坏情况是
@@ -344,6 +456,9 @@ export function startDispatcher({
     onGiveUp = () => process.exit(1),
     createFallback = null,
 } = {}) {
+    // 非回环 + 没令牌 = 服务不该开门。放在这里而不是只放在 serve 装配层：任何直接调用
+    // startDispatcher 的入口都受同一条约束，而且检查发生在 fork 任何 worker 之前。
+    assertServeAuth(config)
     const parallelism = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length
     const { count, reason } = deriveWorkerCount({
         bind: config.host,
@@ -354,6 +469,13 @@ export function startDispatcher({
         waitBudgetMs: parsePositiveInt(env.LIBMSSDK_WAIT_BUDGET_MS, DEFAULT_WAIT_BUDGET_MS),
         queueLimit: parsePositiveInt(env.LIBMSSDK_QUEUE_LIMIT, count * QUEUE_LIMIT_PER_WORKER),
     }
+    const rateSettings = rateLimitSettingsFromEnv(env)
+    const limiter = createRateLimiter(rateSettings)
+    // 控制文件默认跟身份文件放同一个 state 目录；直接构造时没有 identityFile 就不轮询。
+    const modeFile =
+        rateSettings.modeFile ||
+        (config.identityFile ? path.join(path.dirname(config.identityFile), 'rate-limit.mode') : '')
+    const diagnostics = { queueDepth: () => 0, queueLimit: 0 }
 
     const pool = createWorkerPool({
         workerCount: count,
@@ -364,18 +486,38 @@ export function startDispatcher({
         respawnCapMs: parsePositiveInt(env.LIBMSSDK_WORKER_RESPAWN_CAP_MS, GIVE_UP_WINDOW_MS),
     })
     // 实际值与来由都要说出来：绑定地址一变进程数就变，日志不写就等于让人猜。
-    log('dispatcher', { workers: count, reason, ...limits, bind: config.host })
+    // 限流参数也一并写：默认是否生效、当前是拦还是只看，部署者要能一眼确认。
+    const rateInfo = limiter.stats()
+    log('dispatcher', {
+        workers: count,
+        reason,
+        ...limits,
+        bind: config.host,
+        // 训练不到「宿主机端口是否只对反代开放」，但至少把「是否信任 XFF」说出来：
+        // 它和宿主机端口绑定一起决定限流能不能被绕过。
+        trustProxy: Boolean(config.trustProxy),
+        rateLimit: {
+            mode: rateInfo.mode,
+            ratePerSecond: rateInfo.ratePerSecond,
+            burst: rateInfo.burst,
+            maxBuckets: rateInfo.maxBuckets,
+        },
+    })
 
     const server = createDispatcher({
         config: { ...config, ...limits },
         pool,
         log,
-        fallback: createFallback ? createFallback(pool) : null,
+        limiter,
+        modeFile,
+        modePollMs: rateSettings.pollMs,
+        diagnostics,
+        fallback: createFallback ? createFallback({ pool, limiter, diagnostics }) : null,
     })
     // start() 只会 resolve（每台 worker 的 settled 没有 reject 路径），但 spawn 本身可能同步抛
     pool.start().catch(error =>
         log('dispatcher-start-failed', {
             message: redactMachinePaths(String(error?.message || error), [config.bdmsModule, config.clientDir]),
         }))
-    return { server, pool }
+    return { server, pool, limiter }
 }

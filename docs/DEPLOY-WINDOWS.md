@@ -83,6 +83,12 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
 `Retry-After: 1`。这不影响 `nssm`/计划任务：
 服务进程本身已经起来了，只是还没能接流量。
 
+从本版本起还默认按客户端地址限流（0.5 次/秒、突发 12）：超限回 **429 `RATE_LIMITED`**，
+`Retry-After` 是精确的下次可请求时刻向上取整（最少 1 秒）。`GET /stat` 可看活跃桶数、
+允许/拒绝计数、队列深度与 worker 数；地址脱敏，该端点不鉴权、不过限流。
+若前面挂了同机反向代理，设 `LIBMSSDK_TRUST_PROXY=1` 后务必让服务端口只对反代开放
+（Windows 上绑 `127.0.0.1`），否则可绕过反代伪造 `X-Forwarded-For`、自选分桶键。
+
 默认只监听 `127.0.0.1:8899`。跨机访问**优先用 SSH 隧道**：
 
 ```bash
@@ -91,7 +97,7 @@ ssh -N -L 18899:127.0.0.1:8899 win-box
 export QISHUI_SIGNER_URL=http://127.0.0.1:18899/sign
 ```
 
-确需监听局域网时，务必同时设置 `LIBMSSDK_TOKEN` 并用防火墙限制来源网段。
+确需监听局域网时，必须设置 `LIBMSSDK_TOKEN`（否则 `serve` 拒绝启动），并用防火墙限制来源网段。
 
 ### 要 HTTPS 就挂反向代理（进程内不做 TLS）
 

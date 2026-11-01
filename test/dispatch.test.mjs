@@ -48,8 +48,8 @@ test('worker 数按绑定地址推导：只服务本机就不多开，对局域�
         count: 6,
         reason: 'LIBMSSDK_WORKERS=6',
     })
-    // 绑定回环：单机自用，多开只是白吃内存和更长的启动
-    for (const bind of ['127.0.0.1', 'localhost', '::1', '[::1]']) {
+    // 绑定回环：单机自用，多开只是白吃内存和更长的启动。127/8 整段都算回环。
+    for (const bind of ['127.0.0.1', '127.0.0.2', '127.1.2.3', 'localhost', '::1', '[::1]']) {
         assert.deepEqual(deriveWorkerCount({ bind, parallelism: 8 }), {
             count: 1,
             reason: `绑定 ${bind} 是回环地址，本机自用开 1 个`,

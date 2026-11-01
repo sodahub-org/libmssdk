@@ -116,6 +116,15 @@ export LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 | `LIBMSSDK_WAIT_BUDGET_MS` | `/sign` 排队预算（默认 5000ms），超出回 503 `BUSY` |
 | `LIBMSSDK_QUEUE_LIMIT` | 等待队列上限（默认 worker 数的 4 倍），排不下当场回 503 |
 | `LIBMSSDK_WARMUP_BUDGET_MS` | 单台 worker 的预热预算（默认 30000ms）；超预算它保持未就绪且进程不退出 |
+| `LIBMSSDK_RATE_LIMIT_PER_SECOND` / `LIBMSSDK_RATE_LIMIT_BURST` | 单 IP 持续速率与突发额度（默认 0.5 次/秒、12） |
+| `LIBMSSDK_RATE_LIMIT_MAX_BUCKETS` | 限流桶上限（默认 4096），满了挤掉最久没动的桶 |
+| `LIBMSSDK_RATE_LIMIT_MODE` | 启动模式：`enforce` / `log` / `off`（默认 `enforce`） |
+| `LIBMSSDK_RATE_LIMIT_MODE_FILE` | 运行时模式控制文件（默认 state 目录下的 `rate-limit.mode`）；写入后约 2 秒内切换 |
+| `LIBMSSDK_RATE_LIMIT_MODE_POLL_MS` | 控制文件的轮询间隔（默认 2000ms） |
+| `LIBMSSDK_TRUST_PROXY` | 设为 `1` 才信任 `X-Forwarded-For`（取最右一跳）；默认只认 TCP 对端地址。打开时服务端口须只对反代开放（绑 127.0.0.1） |
+
+运行时把 state 目录下的 `rate-limit.mode` 写成 `enforce` / `log` / `off` 即可在不重启的情况下
+切换限流模式（约 2 秒内生效）。
 
 worker 重生退避（`LIBMSSDK_WORKER_RESPAWN_BASE_MS` / `LIBMSSDK_WORKER_RESPAWN_CAP_MS`）见
 [`.env.example`](.env.example)。
@@ -131,8 +140,9 @@ Cloudflare Workers 不能运行 `bdms.node` / `metasecml.dll`，因此不能承�
 | `GET /livez` | 恒 200：只回答「进程还在不在」，不查任何依赖、不做任何计算 |
 | `GET /readyz` | 至少一台 worker 就绪且不在收尾中才 200，否则 503。不泄露凭据 |
 | `GET /healthz` | `/readyz` 的别名，留给已有的编排配置 |
+| `GET /stat` | 诊断：活跃限流桶、允许/拒绝计数、队列深度、worker 数；地址一律脱敏、不过限流 |
 
-HTTP 层只做签名这一件事：`/probe`、`/track/stream`、`/config` 三个端点已经拿掉了，真机自检是
+HTTP 层只做签名与自身状态诊断：`/probe`、`/track/stream`、`/config` 三个端点已经拿掉了，真机自检是
 命令行 `node src/index.mjs probe --track <track_id>`。为什么拿掉、以及旧端点在弃用期回什么，见
 [`docs/UPGRADING.md`](docs/UPGRADING.md)。
 
@@ -142,10 +152,14 @@ HTTP 层只做签名这一件事：`/probe`、`/track/stream`、`/config` 三个
 
 - `/sign` 由主进程排队、worker 计算；没有就绪 worker 或队列已满时立即回 503，已入队的请求超过等待预算才回 503。
 - 失败状态码按「时间能否解决」分类：400 / 401 / 429 / 503 / 500，**502 不再出现**。
-- 只有服务忙（503 `BUSY`）与被限流（429 `RATE_LIMITED`）带 `Retry-After`。限流器在后续版本启用。
+- 只有服务忙（503 `BUSY`）与被限流（429 `RATE_LIMITED`）带 `Retry-After`。限流默认生效：
+  按 TCP 对端地址分桶（IPv6 按 /64），超限回 429，等待时长是下次可请求时刻向上取整、最少 1 秒。
+- 绑定非回环地址又没有设置 `LIBMSSDK_TOKEN` 时拒绝启动；绑定回环地址才允许无令牌访问（本机自用）。
+- 新增 `GET /stat`：没有监控系统时用它看桶数、拒绝数、队列深度与 worker 数，地址全部脱敏。
 - 健康检查拆成 `/livez`（恒 200）与 `/readyz`（跟 worker 就绪与收尾状态绑定），`/healthz` 是后者别名。
 - 诊断端点收拢：`/probe` 与 `/track/stream` 只回带 `Deprecation` / `Sunset` 的回执（下一版本 410），
-  `/config` 直接删除。出网代码只剩 `src/probe.mjs` 一处。
+  `/config` 直接删除（它明文返回整套设备身份，而 #8 的 `trustProxy` 开关改由启动日志与 `/stat` 核对）。
+  出网代码只剩 `src/probe.mjs` 一处。
 - 交付能直接用的反向代理配置（`deploy/reverse-proxy/`）；进程内仍不做 TLS。
 
 完整升级影响见 [`docs/UPGRADING.md`](docs/UPGRADING.md)。
