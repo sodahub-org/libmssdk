@@ -106,11 +106,20 @@ export function nginxNoLogPaths(conf) {
     return paths
 }
 
+/** 剥掉 Caddy 的行注释：`#` 在行首或空白之后都算（示例里没有把 # 写进路径的情况）。 */
+function stripComment(line) {
+    return line.replace(/(^|\s)#.*$/, '$1')
+}
+
+/** 把 Caddy 的引号正文（双引号与反引号）抹成空白，别让正文里的 `{`、数字干扰判断。 */
+function maskQuoted(line) {
+    return line.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`/g, ' ')
+}
+
 /** 去掉注释与引号里的花括号后数括号：site block 才是 matcher 的作用域。 */
 function braceDelta(line) {
-    const code = line.replace(/\s+#.*$/, '').replace(/"(?:[^"\\]|\\.)*"/g, '')
     let delta = 0
-    for (const char of code) {
+    for (const char of maskQuoted(stripComment(line))) {
         if (char === '{') delta += 1
         else if (char === '}') delta -= 1
     }
@@ -124,7 +133,7 @@ function splitCaddySiteBlocks(text) {
     let depth = 0
     for (const line of text.split('\n')) {
         const outsideBlock = depth === 0 && current.length === 0
-        if (outsideBlock && !line.replace(/\s+#.*$/, '').includes('{')) continue
+        if (outsideBlock && !stripComment(line).includes('{')) continue
         current.push(line)
         depth += braceDelta(line)
         if (depth === 0) {
@@ -152,7 +161,7 @@ export function parseCaddyPathRules(block) {
     const definitions = new Map()
     const denyReferences = []
     for (const raw of block.split('\n')) {
-        const line = raw.replace(/\s+#.*$/, '').trim()
+        const line = stripComment(raw).trim()
         const definition = /^(@[\w-]+)\s+(not\s+)?path\s+(.+)$/.exec(line)
         if (definition) {
             definitions.set(definition[1], {
@@ -163,9 +172,8 @@ export function parseCaddyPathRules(block) {
         }
         const reference = /^respond\s+(@[\w-]+)\b(.*)$/.exec(line)
         if (!reference) continue
-        // 引号里可能写着「404 page」这类正文，不能当成状态码。
-        const withoutBody = reference[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ')
-        const statuses = withoutBody.match(/\b\d{3}\b/g)
+        // 引号（双引号/反引号）里可能写着「404 page」这类正文，不能当成状态码。
+        const statuses = maskQuoted(reference[2]).match(/\b\d{3}\b/g)
         const status = statuses ? Number(statuses.at(-1)) : 200
         if (status >= 400) denyReferences.push(reference[1])
     }

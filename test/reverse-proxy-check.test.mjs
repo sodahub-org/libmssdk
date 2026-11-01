@@ -229,6 +229,45 @@ test('README 路径规则：respond 引号里的 404 正文不算状态码', () 
     assert.equal(rules.hasGate, false, '没有状态码就是默认 200，不是拦截')
 })
 
+test('README 路径规则：respond 反引号里的 404 正文也不算状态码', () => {
+    const markdown = [
+        '```caddyfile',
+        'example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny `404 page`',
+        '}',
+        '```',
+    ].join('\n')
+
+    const [rules] = extractCaddyPathRules(markdown)
+    assert.equal(rules.hasGate, false, '反引号正文不是状态码，默认 200')
+})
+
+test('README 路径规则：行首注释里的花括号不参与 site block 切分', () => {
+    const markdown = [
+        '```caddyfile',
+        '# 只放行签名与探针 {注意后面的 404',
+        'strict.example.com {',
+        '    @deny not path /sign /livez /readyz',
+        '    respond @deny 404',
+        '}',
+        'loose.example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
+
+    const [strict, loose] = extractCaddyPathRules(markdown)
+    assert.equal(strict.allowed.has('/healthz'), false)
+    assert.equal(loose.allowed.has('/healthz'), true)
+
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
+    assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
+    assert.match(problems[0].detail, /\/healthz/)
+})
+
 test('结构对照：多段示例的问题都要报出来，不能只留第一条', () => {
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
     const readme = [
