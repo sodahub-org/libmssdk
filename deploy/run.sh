@@ -61,10 +61,11 @@ set +a
 #      值为空（KEY=、KEY=""、KEY: ）与没写这一行同义，两边都按缺省走，不算读不进去；注释行不算。
 #      只管脚本自己会读的那几个变量。
 env_unreadable_shape() {
-    # $1 = 变量名。三种 bash 读不进去的分隔符形状：冒号、等号前有空白、等号后有空白；
-    # 后面必须跟得到一个真实的值（引号包住的算，空的、只剩注释的不算）。
+    # $1 = 变量名。三种 bash 读不进去的分隔符形状：冒号、等号前有空白、等号后有空白。
+    # 后面还要跟得到一个真实的值：引号包住的算（连 "#…" 这种以 # 开头的也算），裸着的以 # 开头是注释；
+    # `KEY=`、`KEY=""`、`KEY:` 这些没有值的形状不算 —— 两边都按「没填」走缺省。
     local key=$1
-    grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}([[:space:]]*:[[:space:]]*|[[:space:]]+=|[[:space:]]*=[[:space:]]+)[[:space:]]*[\"']?[^[:space:]\"'#]" .env
+    grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}([[:space:]]*:[[:space:]]*|[[:space:]]+=|[[:space:]]*=[[:space:]]+)[[:space:]]*([\"'][^\"']|[^[:space:]\"'#])" .env
 }
 
 for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
