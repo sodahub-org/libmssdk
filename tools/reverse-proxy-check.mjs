@@ -4,6 +4,9 @@
 // - Caddyfile：官方镜像里跑 `caddy validate`，变量齐全时须通过，缺任意一个变量时须失败，
 //   且报错要指到具体行（不是一句 exit code）。
 // - deploy/README.md 里标记为 caddyfile 的代码块（那段路径白名单示例）一起验。
+// - 结构对照：nginx 的免日志 location 与 README 的路径白名单必须覆盖 src/endpoints.mjs 的
+//   PROBE_PATHS（/healthz 是 /readyz 的别名）。这类漏项 nginx -t 不会报（语法是对的），
+//   所以单列一道检查；新增别名漏改一边就直接红。
 // - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`（镜像自带的 nginx.conf
 //   就是那个最小 `http {}` 外壳）；再注入一条非法指令，确认失败信息能指到行号（证明验的确实是
 //   这个文件，而不是镜像自带的默认配置）。
@@ -17,6 +20,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { PROBE_PATHS } from '../src/endpoints.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CADDYFILE_PATH = join(repoRoot, 'deploy', 'reverse-proxy', 'Caddyfile')
@@ -65,6 +70,52 @@ export function extractCaddyfileBlocks(markdown, source = 'Markdown') {
     return blocks
 }
 
+/**
+ * 从 nginx 配置里取出「关了访问日志的 location」覆盖的路径集合。
+ *
+ * 两种写法都认：精确匹配 `location = /livez { access_log off; ... }`，以及正则
+ * `location ~ ^/(livez|readyz|healthz)/?$ { ... }`。只收 body 里带 `access_log off` 的。
+ * 正则拆不出来的写法原样收进集合（而不是忽略），对照失败时输出里才看得见它。
+ */
+export function nginxNoLogPaths(conf) {
+    const paths = new Set()
+    const locationPattern = /location\s+(=\s*|~\s*)?([^\s{]+)\s*\{([^}]*)\}/g
+    for (const match of conf.matchAll(locationPattern)) {
+        const [, operator = '', spec, body] = match
+        if (!/\baccess_log\s+off\b/.test(body)) continue
+        if (operator.trim() === '~') {
+            // 认 `^/(a|b|c)/?$` 这一种写法（尾斜杠可选，与服务端认尾斜杠对齐）。
+            const prefix = '^/('
+            const suffix = ')/?$'
+            if (spec.startsWith(prefix) && spec.endsWith(suffix)) {
+                for (const name of spec.slice(prefix.length, -suffix.length).split('|')) {
+                    paths.add(`/${name.trim()}`)
+                }
+            } else {
+                paths.add(spec)
+            }
+            continue
+        }
+        if (spec.startsWith('/')) paths.add(spec)
+    }
+    return paths
+}
+
+/**
+ * 从 Markdown 的 caddyfile 示例里取出路径白名单：`@name not path /sign /livez ...`
+ * 与 `@name path ...` 两种写法都认。用来核对「放行的清单」与探针清单一致。
+ */
+export function extractCaddyWhitelistPaths(markdown, source = 'Markdown') {
+    const paths = []
+    for (const block of extractCaddyfileBlocks(markdown, source)) {
+        for (const line of block.split('\n')) {
+            const match = /^\s*@[\w-]+\s+(?:not\s+)?path\s+(.+)$/.exec(line)
+            if (match) paths.push(...match[1].trim().split(/\s+/))
+        }
+    }
+    return paths
+}
+
 function indent(text) {
     return text
         .trim()
@@ -101,6 +152,21 @@ function expectFailureWithLocation(name, run, locationPattern) {
         return
     }
     report(name, true, run.output)
+}
+
+/** 两份清单必须逐项相等：少了的是漏改，多了的是过期条目。 */
+function expectSamePaths(name, actual, expected) {
+    const missing = [...expected].filter(path => !actual.has(path))
+    const extra = [...actual].filter(path => !expected.has(path))
+    if (missing.length === 0 && extra.length === 0) {
+        report(name, true, [...actual].sort().join(' '))
+        return
+    }
+    const detail = [
+        missing.length > 0 ? `少了：${missing.sort().join(' ')}` : '',
+        extra.length > 0 ? `多了：${extra.sort().join(' ')}` : '',
+    ].filter(Boolean).join('\n')
+    report(name, false, detail)
 }
 
 function docker(args) {
@@ -194,6 +260,26 @@ function main() {
                 caddyValidate(caddyImage, workDir, file, PLACEHOLDERS),
             )
         })
+
+        // 探针清单的唯一口径是 src/endpoints.mjs 的 PROBE_PATHS（/healthz 是 /readyz 的别名）。
+        // nginx -t 只管语法：漏掉一个别名照样通过，高频探针却会照进取数日志。所以这里逐项对照。
+        expectSamePaths(
+            'nginx.conf：免访问日志的 location 覆盖全部探针',
+            nginxNoLogPaths(readFileSync(NGINX_CONF_PATH, 'utf8')),
+            new Set(PROBE_PATHS),
+        )
+        expectSamePaths(
+            'deploy/README.md：白名单放行 /sign 与全部探针',
+            new Set(extractCaddyWhitelistPaths(readFileSync(README_PATH, 'utf8'), 'deploy/README.md')),
+            new Set(['/sign', ...PROBE_PATHS]),
+        )
+        const caddyfile = readFileSync(CADDYFILE_PATH, 'utf8')
+        const caddyLogs = /^\s*log\b/m.test(caddyfile)
+        report(
+            'Caddyfile：没开访问日志（探针默认不记）',
+            !caddyLogs,
+            caddyLogs ? '出现了 log 指令：Caddy 会把高频探针一起写进访问日志' : '',
+        )
 
         const certDir = join(workDir, 'certs', EXAMPLE_DOMAIN)
         mkdirSync(certDir, { recursive: true })

@@ -119,6 +119,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 8. 端点收拢之后反代里没什么必须挡的了：`/probe`、`/track/stream`、`/config` 已经不在 HTTP 上，
    那三条路径只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、
    `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
+   这三条探针的清单只在 `src/endpoints.mjs` 的 `PROBE_PATHS` 里维护；`nginx.conf` 的免日志
+   location 与下面白名单都照它写，新增别名时同步那两处（`npm test` 与 CI 的反代校验会核对）。
    `/stat` 不鉴权、地址已脱敏，但**计数会暴露使用情况**（桶数、允许/拒绝、队列深度），公网部署
    建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名与探针：
 
