@@ -65,9 +65,10 @@ function childEnv() {
  * 在临时目录里跑一遍真实的 deploy/run.sh。
  *
  * @param {string[]} [envLines] deploy/.env 的内容；不传就不建这个文件，让 run.sh 走首次生成的分支
+ * @param {Record<string, string>} [extraEnv] 额外塞给子进程的环境变量（在清掉宿主 LIBMSSDK_* 之后）
  * @returns {{status: number, stderr: string, composeCalls: string[], leakedVars: string, envFile: string}}
  */
-function runDeployScript(envLines) {
+function runDeployScript(envLines, extraEnv = {}) {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-run-sh-'))
     try {
         const deployDir = path.join(work, 'deploy')
@@ -88,7 +89,7 @@ function runDeployScript(envLines) {
         const wrapper = 'export PATH="$1/bin:$PATH"; COMPOSE_STUB_LOG="$1/compose-calls.log" bash "$1/deploy/run.sh"'
         const result = spawnSync('bash', ['-c', wrapper, 'libmssdk-deploy', toShellPath(work)], {
             encoding: 'utf8',
-            env: childEnv(),
+            env: { ...childEnv(), ...extraEnv },
         })
         if (result.error) throw result.error
 
@@ -366,6 +367,18 @@ test('.env 里跑失败的一行不会把 allexport 留在开着：脚本的局�
 
     assert.equal(status, REACHED_COMPOSE, '与检查无关的坏行不该把部署拦下')
     assert.equal(leakedVars, '', `run.sh 的局部变量不该出现在 compose 子进程的环境里：${leakedVars}`)
+})
+
+test('CRLF 的 .env 读出的 \\r 按「没填」算，不是违规', { skip: skipIfNoBash() }, () => {
+    // Linux 上 bash 读 CRLF 的 .env 会把 \r 留在值里；Git Bash 在 read 之前就吃掉了 CR，同一条 .env
+    // 在本机测不出这一型（CI 的 linux 作业就是这么红的）。所以这里从环境变量把 \r 送进去，
+    // 两个平台跑的才是同一条代码路径。compose 那边这个值同样按空处理，缺省只绑回环。
+    const { status, stderr } = runDeployScript(
+        deployEnv({ hostname: 'signer.example.com' }),
+        { LIBMSSDK_BIND: '\r' },
+    )
+
+    assert.equal(status, REACHED_COMPOSE, `值只剩 \\r 时该按缺省的回环放行：${stderr}`)
 })
 
 test('run.sh 首次生成的 .env 写清了这条检查与逃生舱', { skip: skipIfNoBash() }, () => {

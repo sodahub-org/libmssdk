@@ -145,10 +145,12 @@ esac
 # 而 compose 会把宿主端口绑到它解析出来的地址上。去空白比那边的 trim 更狠（内嵌的也去），但方向是安全的：
 # `127.0. 0.1` 在这里算回环，而 compose 拿原值去绑根本绑不上，明文口开不出来。
 # 缺省值取 127.0.0.1：与 docker-compose.yml 的 ${LIBMSSDK_BIND:-127.0.0.1} 一致，没写这一行时 compose
-# 本来就只绑回环，那不是违规，不能误拦。
+# 本来就只绑回环，那不是违规，不能误拦。去完空白后又变回空的也算这一档 —— CRLF 的 .env 在 Linux 上
+# 会把 \r 留在值里（Git Bash 读文件时先吃掉了，所以本机测不出来），而 compose 那边这个值同样按空处理。
 bind_value=${LIBMSSDK_BIND:-127.0.0.1}
 bind_value=${bind_value//[[:space:]]/}
 bind_value=${bind_value,,}
+bind_value=${bind_value:-127.0.0.1}
 octet='([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
 is_loopback=0
 case "$bind_value" in
