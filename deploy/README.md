@@ -94,6 +94,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    上面两份配置的语法由 CI 离线校验（`.github/workflows/ci.yml` 的 `reverse-proxy` 作业）：
    Caddyfile 用 `caddy:2.11.7-alpine` 跑 `caddy validate`（变量齐全、缺任意一个都跑，缺变量时报错要指到行），
    nginx.conf 用 `nginx:1.30.6-alpine` 跑 `nginx -t`（`http2 on;` 要求 nginx ≥ 1.25.1）。这就是「验过的版本」。
+   注意 `docker-compose.proxy.yml` 里的 `image: caddy:2` 是浮动大版本：拉到更新的 2.x 后，建议按上面的
+   命令自己再验一遍。
    CI 验的是**语法**；你上线要验的是域名解析与证书可达。改过文件，或你本机装的 Caddy / nginx 不是这两个
    版本时，仍要自己跑一次 `caddy validate` / `nginx -t`。本地复跑需要 Docker 与 openssl，命令见
    [`../tools/reverse-proxy-check.mjs`](../tools/reverse-proxy-check.mjs) 开头的说明。
