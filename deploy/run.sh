@@ -21,14 +21,18 @@ if [ ! -f .env ]; then
 # libmssdk 部署配置（run.sh 生成，勿提交）
 LIBMSSDK_TOKEN=${TOKEN}
 # 宿主上把明文 8899 发布到哪张网卡：0.0.0.0 = 允许外部直连（配合防火墙 + token）；
-# 只想本机用、或前面挂了反向代理，就写 127.0.0.1（代理在容器网络里照样能访问服务）
+# 只想本机用、或前面挂了反向代理，就写 127.0.0.1（代理在容器网络里照样能访问服务）。
+# 下面 SIGNER_HOSTNAME 或 LIBMSSDK_TRUST_PROXY 一旦填上，这里不收成回环 run.sh 就拒绝启动。
 LIBMSSDK_BIND=${LIBMSSDK_BIND:-0.0.0.0}
 LIBMSSDK_PORT=${LIBMSSDK_PORT:-8899}
 # 前面挂同机反向代理时改成 1，并把上面的 LIBMSSDK_BIND 改成 127.0.0.1
 # LIBMSSDK_TRUST_PROXY=0
+# 故意同时保留对外的明文入口（只在内网防火墙后面时才成立）：改成 1，run.sh 放行但会留一句提醒
+# LIBMSSDK_ALLOW_PUBLIC_HTTP=0
 # 指向你自己安装的汽水客户端版本目录（内含 resources/）
 LIBMSSDK_CLIENT_DIR=
 # 只在上反向代理那一层时需要（docker compose -f docker-compose.yml -f docker-compose.proxy.yml）
+# 填上它就等于声明前面挂了同机反代，run.sh 会要求上面的 LIBMSSDK_BIND 是 127.0.0.1
 # SIGNER_HOSTNAME=signer.example.com
 EOF
     chmod 600 .env
@@ -46,6 +50,31 @@ if [ -z "${LIBMSSDK_CLIENT_DIR:-}" ]; then
     echo "      指向你本机安装的汽水音乐版本目录（内含 resources/）。" >&2
     echo "      该目录会以只读方式挂进容器，用于提供 bdms.node 和 metasecml.dll。" >&2
     exit 1
+fi
+
+# 1.3) 要挂反向代理，宿主的明文口就必须收进回环
+#      这条以前只在 README 与 compose 注释里，靠人读；跳过那一步的人照样在把 token 与 cookie
+#      走明文发出去。判断只能落在部署脚本侧：容器里的进程永远看到 0.0.0.0（docker-compose.yml 写死）。
+if [ -n "${SIGNER_HOSTNAME:-}" ] || [ "${LIBMSSDK_TRUST_PROXY:-0}" = "1" ]; then
+    # 缺省值与 docker-compose.yml 的 ${LIBMSSDK_BIND:-127.0.0.1} 同口径：没写这一行时 compose 本来就
+    # 只绑回环，那不是违规，不能误拦。回环范围与 src/dispatch.mjs 的 isLoopbackBind 一致（127/8 整段）。
+    case "${LIBMSSDK_BIND:-127.0.0.1}" in
+        127.* | localhost | ::1 | '[::1]' | 0:0:0:0:0:0:0:1) ;;
+        *)
+            if [ "${LIBMSSDK_ALLOW_PUBLIC_HTTP:-0}" = "1" ]; then
+                echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${LIBMSSDK_BIND}）。" >&2
+                echo "      这只在「确实要同时保留对外的明文入口，且它在内网防火墙后面」时成立：token 等价于签名能力，它和 cookie 走的都是明文。" >&2
+            else
+                echo "错误：设了 SIGNER_HOSTNAME 或 LIBMSSDK_TRUST_PROXY=1（前面挂反向代理），LIBMSSDK_BIND 就必须是 127.0.0.1，现在是 ${LIBMSSDK_BIND}。" >&2
+                echo "      否则任何人都能绕过 443 直连 http://<host>:${LIBMSSDK_PORT:-8899}/sign，Bearer token 与请求里的 cookie 全走明文；" >&2
+                echo "      开了 LIBMSSDK_TRUST_PROXY 时这条直连还能自带伪造的 X-Forwarded-For 自选分桶键，限流等于没开。" >&2
+                echo "      改法：在 deploy/.env 写 LIBMSSDK_BIND=127.0.0.1。它管的是宿主上把端口发布到哪张网卡，" >&2
+                echo "      容器内进程固定监听 0.0.0.0，代理经服务名 libmssdk:8899 访问，不受这一行影响。" >&2
+                echo "      确实要同时留着对外的明文入口（只有内网防火墙后面这一种情形），设 LIBMSSDK_ALLOW_PUBLIC_HTTP=1；见 deploy/README.md 第 2 步。" >&2
+                exit 1
+            fi
+            ;;
+    esac
 fi
 
 # 1.5) 指定了绝对路径就先把目录建好（compose 不会自动建绑定挂载目录）

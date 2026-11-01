@@ -121,7 +121,7 @@ export LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 | `LIBMSSDK_RATE_LIMIT_MODE` | 启动模式：`enforce` / `log` / `off`（默认 `enforce`） |
 | `LIBMSSDK_RATE_LIMIT_MODE_FILE` | 运行时模式控制文件（默认 state 目录下的 `rate-limit.mode`）；写入后约 2 秒内切换 |
 | `LIBMSSDK_RATE_LIMIT_MODE_POLL_MS` | 控制文件的轮询间隔（默认 2000ms） |
-| `LIBMSSDK_TRUST_PROXY` | 设为 `1` 才信任 `X-Forwarded-For`（取最右一跳）；默认只认 TCP 对端地址。打开时服务端口须只对反代开放（绑 127.0.0.1） |
+| `LIBMSSDK_TRUST_PROXY` | 设为 `1` 才信任 `X-Forwarded-For`（取最右一跳）；默认只认 TCP 对端地址。打开时服务端口须只对反代开放（绑 127.0.0.1）—— Docker 形态下这个组合由 `deploy/run.sh` 拦住，裸机仍要自查 |
 
 运行时把 state 目录下的 `rate-limit.mode` 写成 `enforce` / `log` / `off` 即可在不重启的情况下
 切换限流模式（约 2 秒内生效）。
