@@ -670,6 +670,62 @@ async function main() {
     if (leakedKinds.size) recordFailure('logHygiene', null, 'unclassified', `服务日志里出现了敏感值：${[...leakedKinds].join(', ')}`)
     say(`[verify] 判据 6 ${report.criteria.logHygiene.status}：扫了 ${scannedBytes} 字节 serve 日志（查 ${scannedFor.join('/') || '无'}）`)
 
+    // ——— 判据 7（记录，不参与门禁）：docker stop 期间到底先看到 503 还是连接被拒 ———
+    // #23 的证据：修好后应当先读到可读的 503（entrypoint 转发 SIGINT → Node 改口 → 排空窗口），
+    // 最后才变成连接被拒；没修好时从头就是 refused。Wine 的 Ctrl+C 转发有版本回归风险，
+    // 所以这里如实记录形态序列，不折成一个通过/失败去掩盖差异。
+    if (typeof driver.observeStop === 'function') {
+        // 判据 7 只是记录：观察阶段自己出错（容器已经不在、docker exec 失败……）不能把已经
+        // 跑完的 1–6 一起报成「未执行」——就地 catch，记一条 ERROR，结论照常出。
+        // 输出放在 try 外：写日志再失败也不该把已经记好的观察覆盖成 ERROR。
+        // 「观察中」先打出去：docker stop 最多要等 30 秒，别让控制台以为卡住了。
+        say('[verify] 判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…')
+        let message = ''
+        try {
+            // 判据 4 已经杀掉一个进程，它的端口注定是 refused；只观察停之前还活着的那些。
+            const alive = []
+            for (let index = 0; index < driver.hostPorts.length; index += 1) {
+                if ((await driver.pidAlive(index)) === true) alive.push(index)
+            }
+            if (alive.length === 0) {
+                report.observations.stopObservation = {
+                    status: 'SKIPPED',
+                    reason: '停止前已经没有活着的 serve 进程（前面的判据已把进程杀光），没有可观察的收尾',
+                }
+                message = '判据 7 SKIPPED：停止前没有活着的 serve 进程'
+            } else {
+                const observed = await driver.observeStop({ graceSeconds: 30, indexes: alive })
+                const sawReadable503 = observed.sequences.map(entry => entry.sequence.includes('http-503'))
+                const graceful = sawReadable503.filter(Boolean).length
+                report.observations.stopObservation = {
+                    status:
+                        sawReadable503.length > 0 && graceful === sawReadable503.length
+                            ? 'saw-503'
+                            : graceful > 0
+                              ? 'mixed'
+                              : 'refused-only',
+                    graceful,
+                    processes: sawReadable503.length,
+                    alivePorts: observed.sequences.map(entry => entry.port),
+                    sequences: observed.sequences.map(entry => `${entry.port}: ${entry.sequence.join(' → ')}`),
+                    ...(observed.stopError ? { stopError: observed.stopError } : {}),
+                }
+                message = `判据 7 ${report.observations.stopObservation.status}：${report.observations.stopObservation.sequences.join(' | ')}`
+            }
+        } catch (error) {
+            const detail = redactor.sanitize('stop-observation', String(error?.message || error))
+            report.observations.stopObservation = { status: 'ERROR', reason: detail }
+            message = `判据 7 ERROR：${detail}`
+        }
+        say(`[verify] ${message}`)
+    } else {
+        report.observations.stopObservation = {
+            status: 'SKIPPED',
+            reason: '彩排模式没有容器可停，Wine 的信号转发在这里不成立',
+        }
+        say('[verify] 判据 7 SKIPPED：彩排模式没有容器可停')
+    }
+
     printConclusion()
 }
 

@@ -198,7 +198,11 @@ STAGE=$(mktemp -d)
 cleanup() {
     rm -rf "$STAGE"
     if [[ "$KEEP" == 1 ]]; then
-        echo "[verify] --keep：保留容器，自行清理用 docker rm -f $CONTAINER（两个卷里的 Wine prefix 与身份始终保留）"
+        if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" == "true" ]]; then
+            echo "[verify] --keep：保留运行中的容器 $CONTAINER（两个卷里的 Wine prefix 与身份始终保留）"
+        else
+            echo "[verify] --keep：容器 $CONTAINER 已停止（判据 7 会执行 docker stop）；要再用就 docker start $CONTAINER（两个卷始终保留）"
+        fi
         return
     fi
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true

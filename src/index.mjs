@@ -10,7 +10,7 @@
 
 import { loadConfig, maskDeviceId, VERSION } from './config.mjs'
 import { BdmsSigner } from './bdms.mjs'
-import { startServe } from './serve.mjs'
+import { startServe, stopPoolQuietly } from './serve.mjs'
 import { probeTrack } from './probe.mjs'
 import { errorResponse, normalizeSignRequest, signResponse } from './contract.mjs'
 import { logError, logEvent } from './log.mjs'
@@ -36,7 +36,8 @@ async function readStdin() {
 async function commandServe() {
     // /sign 由主进程排队、worker 计算；签名以外的端点（健康检查与弃用回执）由 src/endpoints.mjs
     // 承接。主进程那份 signer 只给 selftest / probe / bridge 用，不进 HTTP 层。
-    const { server, pool, markClosing } = startServe({ config })
+    const entry = startServe({ config })
+    const { server, pool } = entry
     try {
         await new Promise((resolve, reject) => {
             const onError = error => reject(error)
@@ -50,7 +51,7 @@ async function commandServe() {
         // 端口没起来也要把已经 fork 的 worker 收掉。预热中的 worker 可能正卡在同步采样里，
         // shutdown 消息要等它跑完；给一秒宽限，之后强制退出，别让端口错误把进程挂住。
         // 收尾自己的失败只记一笔，不能盖住真正要报的端口错误。
-        await pool.stop().catch(stopError => logError(`pool.stop: ${stopError?.message || stopError}`))
+        await stopPoolQuietly(pool, [config.bdmsModule, config.clientDir])
         setTimeout(() => process.exit(1), 1000).unref()
         throw error
     }
@@ -74,12 +75,12 @@ async function commandServe() {
         }
         closing = true
         // 第一件事是让 /readyz 改口：编排器从这一步起就不该再把流量派过来了。
-        markClosing()
+        // 排空窗口（LIBMSSDK_DRAIN_DELAY_MS，默认 0）只推迟停监听，不推迟改口。
+        // beginShutdown() 同步执行 markClosing()，日志因此排在改口之后。
+        const stopping = entry.beginShutdown()
+        logEvent('shutdown', { drainDelayMs: entry.drainDelayMs })
         // 先停止接新连接，等在飞/排队请求收完，再收 worker：反过来会把排队中的请求直接掐掉。
-        server.close(() => {
-            pool.stop().finally(() => process.exit(0))
-        })
-        server.closeIdleConnections?.()
+        stopping.finally(() => process.exit(0))
     }
     process.on('SIGINT', shutdown)
     process.on('SIGTERM', shutdown)

@@ -31,6 +31,20 @@ export async function fetchReady(port, probeTimeoutMs = 4000) {
 }
 
 /**
+ * 停止期间观察用：要分辨的是「可读的 503」与「连接被拒」，所以这里把状态码原样带回来
+ * （probeReady 把所有非 2xx 折叠成 'http'，够判活不够判形态）。
+ * 返回 { kind: 'http', status } 或 { kind: 'refused' | 'hung' }。
+ */
+export async function probeStatus(port, probeTimeoutMs = 800) {
+    try {
+        const response = await fetch(readyUrl(port), { signal: AbortSignal.timeout(probeTimeoutMs) })
+        return { kind: 'http', status: response.status }
+    } catch (error) {
+        return { kind: error?.name === 'TimeoutError' ? 'hung' : 'refused' }
+    }
+}
+
+/**
  * 一个进程自己的身份视图：不点名设备号的 /sign，回包里的 device_id 就是该进程自己解析出来的那一份。
  *
  * URL、headers 与请求体里都不许出现设备号 —— 带了就变成比对我们自己发过去的那个值，身份真分裂了

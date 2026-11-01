@@ -30,7 +30,8 @@ src/warmup.mjs       就绪判据自学习：连续同长 + 结构下限，代�
 src/workerpool.mjs   worker 池（#5 唯一新增的接缝）：忙闲回收、逐台预热、退避重生、放弃
 src/worker.mjs       worker 进程：不监听，只调原生模块算签名；身份只读
 src/dispatcher.mjs   分发器：主进程独占监听、排队与预拼好的 503（#7 起是默认 /sign 路径）
-src/serve.mjs        默认服务装配：/sign 走分发器，其余端点交给 endpoints，/stat 与限流状态在此装配
+src/serve.mjs        默认服务装配：/sign 走分发器，其余端点交给 endpoints，/stat 与限流状态在此装配；
+                     收尾序列（改口 → 排空窗口 → 停监听 → 收 worker）也在这里
 src/probe.mjs        track_v2 真机自检与整曲 / 试听判定；src 下唯一一处出网代码（fetchTrackV2）
 src/endpoints.mjs    签名之外的 HTTP 面：/livez、/readyz（/healthz 别名）、/stat、旧诊断端点的回执、404
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
