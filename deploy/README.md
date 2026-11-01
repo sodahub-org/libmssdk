@@ -73,11 +73,13 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    `http://<host>:8899/sign`，Bearer token 与请求里的 cookie 全走明文 —— 挂上反代之后人容易以为
    自己已经在 HTTPS 后面。这一条同时是下面第 3 步（按真实客户端限流）的前提。
    **这一步不再靠人读注释完成了**：`run.sh` 在构建与起容器之前自己检查 —— `.env` 里填了
-   `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（`1`/`true`/`yes`/`on` 都算打开，与服务解析这个
-   开关的口径一致；两者都等于声明「前面挂了同机反代」），而 `LIBMSSDK_BIND` 不是回环（`127/8` 的点分
-   四段、`::1`、`localhost`）时直接退出，并点名这两个变量与改法。
+   `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（取值集合与服务里 `envFlag` 一致：`1`/`true`/
+   `yes`/`on`，不分大小写；两者都等于声明「前面挂了同机反代」），而 `LIBMSSDK_BIND` 不是回环
+   （`127/8` 的点分四段、`::1`、`localhost`）时直接退出，并点名触发的变量与改法。
    判据落在部署脚本侧而不是服务里：容器内的进程永远看到 `0.0.0.0`，在服务里判会把推荐的 Docker
-   形态误判成违规。逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：**你故意同时保留对外的
+   形态误判成违规。`.env` 里这一行如果 bash 压根读不进去（`LIBMSSDK_BIND = 0.0.0.0` 这种等号两侧
+   带空格的写法，或加了 `export` 前缀），`run.sh` 也直接停下 —— 脚本读不懂这份配置时不替它担保。
+   逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：**你故意同时保留对外的
    明文入口，且它在内网防火墙后面**。设了它 `run.sh` 放行，但在 stderr 留一句提醒 —— token 等价于
    签名能力，它与 cookie 走的都是明文。绕过 `run.sh` 直接敲 `docker compose -f ... -f ...` 的人
    不受这条检查保护，第 2 步本身照旧要自己做。

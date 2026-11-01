@@ -16,6 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
+import { envFlag } from '../src/config.mjs'
 import { isLoopbackBind } from '../src/dispatch.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -114,7 +115,7 @@ function envLine(key, value) {
     return `${key}=${/\s/.test(value) ? `"${value}"` : value}`
 }
 
-function deployEnv({ bind, hostname, trustProxy, allowPublicHttp } = {}) {
+function deployEnv({ bind, hostname, trustProxy, allowPublicHttp, extra = [] } = {}) {
     const lines = [
         'LIBMSSDK_TOKEN=stub-token-not-a-secret',
         'LIBMSSDK_PORT=8899',
@@ -125,7 +126,20 @@ function deployEnv({ bind, hostname, trustProxy, allowPublicHttp } = {}) {
     if (hostname !== undefined) lines.push(envLine('SIGNER_HOSTNAME', hostname))
     if (trustProxy !== undefined) lines.push(envLine('LIBMSSDK_TRUST_PROXY', trustProxy))
     if (allowPublicHttp !== undefined) lines.push(envLine('LIBMSSDK_ALLOW_PUBLIC_HTTP', allowPublicHttp))
-    return lines
+    // 要复现「这一行本身就写坏了」的用例走这里：不经 envLine，原样落进 .env
+    return [...lines, ...extra]
+}
+
+/** 问服务自己：这个 LIBMSSDK_TRUST_PROXY 的写法算不算「打开了」。 */
+function serviceTrustsProxy(value) {
+    const previous = process.env.LIBMSSDK_TRUST_PROXY
+    process.env.LIBMSSDK_TRUST_PROXY = value
+    try {
+        return envFlag('LIBMSSDK_TRUST_PROXY')
+    } finally {
+        if (previous === undefined) delete process.env.LIBMSSDK_TRUST_PROXY
+        else process.env.LIBMSSDK_TRUST_PROXY = previous
+    }
 }
 
 test('设了 SIGNER_HOSTNAME 而宿主端口还发布到 0.0.0.0：拒启动，且压根不起容器', { skip: skipIfNoBash() }, () => {
@@ -209,21 +223,16 @@ test('回环判据与 src/dispatch.mjs 的 isLoopbackBind 逐条一致', { skip:
     }
 })
 
-test('LIBMSSDK_TRUST_PROXY 的「打开」跟服务里 envFlag 同口径：true/yes/on 都算', { skip: skipIfNoBash() }, () => {
-    // compose 把这个变量原样透传进容器，而 src/config.mjs 认 ['1','true','yes','on']（先去空白、不分大小写）。
-    // 脚本只认 "1" 的话，LIBMSSDK_TRUST_PROXY=true 就变成「服务在公网口上认 XFF，脚本一声不吭」；
-    // 少了 trim 的话 `" on "` 又会溜过去 —— .env 里带空格是常事，两种都得拦住。
-    for (const value of ['true', 'TRUE', 'yes', 'on', ' on ', '  Yes  ', '\tON\t', '1 ']) {
+test('LIBMSSDK_TRUST_PROXY 的「打开」与服务里 envFlag 逐条一致', { skip: skipIfNoBash() }, () => {
+    // compose 把这个变量原样透传进容器：脚本认得比服务窄（只认 "1"）时，LIBMSSDK_TRUST_PROXY=true
+    // 就变成「服务在对外口上认 XFF，脚本一声不吭」；认得比服务宽则会误拦本就安全的配置。
+    // 答案不在这张表里手写，而是现取 src/config.mjs 的 envFlag —— 那边加了新写法，这条用例才会红。
+    for (const value of ['1', 'true', 'TRUE', 'yes', 'on', ' on ', '\tON\t', '0', '', ' ', 'no', '2']) {
+        const trusts = serviceTrustsProxy(value)
         const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
 
-        assert.equal(status, 1, `TRUST_PROXY=${JSON.stringify(value)} 也是打开了，要拦住`)
-        assert.equal(started, false, `TRUST_PROXY=${JSON.stringify(value)} 要拦在起容器之前`)
-    }
-    for (const value of ['0', 'false', 'off', '', ' ', 'false ', 'no']) {
-        const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
-
-        assert.equal(status, REACHED_COMPOSE, `TRUST_PROXY=${JSON.stringify(value)} 是没打开，不该误拦`)
-        assert.equal(started, true, `TRUST_PROXY=${JSON.stringify(value)} 要继续往下走`)
+        assert.equal(started, !trusts, `TRUST_PROXY=${JSON.stringify(value)}：envFlag 说 ${trusts}，脚本必须给同一个答案`)
+        assert.equal(status, trusts ? 1 : REACHED_COMPOSE, `TRUST_PROXY=${JSON.stringify(value)}：退出码要和上面那句对得上`)
     }
 })
 
@@ -236,19 +245,16 @@ test('.env 没写 LIBMSSDK_BIND 时不误拦：compose 的缺省本来就只绑�
     assert.equal(started, true)
 })
 
-test('.env 里 bash 读不进去的那一行（等号两侧带空格）：宁可停，也不按缺省放行', { skip: skipIfNoBash() }, () => {
+test('.env 里 bash 读不进去的那一行：宁可停，也不按缺省放行', { skip: skipIfNoBash() }, () => {
     // `LIBMSSDK_BIND = 0.0.0.0` 在 bash 里是「跑一个叫 LIBMSSDK_BIND 的命令」，变量根本没设上；
-    // 这时按缺省值判，等于对着一份 compose 照旧会用的 0.0.0.0 说「没问题」。这里故意写裸行，
-    // 不走 envLine 的引号 —— 要复现的正是人手写 .env 时最容易敲出来的那一型。
-    const placeholders = [
-        'LIBMSSDK_TOKEN=stub-token-not-a-secret',
-        'LIBMSSDK_PORT=8899',
-        'LIBMSSDK_CLIENT_DIR=/tmp/libmssdk-stub-client-dir',
-    ]
+    // 这时按缺省值判，等于对着一份 compose 照旧会用的 0.0.0.0 说「没问题」。走 extra 写裸行，
+    // 要复现的正是人手写 .env 时最容易敲出来的那一型（等号两侧空格、export 前缀）。
     const malformed = [
-        [...placeholders, 'SIGNER_HOSTNAME=signer.example.com', 'LIBMSSDK_BIND = 0.0.0.0'],
-        [...placeholders, 'LIBMSSDK_BIND=0.0.0.0', 'SIGNER_HOSTNAME = signer.example.com'],
-        [...placeholders, 'LIBMSSDK_BIND=0.0.0.0', 'LIBMSSDK_TRUST_PROXY = 1'],
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['export LIBMSSDK_BIND = 0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = "0.0.0.0"'] }),
+        deployEnv({ bind: '0.0.0.0', extra: ['SIGNER_HOSTNAME = signer.example.com'] }),
+        deployEnv({ bind: '0.0.0.0', extra: ['LIBMSSDK_TRUST_PROXY = 1'] }),
     ]
     for (const lines of malformed) {
         const { status, stderr, started } = runDeployScript(lines)
@@ -257,14 +263,31 @@ test('.env 里 bash 读不进去的那一行（等号两侧带空格）：宁可
         assert.equal(started, false, '不能带着「脚本看不见这个值」继续起容器')
         assert.match(stderr, /bash 没能把它读进来/, `要说清是这一行读不进去：${stderr}`)
     }
+
+    // 逃生舱同判据里的一条：它写坏了却不去认，报错就会叫用户去做他已经做过的事
+    const hatch = runDeployScript(
+        deployEnv({ bind: '0.0.0.0', trustProxy: '1', extra: ['LIBMSSDK_ALLOW_PUBLIC_HTTP = 1'] }),
+    )
+    assert.equal(hatch.status, 1, '逃生舱写坏时也是拒启动')
+    assert.match(hatch.stderr, /bash 没能把它读进来/, `要说的是这一行读不进去：${hatch.stderr}`)
+    assert.doesNotMatch(hatch.stderr, /设 LIBMSSDK_ALLOW_PUBLIC_HTTP=1/, `不该反过来教用户设他正设着的东西：${hatch.stderr}`)
 })
 
 test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127.0.0.1} 一样按回环算', { skip: skipIfNoBash() }, () => {
-    // 空值与「这一行压根没写」是同一件事（compose 的 :- 对两者都取缺省），不该被上面那条读不进去的检查拦下
-    const { status, started } = runDeployScript(deployEnv({ bind: '', hostname: 'signer.example.com' }))
+    // 空值与「这一行压根没写」是同一件事（compose 的 :- 对两者都取缺省），既不该被读不进去那条拦下，
+    // 也不该被回环检查误拦。引号包住的空值（KEY="" / KEY=''）同属「设了但为空」，bash 读得进去。
+    const empties = [
+        deployEnv({ bind: '', hostname: 'signer.example.com' }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND=""'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ["LIBMSSDK_BIND=''"] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND= # 留空按缺省走回环'] }),
+    ]
+    for (const lines of empties) {
+        const { status, stderr, started } = runDeployScript(lines)
 
-    assert.equal(status, REACHED_COMPOSE, '空值不是「读不进去」，也不该误拦')
-    assert.equal(started, true)
+        assert.equal(status, REACHED_COMPOSE, `空值不是「读不进去」，也不该误拦：${stderr}`)
+        assert.equal(started, true)
+    }
 })
 
 test('run.sh 首次生成的 .env 写清了这条检查与逃生舱', { skip: skipIfNoBash() }, () => {
