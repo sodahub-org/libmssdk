@@ -55,26 +55,54 @@ fi
 # 1.3) 要挂反向代理，宿主的明文口就必须收进回环
 #      这条以前只在 README 与 compose 注释里，靠人读；跳过那一步的人照样在把 token 与 cookie
 #      走明文发出去。判断只能落在部署脚本侧：容器里的进程永远看到 0.0.0.0（docker-compose.yml 写死）。
-if [ -n "${SIGNER_HOSTNAME:-}" ] || [ "${LIBMSSDK_TRUST_PROXY:-0}" = "1" ]; then
-    # 缺省值与 docker-compose.yml 的 ${LIBMSSDK_BIND:-127.0.0.1} 同口径：没写这一行时 compose 本来就
-    # 只绑回环，那不是违规，不能误拦。回环范围与 src/dispatch.mjs 的 isLoopbackBind 一致（127/8 整段）。
-    case "${LIBMSSDK_BIND:-127.0.0.1}" in
-        127.* | localhost | ::1 | '[::1]' | 0:0:0:0:0:0:0:1) ;;
-        *)
-            if [ "${LIBMSSDK_ALLOW_PUBLIC_HTTP:-0}" = "1" ]; then
-                echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${LIBMSSDK_BIND}）。" >&2
-                echo "      这只在「确实要同时保留对外的明文入口，且它在内网防火墙后面」时成立：token 等价于签名能力，它和 cookie 走的都是明文。" >&2
-            else
-                echo "错误：设了 SIGNER_HOSTNAME 或 LIBMSSDK_TRUST_PROXY=1（前面挂反向代理），LIBMSSDK_BIND 就必须是 127.0.0.1，现在是 ${LIBMSSDK_BIND}。" >&2
-                echo "      否则任何人都能绕过 443 直连 http://<host>:${LIBMSSDK_PORT:-8899}/sign，Bearer token 与请求里的 cookie 全走明文；" >&2
-                echo "      开了 LIBMSSDK_TRUST_PROXY 时这条直连还能自带伪造的 X-Forwarded-For 自选分桶键，限流等于没开。" >&2
-                echo "      改法：在 deploy/.env 写 LIBMSSDK_BIND=127.0.0.1。它管的是宿主上把端口发布到哪张网卡，" >&2
-                echo "      容器内进程固定监听 0.0.0.0，代理经服务名 libmssdk:8899 访问，不受这一行影响。" >&2
-                echo "      确实要同时留着对外的明文入口（只有内网防火墙后面这一种情形），设 LIBMSSDK_ALLOW_PUBLIC_HTTP=1；见 deploy/README.md 第 2 步。" >&2
-                exit 1
-            fi
-            ;;
-    esac
+# 「要挂同机反代」有两个来源：叠层读的 SIGNER_HOSTNAME，以及服务是否已经在认 X-Forwarded-For。
+# 后者的取值口径必须抄 src/config.mjs 的 envFlag（1/true/yes/on，不分大小写）：compose 把这个变量
+# 原样透传进容器，只认 "1" 的话 LIBMSSDK_TRUST_PROXY=true 就溜过去了 —— 那台服务真在对外口上认 XFF。
+proxy_signal=''
+if [ -n "${SIGNER_HOSTNAME:-}" ]; then
+    proxy_signal="SIGNER_HOSTNAME=${SIGNER_HOSTNAME}"
+fi
+trust_proxy=${LIBMSSDK_TRUST_PROXY:-0}
+case "${trust_proxy,,}" in
+    1 | true | yes | on)
+        proxy_signal="${proxy_signal:+$proxy_signal、}LIBMSSDK_TRUST_PROXY=${trust_proxy}"
+        ;;
+esac
+
+# 回环判据与 src/dispatch.mjs 的 isLoopbackBind 同口径（用例把两边摆在一起逐条对过）：先去空白再小写，
+# 对齐那边的 trim().toLowerCase()；127/8 只认点分四段、每段 0-255 —— 127.evil.com 这种「看着像回环的
+# 主机名」不算，DNS 能把它指到公网，而 compose 会把宿主端口绑到它解析出来的地址上。
+# 缺省值取 127.0.0.1：与 docker-compose.yml 的 ${LIBMSSDK_BIND:-127.0.0.1} 一致，没写这一行时 compose
+# 本来就只绑回环，那不是违规，不能误拦。
+bind_value=${LIBMSSDK_BIND:-127.0.0.1}
+bind_value=${bind_value//[[:space:]]/}
+bind_value=${bind_value,,}
+octet='([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
+is_loopback=0
+case "$bind_value" in
+    localhost | ::1 | '[::1]' | 0:0:0:0:0:0:0:1) is_loopback=1 ;;
+    127.*)
+        if [[ $bind_value =~ ^127\.${octet}\.${octet}\.${octet}$ ]]; then
+            is_loopback=1
+        fi
+        ;;
+esac
+
+if [ -n "$proxy_signal" ] && [ "$is_loopback" = 0 ]; then
+    # 逃生舱只认 "1"（与本脚本的 LIBMSSDK_SKIP_BUILD 同风格），不像 TRUST_PROXY 那样跟着服务扩口径：
+    # 它放开的是风险本身，写错就落回拒绝，这个方向保守一次是好事。
+    if [ "${LIBMSSDK_ALLOW_PUBLIC_HTTP:-0}" = "1" ]; then
+        echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${LIBMSSDK_BIND}）。" >&2
+        echo "      这只在「确实要同时保留对外的明文入口，且它在内网防火墙后面」时成立：token 等价于签名能力，它和 cookie 走的都是明文。" >&2
+    else
+        echo "错误：${proxy_signal} 说明前面挂了反向代理，LIBMSSDK_BIND 就必须是 127.0.0.1，现在是 ${LIBMSSDK_BIND}。" >&2
+        echo "      否则任何人都能绕过 443 直连 http://<host>:${LIBMSSDK_PORT:-8899}/sign，Bearer token 与请求里的 cookie 全走明文；" >&2
+        echo "      开了 LIBMSSDK_TRUST_PROXY 时这条直连还能自带伪造的 X-Forwarded-For 自选分桶键，限流等于没开。" >&2
+        echo "      改法：在 deploy/.env 写 LIBMSSDK_BIND=127.0.0.1。它管的是宿主上把端口发布到哪张网卡，" >&2
+        echo "      容器内进程固定监听 0.0.0.0，代理经服务名 libmssdk:8899 访问，不受这一行影响。" >&2
+        echo "      确实要同时留着对外的明文入口（只有内网防火墙后面这一种情形），设 LIBMSSDK_ALLOW_PUBLIC_HTTP=1；见 deploy/README.md 第 2 步。" >&2
+        exit 1
+    fi
 fi
 
 # 1.5) 指定了绝对路径就先把目录建好（compose 不会自动建绑定挂载目录）

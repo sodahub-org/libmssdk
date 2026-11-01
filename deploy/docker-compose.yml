@@ -12,9 +12,9 @@ services:
       # 这里是**宿主**绑定地址：compose 缺省只绑回环，而 run.sh 生成的 .env 默认写 0.0.0.0，
       # 也就是明文 8899 直接对外可达。挂了反向代理就改回 127.0.0.1 —— 容器内进程另有
       # environment 里写死的 0.0.0.0，代理经服务名访问不受这一行影响。
-      # 这一条不收，run.sh 会在起容器之前拒绝启动（#20）：填了 SIGNER_HOSTNAME 或
-      # LIBMSSDK_TRUST_PROXY=1 而这里不是回环即违规，逃生舱是 LIBMSSDK_ALLOW_PUBLIC_HTTP=1。
-      # 手工敲 docker compose -f 的人不走 run.sh，得自己守住这一行。
+      # 这一条不收，run.sh 会在起容器之前拒绝启动（#20）：填了 SIGNER_HOSTNAME 或打开了
+      # LIBMSSDK_TRUST_PROXY（1/true/yes/on）而这里不是回环即违规。逃生舱、适用前提与手工叠
+      # docker compose -f 时怎么办，都写在 deploy/README.md 第 2 步。
       - "${LIBMSSDK_BIND:-127.0.0.1}:${LIBMSSDK_PORT:-8899}:8899"
     environment:
       LIBMSSDK_TOKEN: "${LIBMSSDK_TOKEN:?请先在 deploy/.env 里设置 LIBMSSDK_TOKEN（run.sh 会自动生成）}"

@@ -16,6 +16,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
+import { isLoopbackBind } from '../src/dispatch.mjs'
+
 const here = path.dirname(fileURLToPath(import.meta.url))
 const RUN_SH = path.join(here, '..', 'deploy', 'run.sh')
 
@@ -162,16 +164,40 @@ test('没声明反向代理时不拦：0.0.0.0 归部署者自己管，脚本不
     assert.equal(started, true)
 })
 
-test('回环的写法都算回环，非回环的写法都不算', { skip: skipIfNoBash() }, () => {
-    // 口径与 src/dispatch.mjs 的 isLoopbackBind 一致：127/8 整段、::1 的两种写法与 localhost
-    for (const bind of ['127.0.0.1', '127.5.5.5', '::1', '[::1]', 'localhost']) {
-        const { status } = runDeployScript(deployEnv({ bind, hostname: 'signer.example.com' }))
-        assert.equal(status, REACHED_COMPOSE, `${bind} 是回环，不该拦`)
-    }
-    for (const bind of ['0.0.0.0', '::', '10.0.0.8']) {
+test('回环判据与 src/dispatch.mjs 的 isLoopbackBind 逐条一致', { skip: skipIfNoBash() }, () => {
+    // 两处判据分别写在 bash 与服务里（部署脚本不能 import 服务的模块），会漂移的正是这一份表。
+    // 同一批地址，两边说「是回环」的必须是同一批 —— 谁先改了口径，这条用例就红。
+    // 空值不在表里：.env 没写 LIBMSSDK_BIND 时 compose 缺省只绑回环，那是下面单独一条用例。
+    const addresses = [
+        '127.0.0.1', '127.5.5.5', '127.999.1.1', '127.0.0.01', '127.0.0',
+        '127.evil.com', 'localhost', 'Localhost', ' ::1 ', '::1',
+        '[::1]', '0:0:0:0:0:0:0:1', '0.0.0.0', '::', '10.0.0.8', 'evil.example.com',
+    ]
+    for (const bind of addresses) {
+        const loopback = isLoopbackBind(bind)
         const { status, started } = runDeployScript(deployEnv({ bind, hostname: 'signer.example.com' }))
-        assert.equal(status, 1, `${bind} 不是回环，要拦`)
-        assert.equal(started, false, `${bind} 这条要拦在起容器之前`)
+
+        // 挂了反代（这里用 SIGNER_HOSTNAME 声明）时，脚本的放行与拦下必须跟着 isLoopbackBind 的答案走：
+        // 回环 → 放行到 compose，非回环 → 拦在 compose 之前。
+        assert.equal(started, loopback, `${bind}：isLoopbackBind 说 ${loopback}，脚本必须给同一个答案`)
+        assert.equal(status, loopback ? REACHED_COMPOSE : 1, `${bind}：退出码要和上面那句对得上`)
+    }
+})
+
+test('LIBMSSDK_TRUST_PROXY 的「打开」跟服务里 envFlag 同口径：true/yes/on 都算', { skip: skipIfNoBash() }, () => {
+    // compose 把这个变量原样透传进容器，而 src/config.mjs 认 ['1','true','yes','on']（不分大小写）。
+    // 脚本只认 "1" 的话，LIBMSSDK_TRUST_PROXY=true 就变成「服务在公网口上认 XFF，脚本一声不吭」。
+    for (const value of ['true', 'TRUE', 'yes', 'on']) {
+        const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
+
+        assert.equal(status, 1, `TRUST_PROXY=${value} 也是打开了，要拦住`)
+        assert.equal(started, false, `TRUST_PROXY=${value} 要拦在起容器之前`)
+    }
+    for (const value of ['0', 'false', 'off', '']) {
+        const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
+
+        assert.equal(status, REACHED_COMPOSE, `TRUST_PROXY=${value} 是没打开，不该误拦`)
+        assert.equal(started, true, `TRUST_PROXY=${value} 要继续往下走`)
     }
 })
 

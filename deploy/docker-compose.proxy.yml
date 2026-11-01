@@ -9,9 +9,9 @@
 # 用这一层之前，先把 deploy/.env 里的 LIBMSSDK_BIND 改成 127.0.0.1：那个变量管的是**宿主**上把
 # 8899 发布到哪张网卡（容器内进程固定绑 0.0.0.0，本层经服务名 libmssdk:8899 访问，不受影响）。
 # 不收的话，任何人都能绕过 443 直接打 http://<host>:8899/sign，token 与 cookie 走明文。
-# 这条收紧现在写在 run.sh 里（#20）：SIGNER_HOSTNAME 一填（或 LIBMSSDK_TRUST_PROXY=1）而
-# LIBMSSDK_BIND 不是回环，就在起容器之前拒绝启动；逃生舱 LIBMSSDK_ALLOW_PUBLIC_HTTP=1 只留给
-# 「故意保留对外明文口、且它在内网防火墙后面」那一种情形。
+# 这条收紧现在写在 run.sh 里（#20）：SIGNER_HOSTNAME 一填（或打开 LIBMSSDK_TRUST_PROXY，取值
+# 1/true/yes/on 都算）而 LIBMSSDK_BIND 不是回环，就在起容器之前拒绝启动；逃生舱
+# LIBMSSDK_ALLOW_PUBLIC_HTTP=1 只留给「故意保留对外明文口、且它在内网防火墙后面」那一种情形。
 # 上面那条命令行是手工叠层、不经过 run.sh，所以这么用的人这一行仍得自己核对。
 # 也别在这一层里再补一条 ports: —— compose 对 ports 是合并语义，会变成两条映射并存、明文口照开；
 # 真要在这一层里改，得用 !override 整段替换（compose >= 2.24.4），或 !reset 先清空再重定义 ——

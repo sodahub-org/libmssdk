@@ -169,8 +169,9 @@ Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」
   `127.0.0.1`，否则「在 HTTPS 后面」只是错觉。容器内进程仍绑 `0.0.0.0`，代理经服务名访问不受影响。
   这一条同时是限流按真实客户端分桶的前提：见第 3 节的 `LIBMSSDK_TRUST_PROXY`。
 - **这条收紧从这一版起写进了部署脚本**：`deploy/run.sh` 在构建与起容器之前自己判 —— `.env` 填了
-  `SIGNER_HOSTNAME` 或 `LIBMSSDK_TRUST_PROXY=1`，而 `LIBMSSDK_BIND` 不是回环时直接退出，点名这两个
-  变量与改法。以前它只是文档里的一句话，跳过那一步的人照样在把 token 与 cookie 走明文发出去。
+  `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（`1`/`true`/`yes`/`on` 都算，与服务里 `envFlag`
+  的口径一致），而 `LIBMSSDK_BIND` 不是回环时直接退出，点名触发的变量与改法。以前它只是文档里的一句话，
+  跳过那一步的人照样在把 token 与 cookie 走明文发出去。
   逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：故意同时保留对外的明文入口，且它在内网
   防火墙后面。判据不落在这台服务里 —— 容器内的进程永远看到 `0.0.0.0`，在进程内判会把推荐的 Docker
   形态误判成违规。手工 `docker compose -f docker-compose.yml -f docker-compose.proxy.yml` 不经过

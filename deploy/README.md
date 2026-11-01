@@ -73,8 +73,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    `http://<host>:8899/sign`，Bearer token 与请求里的 cookie 全走明文 —— 挂上反代之后人容易以为
    自己已经在 HTTPS 后面。这一条同时是下面第 3 步（按真实客户端限流）的前提。
    **这一步不再靠人读注释完成了**：`run.sh` 在构建与起容器之前自己检查 —— `.env` 里填了
-   `SIGNER_HOSTNAME` 或 `LIBMSSDK_TRUST_PROXY=1`（这两个都等于声明「前面挂了同机反代」），而
-   `LIBMSSDK_BIND` 不是回环（`127/8`、`::1`、`localhost`）时直接退出，并点名这两个变量与改法。
+   `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（`1`/`true`/`yes`/`on` 都算打开，与服务解析这个
+   开关的口径一致；两者都等于声明「前面挂了同机反代」），而 `LIBMSSDK_BIND` 不是回环（`127/8` 的点分
+   四段、`::1`、`localhost`）时直接退出，并点名这两个变量与改法。
    判据落在部署脚本侧而不是服务里：容器内的进程永远看到 `0.0.0.0`，在服务里判会把推荐的 Docker
    形态误判成违规。逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：**你故意同时保留对外的
    明文入口，且它在内网防火墙后面**。设了它 `run.sh` 放行，但在 stderr 留一句提醒 —— token 等价于
@@ -90,9 +91,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
      `X-Forwarded-For`（Caddy 与 nginx 的例子都会）。
 
    只开 `TRUST_PROXY` 而宿主端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
-   `X-Forwarded-For` 自选分桶键，等于没有限流。这一条现在同样由 `run.sh` 拦住：`LIBMSSDK_TRUST_PROXY=1`
-   配上非回环的 `LIBMSSDK_BIND` 直接拒启动（放行条件与逃生舱见第 2 步）。两个都不开时只认 TCP 对端，
-   所有客户端会共用反代那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
+   `X-Forwarded-For` 自选分桶键，等于没有限流。这一条现在同样由 `run.sh` 拦住：`LIBMSSDK_TRUST_PROXY`
+   打开（`1`/`true`/`yes`/`on`）配上非回环的 `LIBMSSDK_BIND` 直接拒启动（放行条件与逃生舱见第 2 步）。
+   两个都不开时只认 TCP 对端，所有客户端会共用反代那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
    其它 `LIBMSSDK_*` 调优变量不会自动进容器（compose 只透传上面列出的几项）；需要时在
    `docker-compose.yml` 的 `environment:` 里补同名项。
 4. 前面挂一个反向代理做 HTTPS。仓库里给的是能直接用的配置，不用自己拼：
