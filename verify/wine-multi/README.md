@@ -71,8 +71,9 @@ bash verify/wine-multi/run.sh --mode mock
 
 ## 停止期间的观察（#23）
 
-真环境跑完判据 1–6 之后，harness 会执行一次 `docker stop --time 30`，同时每 250ms 问一次两个进程的
-`/readyz`，把观察到的形态序列记进结果的 `observations.stopObservation`：
+真环境跑完判据 1–6 之后，harness 会执行一次 `docker stop --time 30`，同时每 250ms 问一次**停止前仍活着**
+的 serve 进程的 `/readyz`，把观察到的形态序列记进结果的 `observations.stopObservation`。判据 4 已经杀掉
+一个进程，它的端口注定是连接被拒，所以不参与这一条：把死掉的端口也算进去，证据会永远翻成 `mixed`。
 
 - 期望 `saw-503`：entrypoint 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 先改口 `/readyz`、排空窗口里
   仍在监听，窗口结束才停监听、收在飞请求；之后才变成连接被拒。

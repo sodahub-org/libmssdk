@@ -676,22 +676,36 @@ async function main() {
     // 所以这里如实记录形态序列，不折成一个通过/失败去掩盖差异。
     if (typeof driver.observeStop === 'function') {
         say('[verify] 判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…')
-        const observed = await driver.observeStop({ graceSeconds: 30 })
-        const sawReadable503 = observed.perPort.map(entry => entry.sequence.includes('http-503'))
-        const graceful = sawReadable503.filter(Boolean).length
-        report.observations.stopObservation = {
-            status:
-                sawReadable503.length > 0 && graceful === sawReadable503.length
-                    ? 'saw-503'
-                    : graceful > 0
-                      ? 'mixed'
-                      : 'refused-only',
-            graceful,
-            processes: sawReadable503.length,
-            sequences: observed.sequences,
-            ...(observed.stopError ? { stopError: observed.stopError } : {}),
+        // 判据 4 已经杀掉一个进程，它的端口注定是 refused；只观察停之前还活着的那些。
+        const alive = []
+        for (let index = 0; index < driver.hostPorts.length; index += 1) {
+            if ((await driver.pidAlive(index)) === true) alive.push(index)
         }
-        say(`[verify] 判据 7 ${report.observations.stopObservation.status}：${observed.sequences.join(' | ')}`)
+        if (alive.length === 0) {
+            report.observations.stopObservation = {
+                status: 'SKIPPED',
+                reason: '停止前已经没有活着的 serve 进程（前面的判据已把进程杀光），没有可观察的收尾',
+            }
+            say('[verify] 判据 7 SKIPPED：停止前没有活着的 serve 进程')
+        } else {
+            const observed = await driver.observeStop({ graceSeconds: 30, indexes: alive })
+            const sawReadable503 = observed.sequences.map(entry => entry.sequence.includes('http-503'))
+            const graceful = sawReadable503.filter(Boolean).length
+            report.observations.stopObservation = {
+                status:
+                    sawReadable503.length > 0 && graceful === sawReadable503.length
+                        ? 'saw-503'
+                        : graceful > 0
+                          ? 'mixed'
+                          : 'refused-only',
+                graceful,
+                processes: sawReadable503.length,
+                alivePorts: observed.sequences.map(entry => entry.port),
+                sequences: observed.sequences.map(entry => `${entry.port}: ${entry.sequence.join(' → ')}`),
+                ...(observed.stopError ? { stopError: observed.stopError } : {}),
+            }
+            say(`[verify] 判据 7 ${report.observations.stopObservation.status}：${report.observations.stopObservation.sequences.join(' | ')}`)
+        }
     } else {
         report.observations.stopObservation = {
             status: 'SKIPPED',

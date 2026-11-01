@@ -159,10 +159,18 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
          * 内仍在监听），最后才变成连接被拒；没修好时从头就是 refused。这里只记录真的观察到过的
          * 形态序列，不靠 sleep 猜，也不把 Wine 版本差异藏起来。
          */
-        async observeStop({ graceSeconds = 30, intervalMs = 250, probeTimeoutMs = 800 } = {}) {
-            const sequences = publicPorts.map(() => [])
-            const note = (index, kind) => {
-                const list = sequences[index]
+        async observeStop({
+            graceSeconds = 30,
+            intervalMs = 250,
+            probeTimeoutMs = 800,
+            indexes = publicPorts.map((_, index) => index),
+        } = {}) {
+            // 判据 4 已经杀过一个进程，它的端口注定是 refused。只观察停之前还活着的那些，
+            // 否则「每个端口都出现 503」永远不成立，证据会稳定地翻成 mixed。
+            const watched = indexes.filter(index => Number.isInteger(index) && index >= 0 && index < publicPorts.length)
+            const sequences = watched.map(() => [])
+            const note = (slot, kind) => {
+                const list = sequences[slot]
                 if (list.at(-1) !== kind) list.push(kind)
             }
             let stopError = null
@@ -181,9 +189,9 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
                 } catch {
                     inspectErrors += 1
                 }
-                for (const [index, port] of publicPorts.entries()) {
-                    const result = await probeStatus(port, probeTimeoutMs)
-                    note(index, result.kind === 'http' ? `http-${result.status}` : result.kind)
+                for (const [slot, index] of watched.entries()) {
+                    const result = await probeStatus(publicPorts[index], probeTimeoutMs)
+                    note(slot, result.kind === 'http' ? `http-${result.status}` : result.kind)
                 }
                 if (!running || inspectErrors >= 3 || Date.now() > deadline) break
                 await new Promise(resolve => setTimeout(resolve, intervalMs))
@@ -192,9 +200,7 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
             return {
                 container,
                 stopError,
-                sequences: sequences.map(list => list.join(' → ')),
-                // 每个进程自己的形态序列；hostPorts 与它一一对应
-                perPort: sequences.map((list, index) => ({ port: publicPorts[index], sequence: list })),
+                sequences: watched.map((index, slot) => ({ port: publicPorts[index], sequence: sequences[slot] })),
             }
         },
 

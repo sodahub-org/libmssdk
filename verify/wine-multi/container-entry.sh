@@ -26,7 +26,24 @@ fi
 # 那是 #2 的范围，不是本验证要测的东西；这里只做前置，不测竞态。
 wine /opt/node-win/node.exe src/index.mjs config >/logs/identity-preflight.out 2>/logs/identity-preflight.err || true
 
+# 后台作业在非交互 shell 里会按 POSIX 的规定继承 SIGINT=SIG_IGN，kill -INT 可能直接被忽略。
+# 与 deploy/entrypoint.sh 一样开 job control，让 wine 拿到默认处置。
+set -m
+
+# docker stop 发给 PID 1 的是 SIGTERM，而 Wine 只把 SIGINT 映射成 CTRL_C_EVENT。
+# 与 deploy/entrypoint.sh 同一套转发：不转这一手，容器就是「进程直接消失」，
+# 判据 7 观察到的形态会永远是连接被拒。trap 先于 spawn 安装，避免「子进程已起、
+# trap 没装」的空档把入口脚本直接带走。
 SERVE_PIDS=()
+forward_stop() {
+    [ ${#SERVE_PIDS[@]} -gt 0 ] || return 0
+    echo "[verify] 收到停止信号：把 SIGINT 转给每个 serve（Wine 会映射为 CTRL_C_EVENT）" >&2
+    for pid in "${SERVE_PIDS[@]}"; do
+        kill -INT "$pid" 2>/dev/null || true
+    done
+}
+trap forward_stop TERM INT
+
 for port in $PORTS; do
     LIBMSSDK_PORT="$port" wine /opt/node-win/node.exe src/index.mjs serve \
         >"/logs/serve-$port.out" 2>"/logs/serve-$port.err" &
@@ -36,23 +53,12 @@ for port in $PORTS; do
     echo "[verify] serve pid=$pid port=$port" >&2
 done
 
-# docker stop 发给 PID 1 的是 SIGTERM，而 Wine 只把 SIGINT 映射成 CTRL_C_EVENT。
-# 与 deploy/entrypoint.sh 同一套转发：不转这一手，容器就是「进程直接消失」，
-# 判据 7 观察到的形态会永远是连接被拒。
-forward_stop() {
-    echo "[verify] 收到停止信号：把 SIGINT 转给每个 serve（Wine 会映射为 CTRL_C_EVENT）" >&2
-    for pid in "${SERVE_PIDS[@]}"; do
-        kill -INT "$pid" 2>/dev/null || true
-    done
-}
-trap forward_stop TERM INT
-
 # wait 会被信号打断：trap 跑完后再等一次，直到子进程真的退出。
 # 不写这个循环，PID 1 会在转发完 SIGINT 后立刻走到脚本结尾退出，Docker 随即把还在
 # 排空窗口里的 serve 一起收掉 —— 判据 7 会因此永远看到 refused。
 status=0
 while :; do
-    wait || status=$?
+    wait && status=0 || status=$?
     alive=0
     for pid in "${SERVE_PIDS[@]}"; do
         kill -0 "$pid" 2>/dev/null && alive=1

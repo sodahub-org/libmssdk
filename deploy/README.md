@@ -48,11 +48,12 @@ LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 ## 停止与滚动升级
 
 `docker stop` / `docker compose down` 先发 `SIGTERM`；`deploy/entrypoint.sh` 把它转成 `SIGINT` 交给
-Wine（Wine 只把 Ctrl+C 语义带进 Windows 进程），所以容器里也能看到完整收尾：`/readyz` 先回 503，
+Wine（Wine 只把 Ctrl+C 语义带进 Windows 进程），所以容器里也能走完整收尾：`/readyz` 先回 503，
 排空窗口结束后才停监听，最后收 worker。
 
-- **排空窗口**：`LIBMSSDK_DRAIN_DELAY_MS` 默认在容器里是 8 秒（`deploy/.env` 可覆盖，设 0 = 信号一到
-  就停监听）。窗口只推迟「停监听」，不推迟「改口」——它的作用就是让探针真的读到 503。
+- **排空窗口**：`deploy/docker-compose.yml` 把 `LIBMSSDK_DRAIN_DELAY_MS` 默认设成 8 秒（`deploy/.env`
+  可覆盖，设 0 = 信号一到就停监听）；直接用 `docker run` 跑镜像时用的是代码默认值 0，探针可能只看到
+  连接被拒。窗口只推迟「停监听」，不推迟「改口」——它的作用就是让探针真的读到 503。
 - **停止宽限期**：compose 已设 `stop_grace_period: 30s`。排空窗口 + 在飞请求必须在这段时间内跑完，
   否则 Docker 会 `SIGKILL`，客户端看到的就不是 503 而是连接重置。
 - **前面的反向代理/负载均衡要按 `/readyz` 摘流**，别等连接失败才发现实例下线；只靠 `docker stop`
