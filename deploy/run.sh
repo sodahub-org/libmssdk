@@ -42,7 +42,6 @@ else
     echo "• 复用已有 deploy/.env"
 fi
 
-# shellcheck disable=SC1091
 # 三条分开写：`. ./.env` 里只要有一行 bash 跑失败（见 1.1），用 && 串起来就会跳过 `set +a`，
 # allexport 一直开着 —— 后面 bind_value、is_loopback 这些局部变量会一路被导进 compose 与 curl 的
 # 子进程环境（签名自检那一步拿到的响应也在其中）。读不进去的行交给 1.1 去判，这里只保证一定收尾。
@@ -50,6 +49,18 @@ set -a
 # shellcheck disable=SC1091
 . ./.env || :
 set +a
+
+# 1.05) CRLF 的 .env：把值里的 CR 统一剥掉一次
+#       Linux 的 bash 读 CRLF 文件会把 \r 留在值里（Git Bash 在 read 之前就吃掉了，所以这一型只能在
+#       Linux 上测出来）。留着它，后面三处都会出事：判据把「只剩一个 CR」当成有值而误拦一份本就安全的
+#       配置；报错文案里那个 CR 会把日志行切断；值还会带着 CR 进 compose 的插值与 curl 的地址。
+#       所以在这里一次剥干净，而不是每个判据前各剥一次 —— 每多一处就少一处会漏。
+for cr_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
+    LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
+    [ -n "${!cr_key:-}" ] || continue
+    printf -v "$cr_key" '%s' "${!cr_key//$'\r'/}"
+done
+unset cr_key
 
 # 1.1) .env 里有 bash 读不进去的行，就先停下
 #      `LIBMSSDK_BIND = 0.0.0.0`（等号两侧带空格，加 export 前缀同理）在 bash 里不是赋值，而是
@@ -145,8 +156,8 @@ esac
 # 而 compose 会把宿主端口绑到它解析出来的地址上。去空白比那边的 trim 更狠（内嵌的也去），但方向是安全的：
 # `127.0. 0.1` 在这里算回环，而 compose 拿原值去绑根本绑不上，明文口开不出来。
 # 缺省值取 127.0.0.1：与 docker-compose.yml 的 ${LIBMSSDK_BIND:-127.0.0.1} 一致，没写这一行时 compose
-# 本来就只绑回环，那不是违规，不能误拦。去完空白后又变回空的也算这一档 —— CRLF 的 .env 在 Linux 上
-# 会把 \r 留在值里（Git Bash 读文件时先吃掉了，所以本机测不出来），而 compose 那边这个值同样按空处理。
+# 本来就只绑回环，那不是违规，不能误拦。去完空白后又变回空的（值只有空白或只有一个 CR）也算这一档 ——
+# 那是「填了个空」，按没填处理；判据只问宿主端口是否对外，不去猜 compose 怎么解析这种值。
 bind_value=${LIBMSSDK_BIND:-127.0.0.1}
 bind_value=${bind_value//[[:space:]]/}
 bind_value=${bind_value,,}
@@ -169,10 +180,11 @@ if [ -n "$proxy_signal" ] && [ "$is_loopback" = 0 ]; then
     allow_public_http=${LIBMSSDK_ALLOW_PUBLIC_HTTP:-0}
     allow_public_http=${allow_public_http//[[:space:]]/}
     if [ "$allow_public_http" = "1" ]; then
-        echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${LIBMSSDK_BIND}）。" >&2
+        # 打印的是判据真正比过的那个归一化值：直接把原文拼进来，空白与 CR 会让这句话读不懂
+        echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${bind_value}）。" >&2
         echo "      这只在「确实要同时保留对外的明文入口，且它在内网防火墙后面」时成立：token 等价于签名能力，它和 cookie 走的都是明文。" >&2
     else
-        echo "错误：${proxy_signal} 说明前面挂了反向代理，LIBMSSDK_BIND 就必须收进回环（例如 127.0.0.1 或 ::1），现在是 ${LIBMSSDK_BIND}。" >&2
+        echo "错误：${proxy_signal} 说明前面挂了反向代理，LIBMSSDK_BIND 就必须收进回环（例如 127.0.0.1 或 ::1），现在是 ${bind_value}。" >&2
         echo "      否则任何人都能绕过 443 直连 http://<host>:${LIBMSSDK_PORT:-8899}/sign，Bearer token 与请求里的 cookie 全走明文；" >&2
         echo "      开了 LIBMSSDK_TRUST_PROXY 时这条直连还能自带伪造的 X-Forwarded-For 自选分桶键，限流等于没开。" >&2
         echo "      改法：在 deploy/.env 写 LIBMSSDK_BIND=127.0.0.1。它管的是宿主上把端口发布到哪张网卡，" >&2

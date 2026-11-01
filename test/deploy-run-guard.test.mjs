@@ -372,13 +372,28 @@ test('.env 里跑失败的一行不会把 allexport 留在开着：脚本的局�
 test('CRLF 的 .env 读出的 \\r 按「没填」算，不是违规', { skip: skipIfNoBash() }, () => {
     // Linux 上 bash 读 CRLF 的 .env 会把 \r 留在值里；Git Bash 在 read 之前就吃掉了 CR，同一条 .env
     // 在本机测不出这一型（CI 的 linux 作业就是这么红的）。所以这里从环境变量把 \r 送进去，
-    // 两个平台跑的才是同一条代码路径。compose 那边这个值同样按空处理，缺省只绑回环。
-    const { status, stderr } = runDeployScript(
-        deployEnv({ hostname: 'signer.example.com' }),
-        { LIBMSSDK_BIND: '\r' },
-    )
+    // 两个平台跑的才是同一条代码路径。
 
-    assert.equal(status, REACHED_COMPOSE, `值只剩 \\r 时该按缺省的回环放行：${stderr}`)
+    // 只剩 CR = 没填：BIND 没填 → 按 compose 的缺省只绑回环；HOSTNAME 没填 → 不算声明了反代
+    const emptyBind = runDeployScript(deployEnv({ hostname: 'signer.example.com' }), { LIBMSSDK_BIND: '\r' })
+    assert.equal(emptyBind.status, REACHED_COMPOSE, `BIND 只剩 \\r 该按缺省的回环放行：${emptyBind.stderr}`)
+
+    const emptyHost = runDeployScript(deployEnv({ bind: '0.0.0.0' }), { SIGNER_HOSTNAME: '\r' })
+    assert.equal(emptyHost.status, REACHED_COMPOSE, `SIGNER_HOSTNAME 只剩 \\r 不算声明反代：${emptyHost.stderr}`)
+
+    // 反方向不能被放宽：真违规的值后面挂着 CR，照样要拦
+    const stillBad = runDeployScript(deployEnv({ hostname: 'signer.example.com' }), { LIBMSSDK_BIND: '0.0.0.0\r' })
+    assert.equal(stillBad.status, 1, '0.0.0.0 带个 CR 仍是违规，要拦')
+    assert.equal(stillBad.started, false, '拦要拦在起容器之前')
+
+    // 回环值挂着 CR 也仍是回环，没被误拦
+    const loopbackCr = runDeployScript(deployEnv({ hostname: 'signer.example.com' }), { LIBMSSDK_BIND: '127.0.0.1\r' })
+    assert.equal(loopbackCr.status, REACHED_COMPOSE, `127.0.0.1 带 CR 不该被拦：${loopbackCr.stderr}`)
+
+    // 报错文案不能把 CR 打进日志（CI 上见过一行在句中被切断、下一行只剩一个「。」）
+    // 注：Git Bash 压根不会产生 CR，这条断言只在 linux 作业上有牙齿
+    assert.doesNotMatch(stillBad.stderr, /\r/, `报错里不该有裸 CR：${JSON.stringify(stillBad.stderr)}`)
+    assert.doesNotMatch(stillBad.stderr, /现在是\s+。\r?\n/, `报错要打印归一化后的值：${stillBad.stderr}`)
 })
 
 test('run.sh 首次生成的 .env 写清了这条检查与逃生舱', { skip: skipIfNoBash() }, () => {
