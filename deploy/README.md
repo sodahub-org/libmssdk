@@ -148,7 +148,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
    nginx 那份示例（[`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf)）**不含路径白名单**：
    它的 `location /` 把全部路径都转给上游，三条回执照样到得了服务、由服务自己回答，但 `/stat`
-   也因此经公网可达。要跟上面这样收紧，得把兜底的 `location /` 换成 `return 404`，再给清单里
+   也因此经公网可达。随仓库的 `reverse-proxy/Caddyfile` 同样没有白名单 —— 默认两份都是全量转发，
+   上面那段是可选收紧。要跟上面这样收紧，得把兜底的 `location /` 换成 `return 404`，再给清单里
    每条路径写一条精确匹配的 `location`（`= /probe` 与 `= /probe/` 各一条，其余同理）—— 只加
    `location` 而不动那个兜底块等于什么也没挡。那几条 `proxy_set_header` 现在只写在 `location /`
    里，新的 location 继承不到（nginx 只在某一层一条都没写时才整组继承上一层的），要提到 `server`
