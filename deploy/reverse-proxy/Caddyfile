@@ -41,8 +41,8 @@
 	}
 
 	# 访问日志：Caddy 默认一条都不写，所以三条探针（/livez、/readyz 与别名 /healthz）本来就不进
-	# 取数日志 —— 与 nginx 示例里那三个名字的 access_log off 是同一个行为。别在这里加 log 指令：
-	# 加了之后高频探针会连日志一起打满（真要开，得配 log_skip 把它们排除）。探针清单以
+	# 取数日志 —— 与 nginx 示例里那三个名字的 access_log off 是同一个行为。要在这里加 log，就得
+	# 同时用 log_skip 跳过这三条，否则高频探针会连日志一起打满。探针清单以
 	# src/endpoints.mjs 的 PROBE_PATHS 为准。
 
 	# X-Forwarded-For 与 X-Forwarded-Proto 是 Caddy 默认就会加的，不用手写。

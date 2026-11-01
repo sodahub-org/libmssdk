@@ -6,9 +6,11 @@ import { fileURLToPath } from 'node:url'
 
 import { PROBE_PATHS } from '../src/endpoints.mjs'
 import {
+    caddyLoggedProbes,
     extractCaddyfileBlocks,
     extractCaddyWhitelistPaths,
     nginxNoLogPaths,
+    reverseProxyStructureProblems,
 } from '../tools/reverse-proxy-check.mjs'
 
 test('只提取 caddyfile 代码块，别的语言原样略过', () => {
@@ -108,16 +110,27 @@ test('README 路径白名单：认 not path 与 path 两种写法', () => {
     const markdown = [
         '```caddyfile',
         'signer.example.com {',
-        '    @deny not path /sign /livez /readyz /healthz',
+        '    @deny not path /sign /livez /readyz /healthz  # 只放行这些',
         '    respond @deny 404',
         '    @only path /sign',
         '}',
         '```',
     ].join('\n')
 
-    assert.deepEqual(extractCaddyWhitelistPaths(markdown), [
-        '/sign', '/livez', '/readyz', '/healthz', '/sign',
-    ])
+    assert.deepEqual(
+        new Set(extractCaddyWhitelistPaths(markdown)),
+        new Set(['/sign', '/livez', '/readyz', '/healthz']),
+    )
+})
+
+test('Caddyfile 开了 log 时，log_skip 必须点名每条探针', () => {
+    assert.deepEqual(caddyLoggedProbes('{\n\tlog\n}\n'), [...PROBE_PATHS])
+    assert.deepEqual(
+        caddyLoggedProbes('{\n\tlog\n\tlog_skip /livez /readyz /healthz\n}\n'),
+        [],
+        'log 与 log_skip 配对使用是合法写法，不算问题',
+    )
+    assert.deepEqual(caddyLoggedProbes('{\n\treverse_proxy 127.0.0.1:8899\n}\n'), [], '没开 log 就默认不记')
 })
 
 test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
@@ -125,18 +138,37 @@ test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处�
     const read = relative => fs.readFileSync(path.join(repoRoot, relative), 'utf8')
 
     assert.deepEqual(
-        [...nginxNoLogPaths(read('deploy/reverse-proxy/nginx.conf'))].sort(),
-        [...PROBE_PATHS].sort(),
-        'nginx.conf 的免日志 location 必须覆盖 /healthz 别名',
+        reverseProxyStructureProblems({
+            nginxConf: read('deploy/reverse-proxy/nginx.conf'),
+            readme: read('deploy/README.md'),
+            caddyfile: read('deploy/reverse-proxy/Caddyfile'),
+        }),
+        [],
     )
+})
+
+test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名单放行 /stat 才算', () => {
+    const nginxConf = [
+        'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }',
+        'location = /stat { access_log off; proxy_pass http://libmssdk; }',
+    ].join('\n')
+    const readme = [
+        '```caddyfile',
+        'example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '}',
+        '```',
+    ].join('\n')
+
     assert.deepEqual(
-        new Set(extractCaddyWhitelistPaths(read('deploy/README.md'), 'deploy/README.md')),
-        new Set(['/sign', ...PROBE_PATHS]),
-        'README 白名单必须放行 /sign 与全部探针',
+        reverseProxyStructureProblems({ nginxConf, readme, caddyfile: '' }),
+        [],
+        '多关一条 /stat 是收紧，不该失败',
     )
-    assert.equal(
-        /^\s*log\b/m.test(read('deploy/reverse-proxy/Caddyfile')),
-        false,
-        'Caddyfile 默认不开访问日志，探针才不会进取数日志',
+
+    const withStat = readme.replace('/sign /livez', '/sign /stat /livez')
+    assert.deepEqual(
+        reverseProxyStructureProblems({ nginxConf, readme: withStat, caddyfile: '' }).map(p => p.check),
+        ['deploy/README.md：白名单没放行 /stat'],
     )
 })
