@@ -234,8 +234,30 @@ test('GET /config 已删除：404 但说清替代做法，且不配到期信号�
     assert.equal(unknown.headers.get('deprecation'), null)
 })
 
-// AGENTS.md 的鉴权约定写着「设了 Token 后所有 POST 都要 Bearer」，不看凭据的回答只有三类：
-// 探针、已删端点的回执（上一组用例）、通用 404。这里把例外钉在用例上，免得它变成无意中的洞。
+// /stat 是从 #18 的 src/server.mjs 搬过来的（两张票撞在同一个文件上），两条规矩也得跟着搬：
+// 只认 GET —— 它读的是运行状态，没有副作用，让 POST 也答等于多开一个不用凭据的写法；
+// 以及没人注入 stats 时它就是「没这条路由」，编一份空诊断出来只会骗人。
+test('GET /stat 只认 GET，装配没交 stats 就当没这条路由', async () => {
+    const { baseUrl } = await serveHandler({
+        readiness: () => true,
+        stats: () => ({ ok: true, service: 'libmssdk', snapshot: 'injected' }),
+    })
+    const viaGet = await fetch(`${baseUrl}/stat`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(viaGet.status, 200)
+    assert.equal((await viaGet.json()).snapshot, 'injected', '回的是装配方交来的那一份快照')
+
+    const viaPost = await fetch(`${baseUrl}/stat`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+    assert.equal(viaPost.status, 404, '诊断端点不该接受 POST')
+    assert.match(await viaPost.text(), /"code":"not_found"/)
+
+    const unwired = await serveHandler({ readiness: () => true })
+    const missing = await fetch(`${unwired.baseUrl}/stat`, { signal: AbortSignal.timeout(5000) })
+    assert.equal(missing.status, 404, '手里没有队列与限流状态时，不编造一份空诊断')
+})
+
+// AGENTS.md 的鉴权约定写着「设了 Token 后所有 POST 的能力路由都要 Bearer」，不看凭据的回答只有
+// 三类：探针与 /stat（运行状态，地址与设备号都脱敏）、已删端点的回执、通用 404。
+// 这里把例外钉在用例上，免得它变成无意中的洞。
 test('健康探针不看凭据：POST 也一样答，回包里一个 Token 字节都没有', async () => {
     const { baseUrl } = await serveHandler({ readiness: () => true })
     const viaPost = await fetch(`${baseUrl}/livez`, { method: 'POST', signal: AbortSignal.timeout(5000) })
@@ -247,8 +269,6 @@ test('健康探针不看凭据：POST 也一样答，回包里一个 Token 字�
     assert.equal(JSON.stringify(await readyViaPost.json()).includes(config.token), false, 'Token 不该出现在任何探针回包里')
 })
 
-// 两个头是配对的常量，写坏了中间件会整条忽略：日期必须能被重新格式化回原样（星期、月份、
-// 补零都算），而且 RFC 9745 要求 Sunset 不早于 Deprecation。
 // 两个日期各写一份的话，就必须互相自洽：头里的 @<秒> 要等于日期本身，Sunset 不得早于弃用起始
 // （RFC 9745）。写错星期或月份都会在这里翻脸，因为 Date 会把它重新格式化回原样才算通过。
 test('弃用与到期的日期常量自洽，头与体说的是同一个时刻', () => {
@@ -291,7 +311,7 @@ test('出网只此一处：src 里除 probe.mjs 外没人向上游发请求', ()
         .map(entry => [entry, fs.readFileSync(path.join(root, entry), 'utf8')])
     assert.ok(sources.length > 10, `扫到的 src 模块数不对（${sources.length}），守卫可能已经失效`)
     for (const [name, source] of sources) {
-        if (path.basename(name) === 'probe.mjs') continue
+        if (name === 'probe.mjs') continue
         // fetch / http.request / https.request：出网的三种写法都堵掉
         assert.equal(
             /\bfetch\(|\bhttps?\.(?:request|get)\(/.test(source),

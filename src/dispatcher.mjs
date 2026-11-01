@@ -124,7 +124,7 @@ export function createDispatcher({
     const maxBodyBytes = parsePositiveInt(config.maxBodyBytes, DEFAULT_MAX_BODY_BYTES)
     const queue = new Queue(queueLimit)
     const busy503 = prebuildBusy()
-    // /stat 由过渡处理器承接，但它要读分发器自己的队列深度：装配期把这个口子交出去，
+    // /stat 由端点处理器（src/endpoints.mjs）承接，但它要读分发器自己的队列深度：装配期把这个口子交出去，
     // 而不是让两边各存一份会漂移的数字。
     if (diagnostics) {
         diagnostics.queueDepth = () => queue.depth

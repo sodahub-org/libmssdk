@@ -38,6 +38,8 @@
 	}
 
 	# X-Forwarded-For 与 X-Forwarded-Proto 是 Caddy 默认就会加的，不用手写。
-	# 注意：签名服务今天只认 TCP 对端地址，认不认 XFF 是后续按 IP 限流那一版（#8）的开关。
+	# 注意：签名服务默认只认 TCP 对端地址。要让它按 XFF 的最右一跳分桶，得设 LIBMSSDK_TRUST_PROXY=1，
+	# 而那时宿主端口必须只对这台反代开放（绑 127.0.0.1）—— 否则调用方绕过反代直连、自己伪造 XFF，
+	# 就等于自选分桶键、绕过限流。两头要一起配。
 	reverse_proxy {$LIBMSSDK_UPSTREAM}
 }

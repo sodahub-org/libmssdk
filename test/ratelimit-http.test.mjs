@@ -1,7 +1,7 @@
 // 限流与诊断端点的真 HTTP 集成：429 的写出、XFF 开关、/stat、运行时模式切换、启动拒绝。
 //
 // worker 用假传输（test/helpers/fake-worker.mjs）：这一层验的是「主进程接线」——
-// 真的 TCP、真的分发器与过渡处理器，只是计算换成了可确定性的假 worker。
+// 真的 TCP、真的分发器与端点处理器，只是计算换成了可确定性的假 worker。
 // 端口只用 listen(0)，Windows 上自选端口会撞 TIME_WAIT。
 
 import assert from 'node:assert/strict'
