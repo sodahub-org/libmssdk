@@ -79,9 +79,9 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
 
 ### 停止服务时会发生什么
 
-- **nssm 停止（推荐）**：默认发 Ctrl+C / 窗口关闭事件，Node 收到 `SIGINT`，先让 `/readyz` 回 503，
-  再停监听、收在飞请求、收 worker。要让编排器来得及摘流，设 `LIBMSSDK_DRAIN_DELAY_MS`
-  （默认 0：信号一到就停监听）。
+- **nssm 停止（推荐）**：默认先发 Ctrl+C，Node 收到 `SIGINT`，先让 `/readyz` 回 503，
+  再停监听、收在飞请求、收 worker；若控制台收不到，nssm 会升级成终止进程，那一步同样拿不到信号。
+  要让编排器来得及摘流，设 `LIBMSSDK_DRAIN_DELAY_MS`（默认 0：信号一到就停监听）。
 - **前台 Ctrl+C**：与 nssm 相同，走完整收尾；第二次 Ctrl+C 立即退出。
 - **`schtasks /end`**：先发 `WM_CLOSE`（控制台程序收不到），随后按 `AllowHardTerminate` 用
   `TerminateProcess` 硬杀。进程拿不到信号，`/readyz` 不会改口，客户端看到的是连接被拒/重置。

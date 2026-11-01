@@ -144,8 +144,11 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 | --- | --- | --- |
 | 前台 `Ctrl+C`、Linux/macOS 的 `SIGTERM` | 进程直接收到 `SIGINT` / `SIGTERM` | 先 503，再连接被拒 |
 | Docker（`docker stop` / compose） | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine | 先 503，再连接被拒 |
-| nssm 停止 | 默认发 Ctrl+C / 窗口关闭事件，Node 收到 `SIGINT` | 先 503，再连接被拒 |
+| nssm 停止 | 默认先发 Ctrl+C，Node 收到 `SIGINT`；升级到终止进程时同下一行 | 先 503，再连接被拒 |
 | `schtasks /end`、`taskkill /F`、超过宽限的 `SIGKILL` | 拿不到信号（`TerminateProcess`） | 从连接被拒/重置开始 |
+
+表中「先 503」要排空窗口大于 0 才观察得到：默认 `LIBMSSDK_DRAIN_DELAY_MS=0` 时改口与停监听几乎
+同时发生，探针仍可能只看到连接被拒。容器 compose 与 `verify/wine-multi` 都已显式给窗口。
 
 - Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM`；容器里的转发就是补这一跳。
 - **排空窗口**：`markClosing()` 之后先保持监听，让探针真的读到 503，再停监听、收在飞与排队请求。

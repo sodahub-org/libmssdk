@@ -47,4 +47,16 @@ forward_stop() {
 }
 trap forward_stop TERM INT
 
-wait
+# wait 会被信号打断：trap 跑完后再等一次，直到子进程真的退出。
+# 不写这个循环，PID 1 会在转发完 SIGINT 后立刻走到脚本结尾退出，Docker 随即把还在
+# 排空窗口里的 serve 一起收掉 —— 判据 7 会因此永远看到 refused。
+status=0
+while :; do
+    wait || status=$?
+    alive=0
+    for pid in "${SERVE_PIDS[@]}"; do
+        kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    (( alive == 0 )) && break
+done
+exit "$status"

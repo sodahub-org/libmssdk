@@ -17,9 +17,11 @@ const env = key => (process.env[key] || '').trim()
 
 const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
 
-/** 非负整数环境变量：写错（abc、-1）时回退默认，而不是把 NaN 带进收尾计时。 */
+/** 非负整数环境变量：空串与写错（abc、-1）都回退默认，而不是把 NaN 带进收尾计时。 */
 const envInt = (key, fallback) => {
-    const value = Math.trunc(Number(env(key)))
+    const raw = env(key)
+    if (!raw) return fallback
+    const value = Math.trunc(Number(raw))
     return Number.isFinite(value) && value >= 0 ? value : fallback
 }
 

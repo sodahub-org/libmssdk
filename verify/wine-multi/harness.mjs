@@ -680,7 +680,12 @@ async function main() {
         const sawReadable503 = observed.perPort.map(entry => entry.sequence.includes('http-503'))
         const graceful = sawReadable503.filter(Boolean).length
         report.observations.stopObservation = {
-            status: graceful === sawReadable503.length ? 'saw-503' : graceful > 0 ? 'mixed' : 'refused-only',
+            status:
+                sawReadable503.length > 0 && graceful === sawReadable503.length
+                    ? 'saw-503'
+                    : graceful > 0
+                      ? 'mixed'
+                      : 'refused-only',
             graceful,
             processes: sawReadable503.length,
             sequences: observed.sequences,

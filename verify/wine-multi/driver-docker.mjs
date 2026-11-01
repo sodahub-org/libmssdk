@@ -169,15 +169,23 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
             const stopping = docker(['stop', '--time', String(graceSeconds), container]).catch(error => {
                 stopError = String(error?.message || error)
             })
+            // inspect 偶发失败不能当成「容器已经停了」：否则会提前结束采样、伪造出一个 refused。
+            // 连续几次读不到才算停（容器被移除时 inspect 会真的报错）。
+            let inspectErrors = 0
+            const deadline = Date.now() + (graceSeconds + 15) * 1000
             for (;;) {
-                const running = await docker(['inspect', '--format', '{{.State.Running}}', container])
-                    .then(out => out.trim() === 'true')
-                    .catch(() => false)
+                let running = true
+                try {
+                    running = (await docker(['inspect', '--format', '{{.State.Running}}', container])).trim() === 'true'
+                    inspectErrors = 0
+                } catch {
+                    inspectErrors += 1
+                }
                 for (const [index, port] of publicPorts.entries()) {
                     const result = await probeStatus(port, probeTimeoutMs)
                     note(index, result.kind === 'http' ? `http-${result.status}` : result.kind)
                 }
-                if (!running) break
+                if (!running || inspectErrors >= 3 || Date.now() > deadline) break
                 await new Promise(resolve => setTimeout(resolve, intervalMs))
             }
             await stopping

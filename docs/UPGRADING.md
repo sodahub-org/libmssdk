@@ -118,6 +118,8 @@ worker 数按绑定地址推导，环境变量始终优先：
 | `docker stop` / compose | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 走完整收尾 | 先 503，再连接被拒 |
 | `schtasks /end`、`taskkill /F`、超过 `stop_grace_period` 的 `SIGKILL` | 拿不到信号，`TerminateProcess` 硬杀 | 从连接被拒/重置开始 |
 
+表中「先 503」要排空窗口大于 0 才观察得到；默认 0 时改口与停监听几乎同时，探针仍可能只看到连接被拒。
+
 Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM` —— 这就是容器入口必须转一手
 的原因。tini / dumb-init 解决的是 PID 1 转发与僵尸回收，不改变 Wine 内部这一跳。
 

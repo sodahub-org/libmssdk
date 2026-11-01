@@ -76,9 +76,11 @@ async function commandServe() {
         closing = true
         // 第一件事是让 /readyz 改口：编排器从这一步起就不该再把流量派过来了。
         // 排空窗口（LIBMSSDK_DRAIN_DELAY_MS，默认 0）只推迟停监听，不推迟改口。
+        // beginShutdown() 同步执行 markClosing()，日志因此排在改口之后。
+        const stopping = entry.beginShutdown()
         logEvent('shutdown', { drainDelayMs: entry.drainDelayMs })
         // 先停止接新连接，等在飞/排队请求收完，再收 worker：反过来会把排队中的请求直接掐掉。
-        entry.beginShutdown().finally(() => process.exit(0))
+        stopping.finally(() => process.exit(0))
     }
     process.on('SIGINT', shutdown)
     process.on('SIGTERM', shutdown)

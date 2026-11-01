@@ -64,6 +64,9 @@ export function statResponse({ config, pool, limiter, diagnostics }) {
  * 为什么需要它：改口与停监听如果发生在同一刻，探针与调用方根本读不到那个 503 ——
  * 新连接在「已经改口」之后仍会撞上连接被拒。窗口只推迟「关监听」的时刻，不推迟改口：
  * 0（默认）就是原先的行为，容器形态在 compose 里显式给一个几秒的值。
+ *
+ * 这里再收一遍口：config 可能来自 loadConfig（已归一化），也可能是测试/嵌入方直接给的
+ * 普通对象 —— 收尾计时不该因为一个 NaN 变成「永不关监听」。
  */
 export function resolveDrainDelay(config) {
     const value = Math.trunc(Number(config?.drainDelayMs))
@@ -74,8 +77,9 @@ export function resolveDrainDelay(config) {
  * 收尾序列的唯一实现：先改口，再按需留排空窗口，然后停监听、等在飞与排队请求收完、最后收 worker。
  *
  * 顺序不能反：先 server.close() 会把排队中的请求直接掐掉，而且 /readyz 也再没人问得到。
+ * 只经 startServe 暴露（beginShutdown），不单独导出：调用方不该绕过装配自己拼顺序。
  */
-export function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0 }) {
+function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0 }) {
     markClosing()
     const stopListening = () =>
         new Promise(resolve => {
