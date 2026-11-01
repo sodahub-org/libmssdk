@@ -77,6 +77,17 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
 （`availableParallelism() / 2` 估算）。用 `LIBMSSDK_WORKERS` 可以钉死数量。启动日志的
 `event=dispatcher` 写着实际值与来由，`event=serve` 写着监听的 `workers`。
 
+### 停止服务时会发生什么
+
+- **nssm 停止（推荐）**：默认发 Ctrl+C / 窗口关闭事件，Node 收到 `SIGINT`，先让 `/readyz` 回 503，
+  再停监听、收在飞请求、收 worker。要让编排器来得及摘流，设 `LIBMSSDK_DRAIN_DELAY_MS`
+  （默认 0：信号一到就停监听）。
+- **前台 Ctrl+C**：与 nssm 相同，走完整收尾；第二次 Ctrl+C 立即退出。
+- **`schtasks /end`**：先发 `WM_CLOSE`（控制台程序收不到），随后按 `AllowHardTerminate` 用
+  `TerminateProcess` 硬杀。进程拿不到信号，`/readyz` 不会改口，客户端看到的是连接被拒/重置。
+  要优雅停止就换成 nssm 或真正的 Windows 服务；坚持用计划任务的话，`/end` 之后补一条
+  `taskkill /T` 清掉孤儿进程（`/end` 只杀任务直接子进程）。
+
 预热期间（首次 `bdms.init`，通常几秒）`GET /readyz` 返回 503，worker 就绪后才回 200；
 `GET /livez` 恒 200，只回答「进程还在不在」；`GET /healthz` 是 `/readyz` 的别名，留给已有的
 编排配置。`/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`，已入队的请求超过等待预算也回 503；两者都带

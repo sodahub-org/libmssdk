@@ -108,14 +108,27 @@ worker 数按绑定地址推导，环境变量始终优先：
 **队列饱满不进就绪判定。** 过载时把自己从上游摘掉，剩下的实例只会更忙，这是标准的死亡螺旋。
 过载的信号走普通请求路径的 503 `BUSY`。
 
-**「不在收尾过程中」这一条只在能收到信号的形态生效。** `SIGTERM` / `SIGINT` 到达的第一件事就是让
-`/readyz` 改口（`src/index.mjs` 的 shutdown），之后才停监听、等在飞与排队的请求收完、最后收 worker。
-容器形态要留意：`deploy/entrypoint.sh` 是 `exec wine … node.exe`，而 Wine 不把 POSIX 信号投给那个
-Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」而不是优雅关停 —— 编排器看到的表现从
-连接被拒开始，而不是从 503 开始。同理，`schtasks /end` 走的是 TerminateProcess，也拿不到信号。
-真正生效的是前台 Ctrl+C 与 nssm 的停止动作（默认发 Ctrl+C / 窗口关闭事件，Node 会把它变成 SIGINT）。
-要闭合容器与计划任务这两条，得给入口换一层能转信号的东西（tini/dumb-init 也解决不了 Wine 那一跳），
-那是部署侧另一件事，不在本票范围。
+**「不在收尾过程中」这一条要求信号真的送到进程。** `SIGTERM` / `SIGINT` 到达的第一件事就是让
+`/readyz` 改口（`src/index.mjs` 的 shutdown），之后停监听、等在飞与排队的请求收完、最后收 worker。
+按部署形态分开说：
+
+| 形态 | 停止时发生什么 | 探针看到的 |
+| --- | --- | --- |
+| 前台 Ctrl+C、Linux/macOS 的 `SIGTERM`、nssm 停止 | 进程收到 `SIGINT` / `SIGTERM`，走完整收尾 | 先 503，再连接被拒 |
+| `docker stop` / compose | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 走完整收尾 | 先 503，再连接被拒 |
+| `schtasks /end`、`taskkill /F`、超过 `stop_grace_period` 的 `SIGKILL` | 拿不到信号，`TerminateProcess` 硬杀 | 从连接被拒/重置开始 |
+
+Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM` —— 这就是容器入口必须转一手
+的原因。tini / dumb-init 解决的是 PID 1 转发与僵尸回收，不改变 Wine 内部这一跳。
+
+**收尾前留一个排空窗口。** 改口与停监听如果发生在同一刻，探针根本读不到那个 503。
+`LIBMSSDK_DRAIN_DELAY_MS`（默认 0，即旧行为）让 `markClosing()` 之后先保持监听；容器 compose 已设
+8 秒并配 `stop_grace_period: 30s`。两者之和要小于编排器的停止宽限期，否则进程会被硬杀。
+
+**计划任务那一半仍然不优雅。** `schtasks /end` 先发 `WM_CLOSE`（控制台程序收不到），再按
+`AllowHardTerminate` 用 `TerminateProcess`；官方文档明确它立即终止、不执行任何终止处理块。要优雅停止
+就换 nssm（默认发 Ctrl+C）或真正的 Windows 服务；坚持用计划任务的话，`/end` 之后补一条 `taskkill /T`
+清孤儿进程。
 
 ## 7. 诊断端点收拢（#9）
 
@@ -188,3 +201,5 @@ Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」
 10. 发版到「旧诊断端点改 410」那一版的人：先看一眼 `src/endpoints.mjs` 里的 `SUNSET_HTTP_DATE`。
     要是这一版实际晚于它，先把 `DEPRECATED_AT` / `SUNSET_HTTP_DATE` 这一对推到新版本之后，再改 410 ——
     头里写着「早已到期」比不发这个头更糟（用例把两个时刻的先后关系钉死了，改一个就得改另一个）。
+11. 滚动升级前核对停止宽限期：容器已设 `stop_grace_period: 30s` 与 8 秒排空窗口；计划任务
+    （`schtasks /end`）拿不到信号，要优雅停止就换 nssm / Windows 服务，`/end` 后补 `taskkill /T`。

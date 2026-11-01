@@ -6,7 +6,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fetchOwnIdentity, fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
+import { fetchOwnIdentity, fetchReady, probeReady, probeStatus, tailLines, waitForReady } from './endpoints.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -150,6 +150,44 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
 
         async readIdentityFile() {
             return inContainer(`cat ${IDENTITY_FILE} 2>/dev/null || true`)
+        },
+
+        /**
+         * #23 的补充验证：`docker stop` 期间 /readyz 到底回了什么。
+         *
+         * 修好之后应当先看到可读的 503（entrypoint 把 SIGTERM 转成 SIGINT、Node 改口、排空窗口
+         * 内仍在监听），最后才变成连接被拒；没修好时从头就是 refused。这里只记录真的观察到过的
+         * 形态序列，不靠 sleep 猜，也不把 Wine 版本差异藏起来。
+         */
+        async observeStop({ graceSeconds = 30, intervalMs = 250, probeTimeoutMs = 800 } = {}) {
+            const sequences = publicPorts.map(() => [])
+            const note = (index, kind) => {
+                const list = sequences[index]
+                if (list.at(-1) !== kind) list.push(kind)
+            }
+            let stopError = null
+            const stopping = docker(['stop', '--time', String(graceSeconds), container]).catch(error => {
+                stopError = String(error?.message || error)
+            })
+            for (;;) {
+                const running = await docker(['inspect', '--format', '{{.State.Running}}', container])
+                    .then(out => out.trim() === 'true')
+                    .catch(() => false)
+                for (const [index, port] of publicPorts.entries()) {
+                    const result = await probeStatus(port, probeTimeoutMs)
+                    note(index, result.kind === 'http' ? `http-${result.status}` : result.kind)
+                }
+                if (!running) break
+                await new Promise(resolve => setTimeout(resolve, intervalMs))
+            }
+            await stopping
+            return {
+                container,
+                stopError,
+                sequences: sequences.map(list => list.join(' → ')),
+                // 每个进程自己的形态序列；hostPorts 与它一一对应
+                perPort: sequences.map((list, index) => ({ port: publicPorts[index], sequence: list })),
+            }
         },
 
         teardown() {},

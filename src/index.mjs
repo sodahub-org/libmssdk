@@ -36,7 +36,8 @@ async function readStdin() {
 async function commandServe() {
     // /sign 由主进程排队、worker 计算；签名以外的端点（健康检查与弃用回执）由 src/endpoints.mjs
     // 承接。主进程那份 signer 只给 selftest / probe / bridge 用，不进 HTTP 层。
-    const { server, pool, markClosing } = startServe({ config })
+    const entry = startServe({ config })
+    const { server, pool } = entry
     try {
         await new Promise((resolve, reject) => {
             const onError = error => reject(error)
@@ -74,12 +75,10 @@ async function commandServe() {
         }
         closing = true
         // 第一件事是让 /readyz 改口：编排器从这一步起就不该再把流量派过来了。
-        markClosing()
+        // 排空窗口（LIBMSSDK_DRAIN_DELAY_MS，默认 0）只推迟停监听，不推迟改口。
+        logEvent('shutdown', { drainDelayMs: entry.drainDelayMs })
         // 先停止接新连接，等在飞/排队请求收完，再收 worker：反过来会把排队中的请求直接掐掉。
-        server.close(() => {
-            pool.stop().finally(() => process.exit(0))
-        })
-        server.closeIdleConnections?.()
+        entry.beginShutdown().finally(() => process.exit(0))
     }
     process.on('SIGINT', shutdown)
     process.on('SIGTERM', shutdown)

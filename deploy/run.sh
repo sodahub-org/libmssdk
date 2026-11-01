@@ -26,6 +26,9 @@ LIBMSSDK_BIND=${LIBMSSDK_BIND:-0.0.0.0}
 LIBMSSDK_PORT=${LIBMSSDK_PORT:-8899}
 # 前面挂同机反向代理时改成 1，并把上面的 LIBMSSDK_BIND 改成 127.0.0.1
 # LIBMSSDK_TRUST_PROXY=0
+# 收尾排空窗口（compose 默认 8 秒）：先让 /readyz 改口、等探针摘流，再停监听。
+# 与 compose 的 stop_grace_period: 30s 一起构成滚动升级的收尾预算。
+# LIBMSSDK_DRAIN_DELAY_MS=8000
 # 指向你自己安装的汽水客户端版本目录（内含 resources/）
 LIBMSSDK_CLIENT_DIR=
 # 只在上反向代理那一层时需要（docker compose -f docker-compose.yml -f docker-compose.proxy.yml）

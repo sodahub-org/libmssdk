@@ -69,6 +69,20 @@ bash verify/wine-multi/run.sh --mode mock
 判据各自只管自己那件事，但**整体结论不粉饰**：只要记过一条失败（哪怕是判据 4 有意不计入自身状态的那种），
 结论就是「失败」/ exit `1`。
 
+## 停止期间的观察（#23）
+
+真环境跑完判据 1–6 之后，harness 会执行一次 `docker stop --time 30`，同时每 250ms 问一次两个进程的
+`/readyz`，把观察到的形态序列记进结果的 `observations.stopObservation`：
+
+- 期望 `saw-503`：entrypoint 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 先改口 `/readyz`、排空窗口里
+  仍在监听，窗口结束才停监听、收在飞请求；之后才变成连接被拒。
+- `refused-only` 说明信号没送到 Node（或排空窗口为 0）：容器形态退化成「进程直接消失」。
+- `mixed` 表示两个进程观察不一致，按结果里的 `sequences` 人工核对。
+
+这一条只是**记录**，不参与通过/失败的门禁：Wine 的 Ctrl+C 转发在 9.x 有过回归（见 #23 的调研），
+把版本差异折成一个 FAIL 会掩盖真正要看的东西。彩排模式没有容器可停，这一条记 `SKIPPED`。
+注意 `--keep` 保留的容器这时是**已停止**状态，要重新跑就 `docker start` 或先 `docker rm -f`。
+
 ## 前置条件
 
 1. **Docker**（Linux 或 WSL2）与一个 x86_64 主机；ARM 上要 QEMU 模拟，很慢。

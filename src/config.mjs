@@ -17,6 +17,12 @@ const env = key => (process.env[key] || '').trim()
 
 const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
 
+/** 非负整数环境变量：写错（abc、-1）时回退默认，而不是把 NaN 带进收尾计时。 */
+const envInt = (key, fallback) => {
+    const value = Math.trunc(Number(env(key)))
+    return Number.isFinite(value) && value >= 0 ? value : fallback
+}
+
 /** 用户提供的原生模块信息（文件缺失时为 ''，便于回退到客户端目录或显式环境变量）。 */
 export function bundledNative() {
     const modulePath = path.join(LOCAL_NATIVE_DIR, 'bdms.node')
@@ -128,6 +134,9 @@ export function loadConfig() {
         bdmsModule,
         requestTimeoutMs: Number(env('LIBMSSDK_UPSTREAM_TIMEOUT_MS') || 15000),
         maxBodyBytes: Number(env('LIBMSSDK_MAX_BODY_BYTES') || 256 * 1024),
+        // 收尾时的排空窗口：markClosing() 之后先保持监听，让 /readyz 的 503 真的被读到，
+        // 再停监听。0 = 原先的行为（信号一到就停监听）。
+        drainDelayMs: envInt('LIBMSSDK_DRAIN_DELAY_MS', 0),
     }
 }
 

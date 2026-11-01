@@ -198,7 +198,7 @@ STAGE=$(mktemp -d)
 cleanup() {
     rm -rf "$STAGE"
     if [[ "$KEEP" == 1 ]]; then
-        echo "[verify] --keep：保留容器，自行清理用 docker rm -f $CONTAINER（两个卷里的 Wine prefix 与身份始终保留）"
+        echo "[verify] --keep：容器已被判据 7（docker stop 观察）停止；要再用就 docker start $CONTAINER（两个卷里的 Wine prefix 与身份始终保留）"
         return
     fi
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true

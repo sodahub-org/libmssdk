@@ -136,6 +136,25 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 `/readyz`**：过载时把自己从上游摘掉，剩下的实例只会更忙，是标准的死亡螺旋；过载的信号走普通
 请求路径的 503。
 
+### 收尾在哪些形态生效
+
+「开始收尾 → `/readyz` 当场改口」依赖进程能收到信号。按部署形态分开说：
+
+| 形态 | 收尾触发 | 停止期间看到的 |
+| --- | --- | --- |
+| 前台 `Ctrl+C`、Linux/macOS 的 `SIGTERM` | 进程直接收到 `SIGINT` / `SIGTERM` | 先 503，再连接被拒 |
+| Docker（`docker stop` / compose） | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine | 先 503，再连接被拒 |
+| nssm 停止 | 默认发 Ctrl+C / 窗口关闭事件，Node 收到 `SIGINT` | 先 503，再连接被拒 |
+| `schtasks /end`、`taskkill /F`、超过宽限的 `SIGKILL` | 拿不到信号（`TerminateProcess`） | 从连接被拒/重置开始 |
+
+- Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM`；容器里的转发就是补这一跳。
+- **排空窗口**：`markClosing()` 之后先保持监听，让探针真的读到 503，再停监听、收在飞与排队请求。
+  由 `LIBMSSDK_DRAIN_DELAY_MS` 控制，默认 `0`（信号一到就停监听，与旧行为一致）；容器 compose
+  显式设为 8 秒，并配 `stop_grace_period: 30s`。窗口只推迟「停监听」，不推迟「改口」。
+- 窗口与宽限期要覆盖编排器的摘流延迟；两者之和必须小于 `stop_grace_period`，否则进程会被硬杀。
+- **不生效的形态要把承诺说小**：`schtasks /end` 走 `TerminateProcess`，无法拦截；要优雅停止就换成
+  nssm 或真正的 Windows 服务，而不是等计划任务发信号。
+
 ### 设备身份怎么对齐
 
 原先这一份由 `GET /config` 提供，那个端点会明文返回完整设备号与安装号，而没有任何客户端在调它，
