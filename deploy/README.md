@@ -150,7 +150,10 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    它的 `location /` 把全部路径都转给上游，三条回执照样到得了服务、由服务自己回答，但 `/stat`
    也因此经公网可达。要跟上面这样收紧，得把兜底的 `location /` 换成 `return 404`，再给清单里
    每条路径写一条精确匹配的 `location`（`= /probe` 与 `= /probe/` 各一条，其余同理）—— 只加
-   `location` 而不动那个兜底块等于什么也没挡。改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，
+   `location` 而不动那个兜底块等于什么也没挡。那几条 `proxy_set_header` 现在只写在 `location /`
+   里，新的 location 继承不到（nginx 只在上层没有同名指令时才继承），要提到 `server` 一级或
+   逐条重写；少了 `X-Forwarded-For`，开了 `LIBMSSDK_TRUST_PROXY=1` 之后所有客户端会缩成一个
+   限流桶（见第 3 步与 `nginx.conf` 里的注释）。改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，
    多出来的白名单同样得有人维护，而现成的这份是 CI 按原样验过的。
 
    在宿主机上直接看诊断：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
