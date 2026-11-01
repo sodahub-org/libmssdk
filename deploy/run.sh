@@ -59,6 +59,20 @@ fi
 # 后者的取值口径必须抄 src/config.mjs 的 envFlag（1/true/yes/on，不分大小写，且先去空白）：
 # compose 把这个变量原样透传进容器，只认 "1" 的话 LIBMSSDK_TRUST_PROXY=true 就溜过去了；
 # 不 trim 的话 `" on "` 又会溜过去 —— 两种都是「服务真在对外口上认 XFF，脚本一声不吭」。
+# 先兜住同一类问题的另一半：`.env` 里的这一行 bash 读不进去、compose 却照样读得进去。
+# `LIBMSSDK_BIND = 0.0.0.0`（等号两边带空格）在 bash 里是「找一个叫 LIBMSSDK_BIND 的命令」，
+# 变量根本没设上，于是检查看见的是空、按缺省的回环放行，而 compose 拿文件里那个 0.0.0.0 去绑宿主口。
+# 这种「脚本看不见、compose 会用」的配置不能放行 —— 脚本读不动这个文件，就在这里停下来让人改。
+for unread_key in LIBMSSDK_BIND LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME; do
+    if [ -z "${!unread_key:-}" ] && grep -Eq "^[[:space:]]*${unread_key}[[:space:]]*=[[:space:]]*[^[:space:]]" .env; then
+        echo "错误：deploy/.env 里写了 ${unread_key}，但 bash 没能把它读进来（等号两侧空格的写法最常见）。" >&2
+        echo "      麻烦的是 compose 仍会按自己那套解析读这个文件 —— 于是脚本看到的和真正生效的对不上，" >&2
+        echo "      这条回环检查就没法替你把关。请把 ${unread_key}=值 写成等号两侧都不带空格的形状。" >&2
+        echo "      （值本身带空格的，写成 ${unread_key}=\"…\" 由引号包住，bash 与 compose 都认。）" >&2
+        exit 1
+    fi
+done
+
 proxy_signal=''
 if [ -n "${SIGNER_HOSTNAME:-}" ]; then
     proxy_signal="SIGNER_HOSTNAME=${SIGNER_HOSTNAME}"
@@ -101,7 +115,7 @@ if [ -n "$proxy_signal" ] && [ "$is_loopback" = 0 ]; then
         echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${LIBMSSDK_BIND}）。" >&2
         echo "      这只在「确实要同时保留对外的明文入口，且它在内网防火墙后面」时成立：token 等价于签名能力，它和 cookie 走的都是明文。" >&2
     else
-        echo "错误：${proxy_signal} 说明前面挂了反向代理，LIBMSSDK_BIND 就必须是 127.0.0.1，现在是 ${LIBMSSDK_BIND}。" >&2
+        echo "错误：${proxy_signal} 说明前面挂了反向代理，LIBMSSDK_BIND 就必须收进回环（127.0.0.1 或 ::1），现在是 ${LIBMSSDK_BIND}。" >&2
         echo "      否则任何人都能绕过 443 直连 http://<host>:${LIBMSSDK_PORT:-8899}/sign，Bearer token 与请求里的 cookie 全走明文；" >&2
         echo "      开了 LIBMSSDK_TRUST_PROXY 时这条直连还能自带伪造的 X-Forwarded-For 自选分桶键，限流等于没开。" >&2
         echo "      改法：在 deploy/.env 写 LIBMSSDK_BIND=127.0.0.1。它管的是宿主上把端口发布到哪张网卡，" >&2

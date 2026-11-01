@@ -134,7 +134,8 @@ test('设了 SIGNER_HOSTNAME 而宿主端口还发布到 0.0.0.0：拒启动，�
     assert.equal(status, 1, '违规组合必须把启动拦住，而不是只留一句提示')
     assert.match(stderr, /SIGNER_HOSTNAME/, `错误信息要点名触发的变量：${stderr}`)
     assert.match(stderr, /LIBMSSDK_BIND/, `错误信息要点名要改的变量：${stderr}`)
-    assert.match(stderr, /LIBMSSDK_BIND 就必须是 127\.0\.0\.1/, `要直接给出改法：${stderr}`)
+    assert.match(stderr, /LIBMSSDK_BIND 就必须收进回环/, `要直接给出改法：${stderr}`)
+    assert.match(stderr, /127\.0\.0\.1/, `改法要写到具体值：${stderr}`)
     assert.match(stderr, /LIBMSSDK_ALLOW_PUBLIC_HTTP=1/, `要让人才知道有逃生舱：${stderr}`)
     assert.equal(started, false, '拒绝要发生在起容器之前')
 })
@@ -232,6 +233,37 @@ test('.env 没写 LIBMSSDK_BIND 时不误拦：compose 的缺省本来就只绑�
     const { status, stderr, started } = runDeployScript(deployEnv({ hostname: 'signer.example.com' }))
 
     assert.equal(status, REACHED_COMPOSE, `没写这一行时 compose 只绑 127.0.0.1，不是违规：${stderr}`)
+    assert.equal(started, true)
+})
+
+test('.env 里 bash 读不进去的那一行（等号两侧带空格）：宁可停，也不按缺省放行', { skip: skipIfNoBash() }, () => {
+    // `LIBMSSDK_BIND = 0.0.0.0` 在 bash 里是「跑一个叫 LIBMSSDK_BIND 的命令」，变量根本没设上；
+    // 这时按缺省值判，等于对着一份 compose 照旧会用的 0.0.0.0 说「没问题」。这里故意写裸行，
+    // 不走 envLine 的引号 —— 要复现的正是人手写 .env 时最容易敲出来的那一型。
+    const placeholders = [
+        'LIBMSSDK_TOKEN=stub-token-not-a-secret',
+        'LIBMSSDK_PORT=8899',
+        'LIBMSSDK_CLIENT_DIR=/tmp/libmssdk-stub-client-dir',
+    ]
+    const malformed = [
+        [...placeholders, 'SIGNER_HOSTNAME=signer.example.com', 'LIBMSSDK_BIND = 0.0.0.0'],
+        [...placeholders, 'LIBMSSDK_BIND=0.0.0.0', 'SIGNER_HOSTNAME = signer.example.com'],
+        [...placeholders, 'LIBMSSDK_BIND=0.0.0.0', 'LIBMSSDK_TRUST_PROXY = 1'],
+    ]
+    for (const lines of malformed) {
+        const { status, stderr, started } = runDeployScript(lines)
+
+        assert.equal(status, 1, `读不动的 .env 要停下，不能靠缺省放行：${stderr}`)
+        assert.equal(started, false, '不能带着「脚本看不见这个值」继续起容器')
+        assert.match(stderr, /bash 没能把它读进来/, `要说清是这一行读不进去：${stderr}`)
+    }
+})
+
+test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127.0.0.1} 一样按回环算', { skip: skipIfNoBash() }, () => {
+    // 空值与「这一行压根没写」是同一件事（compose 的 :- 对两者都取缺省），不该被上面那条读不进去的检查拦下
+    const { status, started } = runDeployScript(deployEnv({ bind: '', hostname: 'signer.example.com' }))
+
+    assert.equal(status, REACHED_COMPOSE, '空值不是「读不进去」，也不该误拦')
     assert.equal(started, true)
 })
 
