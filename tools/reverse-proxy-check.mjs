@@ -115,21 +115,22 @@ function docker(args) {
 }
 
 function caddyValidate(image, workDir, file, env) {
+    const containerDir = '/w'
     const args = ['run', '--rm']
     for (const [key, value] of Object.entries(env)) args.push('--env', `${key}=${value}`)
     args.push(
-        '--volume', `${workDir}:/w:ro`,
-        '--workdir', '/w',
+        '--volume', `${workDir}:${containerDir}:ro`,
+        '--workdir', containerDir,
         image,
-        'caddy', 'validate', '--config', `/w/${file}`, '--adapter', 'caddyfile',
+        'caddy', 'validate', '--config', `${containerDir}/${file}`, '--adapter', 'caddyfile',
     )
     return docker(args)
 }
 
-function nginxTest(image, confPath, confName, certDir) {
+function nginxTest(image, workDir, confName, certDir) {
     return docker([
         'run', '--rm',
-        '--volume', `${confPath}:/etc/nginx/conf.d/${confName}:ro`,
+        '--volume', `${join(workDir, confName)}:/etc/nginx/conf.d/${confName}:ro`,
         '--volume', `${certDir}:/etc/letsencrypt/live/${EXAMPLE_DOMAIN}:ro`,
         image,
         'nginx', '-t',
@@ -201,14 +202,14 @@ function main() {
         writeFileSync(join(workDir, 'libmssdk.conf'), readFileSync(NGINX_CONF_PATH, 'utf8'))
         expectPass(
             'nginx.conf：nginx -t 通过',
-            nginxTest(nginxImage, join(workDir, 'libmssdk.conf'), 'libmssdk.conf', certDir),
+            nginxTest(nginxImage, workDir, 'libmssdk.conf', certDir),
         )
 
         const brokenPath = join(workDir, 'broken.conf')
         writeFileSync(brokenPath, `${readFileSync(NGINX_CONF_PATH, 'utf8')}\ndefinitely_not_a_directive on;\n`)
         expectFailureWithLocation(
             'nginx.conf：注入非法指令时 nginx -t 失败并指到行',
-            nginxTest(nginxImage, brokenPath, 'broken.conf', certDir),
+            nginxTest(nginxImage, workDir, 'broken.conf', certDir),
             /broken\.conf:\d+/,
         )
     } finally {
