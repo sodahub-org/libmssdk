@@ -9,8 +9,10 @@
 //   漏一项 nginx -t 不会报（语法是对的），所以单列这道检查。nginx 与 README 白名单只查
 //   「覆盖」（额外收紧比如顺手关掉 /stat 不算错）；Caddyfile 注释里的 `@probes path …`
 //   是清单抄本，要求与 PROBE_PATHS 逐项相等。
-// - Caddy 路径写法只在可核对范围内判：字面量与收尾 `*` 前缀匹配。`?`、字符类、占位符、
-//   `%` 转义、`//` 与非收尾 `*` 一律报「超出可核对范围」，绝不按字面量静默放过。
+// - Caddy 路径写法只在可核对范围内判：不含引号的字面量与收尾 `*` 前缀匹配。`?`、字符类、
+//   占位符、`%` 转义、`//`、非收尾 `*` 与引号包住的 token 一律报「超出可核对范围」，绝不按
+//   字面量静默放过。`respond` 的状态码只读引号外的裸数字；path token 里出现引号则直接判红
+//   （Caddy 词法会剥引号且引号内空格不分词，按空白切分读不出同样的 token）。
 // - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`（镜像自带的 nginx.conf
 //   就是那个最小 `http {}` 外壳）；再注入一条非法指令，确认失败信息能指到行号（证明验的确实是
 //   这个文件，而不是镜像自带的默认配置）。
@@ -206,11 +208,13 @@ export function parseCaddyPathRules(block) {
 }
 
 /**
- * 只支持字面量路径与收尾 `*`（前缀匹配）。其余 Caddy 路径语法（`?`、字符类 `[]`、占位符
- * `{}`、`%` 转义、`//`、中间/开头的 `*`）不建模；遇到就判红而不是当字面量静默放过。
+ * 只支持不含引号的字面量路径与收尾 `*`（前缀匹配）。其余 Caddy 路径语法（`?`、字符类 `[]`、
+ * 占位符 `{}`、`%` 转义、`//`、中间/开头的 `*`、双引号/反引号包住的 token）不建模；遇到就
+ * 判红而不是当字面量静默放过。引号在 Caddy 词法里会被剥掉且内部的空格不分词，按现在的
+ * `split(/\\s+/)` 读会得到与 Caddy 不同的 token，所以一律拒绝，而不是猜。
  */
 function isUnsupportedPathPattern(pattern) {
-    if (/[?[\]{}%]/.test(pattern) || pattern.includes('//')) return true
+    if (/[?[\]{}%`"]/.test(pattern) || pattern.includes('//')) return true
     const star = pattern.indexOf('*')
     return star !== -1 && star !== pattern.length - 1
 }

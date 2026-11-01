@@ -350,6 +350,11 @@ test('Caddy 路径语法超出建模范围时判红，不能当字面量放过',
         '/sign /livez /readyz /healthz {$SIGNER_HOSTNAME}/stat',
         '/sign /livez /readyz /healthz /a*b',
         '/sign /livez /readyz /healthz /sign//x',
+        // 引号 token 不建模：Caddy 会剥引号且引号内空格不分词，按空白切分读不出同样的 token。
+        '/sign /livez /readyz /healthz "/stat"',
+        '/sign /livez /readyz /healthz `/stat`',
+        '/sign /livez /readyz /healthz "/sign"',
+        '/sign /livez /readyz /healthz "/my stat"',
     ]) {
         assert.deepEqual(
             reverseProxyStructureProblems({ nginxConf, readme: markdown(allowlist), caddyfile: CADDYFILE_DOC }).map(p => p.check),
