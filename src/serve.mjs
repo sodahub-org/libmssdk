@@ -15,6 +15,7 @@
 import { maskAddressKey } from './ratelimit.mjs'
 import { createEndpointsHandler } from './endpoints.mjs'
 import { startDispatcher } from './dispatcher.mjs'
+import { logError } from './log.mjs'
 
 /**
  * worker 读身份的两条路：环境变量钉死，或只读身份文件。
@@ -86,7 +87,13 @@ function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0 }) {
             server.close(() => {
                 // pool.stop() 只发 shutdown 消息、不等待线程退出；等它返回再解析，
                 // 让调用方（index.mjs 的退出 / 用例的断言）看到的是「序列已经走完」。
-                Promise.resolve(pool.stop()).finally(resolve)
+                // 失败只记一笔、不挂住收尾：先包一层再调，测试注入的 pool.stop 若同步抛，
+                // 异常会从 close 回调里逸出、resolve 永不执行；reject 则会是无人处理的 rejection。
+                // 与 src/index.mjs 端口错误路径上对同一调用的处理保持同一形状。
+                Promise.resolve()
+                    .then(() => pool.stop())
+                    .catch(error => logError(`pool.stop: ${error?.message || error}`))
+                    .finally(resolve)
             })
             server.closeIdleConnections?.()
         })
