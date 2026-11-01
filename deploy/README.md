@@ -121,8 +121,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
    这三条探针的清单以 `src/endpoints.mjs` 的 `PROBE_PATHS` 为准：`nginx.conf` 的免日志
    location 与下面白名单都照它写，新增别名时同步那两处（`npm test` 与 CI 的反代校验会核对）。
-   Caddy 默认不写访问日志，三条探针同样不进取数日志；若你自己加了 `log`，记得用 `log_skip`
-   把它们排除。
+   Caddy 默认不写访问日志，三条探针同样不进取数日志；若你自己加了 `log`，要按 Caddyfile
+   注释里的写法用命名 matcher 排除它们（`@probes path /livez /readyz /healthz` 加
+   `log_skip @probes`，`log_skip` 只收一个参数）。
    `/stat` 不鉴权、地址已脱敏，但**计数会暴露使用情况**（桶数、允许/拒绝、队列深度），公网部署
    建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名与探针：
 

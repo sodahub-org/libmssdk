@@ -5,9 +5,9 @@
 //   且报错要指到具体行（不是一句 exit code）。
 // - deploy/README.md 里标记为 caddyfile 的代码块（那段路径白名单示例）一起验。
 // - 结构对照：nginx 的免日志 location 必须覆盖 src/endpoints.mjs 的 PROBE_PATHS
-//   （/healthz 是 /readyz 的别名），README 白名单必须放行 /sign 与全部探针，Caddyfile 若开了
-//   log 就要用 log_skip 排除探针。漏一项 nginx -t 不会报（语法是对的），所以单列这道检查。
-//   只查「覆盖」、不禁止多关一条日志：额外收紧（比如 /stat）不该让 CI 红。
+//   （/healthz 是 /readyz 的别名），README 白名单必须放行 /sign 与全部探针。漏一项
+//   nginx -t 不会报（语法是对的），所以单列这道检查。只查「覆盖」、不禁止多关一条日志：
+//   额外收紧（比如 /stat）不该让 CI 红。
 // - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`（镜像自带的 nginx.conf
 //   就是那个最小 `http {}` 外壳）；再注入一条非法指令，确认失败信息能指到行号（证明验的确实是
 //   这个文件，而不是镜像自带的默认配置）。
@@ -119,23 +119,18 @@ export function extractCaddyWhitelistPaths(markdown, source = 'Markdown') {
     return paths
 }
 
-/** Caddyfile 开了访问日志时，`log_skip` 必须点名每条探针；没开 `log` 就没有问题。 */
-export function caddyLoggedProbes(caddyfile) {
-    if (!/^\s*log\b/m.test(caddyfile)) return []
-    const skipped = [...caddyfile.matchAll(/^\s*log_skip\s+(.+)$/gm)]
-        .flatMap(match => match[1].trim().split(/\s+/))
-    return PROBE_PATHS.filter(path => !skipped.includes(path))
-}
-
 /**
- * 结构对照固定跑这四项；main 逐项打印 ok/FAIL，npm test 直接看问题清单是否为空。
+ * 结构对照固定跑这三项；main 逐项打印 ok/FAIL，npm test 直接看问题清单是否为空。
  * 名称写在这里而不是散在判断里，新增一项时两边都不会漏。
+ *
+ * 不把 Caddy 的 log/log_skip 纳入自动检查：log_skip 只收一个 matcher，用命名 matcher
+ * （`@probes path …` + `log_skip @probes`）或逐条 log_skip 都行，写法不止一种；仓库原样
+ * 也不开 log，硬猜一种写法只会把合法配置判红。这里只把正确写法写进 Caddyfile 注释。
  */
 export const STRUCTURE_CHECKS = Object.freeze({
     nginxProbes: 'nginx.conf：免访问日志的 location 覆盖全部探针',
     whitelist: 'deploy/README.md：白名单放行 /sign 与全部探针',
     statBlocked: 'deploy/README.md：白名单没放行 /stat',
-    caddyProbes: 'Caddyfile：开了 log 就要用 log_skip 跳过全部探针',
 })
 
 /**
@@ -144,7 +139,7 @@ export const STRUCTURE_CHECKS = Object.freeze({
  * 只查「覆盖」、不禁止额外条目：多关一条日志（比如部署者顺手把 /stat 也关掉）是收紧，
  * 不该让 CI 红。这样新增别名漏改一处会红，而合理的额外条目不会。
  */
-export function reverseProxyStructureProblems({ nginxConf, readme, caddyfile }) {
+export function reverseProxyStructureProblems({ nginxConf, readme }) {
     const problems = []
 
     const nginxPaths = nginxNoLogPaths(nginxConf)
@@ -170,14 +165,6 @@ export function reverseProxyStructureProblems({ nginxConf, readme, caddyfile }) 
         problems.push({
             check: STRUCTURE_CHECKS.statBlocked,
             detail: '/stat 会暴露桶数、允许/拒绝与队列深度，该示例不该放行它',
-        })
-    }
-
-    const loggedProbes = caddyLoggedProbes(caddyfile)
-    if (loggedProbes.length > 0) {
-        problems.push({
-            check: STRUCTURE_CHECKS.caddyProbes,
-            detail: `没被跳过：${loggedProbes.join(' ')}`,
         })
     }
 
@@ -319,7 +306,6 @@ function main() {
         const structure = reverseProxyStructureProblems({
             nginxConf: readFileSync(NGINX_CONF_PATH, 'utf8'),
             readme: readFileSync(README_PATH, 'utf8'),
-            caddyfile: readFileSync(CADDYFILE_PATH, 'utf8'),
         })
         for (const check of Object.values(STRUCTURE_CHECKS)) {
             const problem = structure.find(item => item.check === check)
