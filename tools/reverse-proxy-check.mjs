@@ -77,9 +77,13 @@ function report(name, ok, detail) {
   if (!ok) failures += 1;
 }
 
+function withCommand(run, message) {
+  return `命令：${run.command}\n${message}`;
+}
+
 function expectPass(name, run) {
   if (run.status !== 0) {
-    report(name, false, `命令：${run.command}\n退出码 ${run.status}，输出：\n${run.output}`);
+    report(name, false, withCommand(run, `退出码 ${run.status}，输出：\n${run.output}`));
     return;
   }
   report(name, true, run.output);
@@ -87,11 +91,11 @@ function expectPass(name, run) {
 
 function expectFailureWithLocation(name, run, locationPattern) {
   if (run.status === 0) {
-    report(name, false, `命令：${run.command}\n预期校验失败，但它通过了，输出：\n${run.output}`);
+    report(name, false, withCommand(run, `预期校验失败，但它通过了，输出：\n${run.output}`));
     return;
   }
   if (!locationPattern.test(run.output)) {
-    report(name, false, `命令：${run.command}\n失败信息没有指到文件:行（期望匹配 ${locationPattern}）：\n${run.output}`);
+    report(name, false, withCommand(run, `失败信息没有指到文件:行（期望匹配 ${locationPattern}）：\n${run.output}`));
     return;
   }
   report(name, true, run.output);
@@ -120,10 +124,10 @@ function caddyValidate(image, workDir, file, env) {
   return docker(args);
 }
 
-function nginxTest(image, confPath, containerName, certDir) {
+function nginxTest(image, confPath, confName, certDir) {
   return docker([
     'run', '--rm',
-    '--volume', `${confPath}:/etc/nginx/conf.d/${containerName}:ro`,
+    '--volume', `${confPath}:/etc/nginx/conf.d/${confName}:ro`,
     '--volume', `${certDir}:/etc/letsencrypt/live/signer.example.com:ro`,
     image,
     'nginx', '-t',
@@ -161,10 +165,12 @@ function main() {
     );
 
     const caddyLocation = /Caddyfile:\d+/;
+    const withoutPlaceholders = (...keys) =>
+      Object.fromEntries(Object.entries(PLACEHOLDERS).filter(([key]) => !keys.includes(key)));
     for (const [label, env] of [
-      ['缺 SIGNER_HOSTNAME', { LIBMSSDK_UPSTREAM: PLACEHOLDERS.LIBMSSDK_UPSTREAM }],
-      ['缺 LIBMSSDK_UPSTREAM', { SIGNER_HOSTNAME: PLACEHOLDERS.SIGNER_HOSTNAME }],
-      ['两个变量都缺', {}],
+      ['缺 SIGNER_HOSTNAME', withoutPlaceholders('SIGNER_HOSTNAME')],
+      ['缺 LIBMSSDK_UPSTREAM', withoutPlaceholders('LIBMSSDK_UPSTREAM')],
+      ['两个变量都缺', withoutPlaceholders('SIGNER_HOSTNAME', 'LIBMSSDK_UPSTREAM')],
     ]) {
       expectFailureWithLocation(
         `Caddyfile：${label}时 validate 失败并指到行`,
