@@ -185,15 +185,16 @@ test('回环判据与 src/dispatch.mjs 的 isLoopbackBind 逐条一致', { skip:
 })
 
 test('LIBMSSDK_TRUST_PROXY 的「打开」跟服务里 envFlag 同口径：true/yes/on 都算', { skip: skipIfNoBash() }, () => {
-    // compose 把这个变量原样透传进容器，而 src/config.mjs 认 ['1','true','yes','on']（不分大小写）。
-    // 脚本只认 "1" 的话，LIBMSSDK_TRUST_PROXY=true 就变成「服务在公网口上认 XFF，脚本一声不吭」。
-    for (const value of ['true', 'TRUE', 'yes', 'on']) {
+    // compose 把这个变量原样透传进容器，而 src/config.mjs 认 ['1','true','yes','on']（先去空白、不分大小写）。
+    // 脚本只认 "1" 的话，LIBMSSDK_TRUST_PROXY=true 就变成「服务在公网口上认 XFF，脚本一声不吭」；
+    // 少了 trim 的话 `" on "` 又会溜过去 —— .env 里带空格是常事，两种都得拦住。
+    for (const value of ['true', 'TRUE', 'yes', 'on', '" on "', '"  Yes  "', '"\tON\t"']) {
         const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
 
         assert.equal(status, 1, `TRUST_PROXY=${value} 也是打开了，要拦住`)
         assert.equal(started, false, `TRUST_PROXY=${value} 要拦在起容器之前`)
     }
-    for (const value of ['0', 'false', 'off', '']) {
+    for (const value of ['0', 'false', 'off', '', '" "', '"false "']) {
         const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
 
         assert.equal(status, REACHED_COMPOSE, `TRUST_PROXY=${value} 是没打开，不该误拦`)

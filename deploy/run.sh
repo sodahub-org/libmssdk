@@ -56,13 +56,15 @@ fi
 #      这条以前只在 README 与 compose 注释里，靠人读；跳过那一步的人照样在把 token 与 cookie
 #      走明文发出去。判断只能落在部署脚本侧：容器里的进程永远看到 0.0.0.0（docker-compose.yml 写死）。
 # 「要挂同机反代」有两个来源：叠层读的 SIGNER_HOSTNAME，以及服务是否已经在认 X-Forwarded-For。
-# 后者的取值口径必须抄 src/config.mjs 的 envFlag（1/true/yes/on，不分大小写）：compose 把这个变量
-# 原样透传进容器，只认 "1" 的话 LIBMSSDK_TRUST_PROXY=true 就溜过去了 —— 那台服务真在对外口上认 XFF。
+# 后者的取值口径必须抄 src/config.mjs 的 envFlag（1/true/yes/on，不分大小写，且先去空白）：
+# compose 把这个变量原样透传进容器，只认 "1" 的话 LIBMSSDK_TRUST_PROXY=true 就溜过去了；
+# 不 trim 的话 `" on "` 又会溜过去 —— 两种都是「服务真在对外口上认 XFF，脚本一声不吭」。
 proxy_signal=''
 if [ -n "${SIGNER_HOSTNAME:-}" ]; then
     proxy_signal="SIGNER_HOSTNAME=${SIGNER_HOSTNAME}"
 fi
 trust_proxy=${LIBMSSDK_TRUST_PROXY:-0}
+trust_proxy=${trust_proxy//[[:space:]]/}
 case "${trust_proxy,,}" in
     1 | true | yes | on)
         proxy_signal="${proxy_signal:+$proxy_signal、}LIBMSSDK_TRUST_PROXY=${trust_proxy}"
