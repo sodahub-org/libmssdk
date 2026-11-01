@@ -257,9 +257,9 @@ export function caddyLogSkipExamplePaths(caddyfile) {
  * 结构对照固定跑这几项；main 逐项打印 ok/FAIL，npm test 直接看问题清单是否为空。
  * 名称写在这里而不是散在判断里，新增一项时两边都不会漏。
  *
- * 不把 Caddy 的 log/log_skip 纳入自动检查：log_skip 只收一个 matcher，用命名 matcher
- * （`@probes path …` + `log_skip @probes`）或逐条 log_skip 都行，写法不止一种；仓库原样
- * 也不开 log，硬猜一种写法只会把合法配置判红。这里只把正确写法写进 Caddyfile 注释。
+ * 不建模 Caddy 的 log/log_skip 语义：log_skip 只收一个 matcher，写法不止一种，仓库原样也不开
+ * log。这里只核对 Caddyfile 注释里给出的 `@probes path …` 示例与 PROBE_PATHS 是否一致，
+ * 不判断 log 指令本身。
  */
 export const STRUCTURE_CHECKS = Object.freeze({
     nginxProbes: 'nginx.conf：免访问日志的 location 覆盖全部探针',
@@ -272,8 +272,8 @@ export const STRUCTURE_CHECKS = Object.freeze({
 /**
  * 反向代理示例与探针清单的结构对照，返回问题清单（空数组 = 通过）。
  *
- * 只查「覆盖」、不禁止额外条目：多关一条日志（比如部署者顺手把 /stat 也关掉）是收紧，
- * 不该让 CI 红。这样新增别名漏改一处会红，而合理的额外条目不会。
+ * nginx 与 README 白名单只查「覆盖」，多关一条日志（比如部署者顺手把 /stat 也关掉）是收紧，
+ * 不该让 CI 红。Caddyfile 注释里的示例是清单抄本，必须与 PROBE_PATHS 逐项相等，多了少了都红。
  */
 export function reverseProxyStructureProblems({ nginxConf, readme, caddyfile }) {
     const problems = []

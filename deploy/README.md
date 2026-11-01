@@ -123,8 +123,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    location、下面白名单和 Caddyfile 注释里的 `log_skip` 示例都照它写，新增别名时同步这三处
    （`npm test` 与 CI 的反代校验会核对）。
    Caddy 默认不写访问日志，三条探针同样不进取数日志；若你自己加了 `log`，要按 Caddyfile
-   注释里的写法用命名 matcher 排除它们（`@probes path /livez /readyz /healthz` 加
-   `log_skip @probes`，`log_skip` 只收一个参数）。
+   注释里的写法用命名 matcher 排除它们（`@probes path …` 加 `log_skip @probes`，`log_skip`
+   只收一个参数）。
    `/stat` 不鉴权、地址已脱敏，但**计数会暴露使用情况**（桶数、允许/拒绝、队列深度），公网部署
    建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名与探针：
 
