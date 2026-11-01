@@ -72,8 +72,9 @@ case "${trust_proxy,,}" in
 esac
 
 # 回环判据与 src/dispatch.mjs 的 isLoopbackBind 同口径（用例把两边摆在一起逐条对过）：先去空白再小写，
-# 对齐那边的 trim().toLowerCase()；127/8 只认点分四段、每段 0-255 —— 127.evil.com 这种「看着像回环的
-# 主机名」不算，DNS 能把它指到公网，而 compose 会把宿主端口绑到它解析出来的地址上。
+# 127/8 只认点分四段、每段 0-255 —— 127.evil.com 这种「看着像回环的主机名」不算，DNS 能把它指到公网，
+# 而 compose 会把宿主端口绑到它解析出来的地址上。去空白比那边的 trim 更狠（内嵌的也去），但方向是安全的：
+# `127.0. 0.1` 在这里算回环，而 compose 拿原值去绑根本绑不上，明文口开不出来。
 # 缺省值取 127.0.0.1：与 docker-compose.yml 的 ${LIBMSSDK_BIND:-127.0.0.1} 一致，没写这一行时 compose
 # 本来就只绑回环，那不是违规，不能误拦。
 bind_value=${LIBMSSDK_BIND:-127.0.0.1}
@@ -91,9 +92,12 @@ case "$bind_value" in
 esac
 
 if [ -n "$proxy_signal" ] && [ "$is_loopback" = 0 ]; then
-    # 逃生舱只认 "1"（与本脚本的 LIBMSSDK_SKIP_BUILD 同风格），不像 TRUST_PROXY 那样跟着服务扩口径：
-    # 它放开的是风险本身，写错就落回拒绝，这个方向保守一次是好事。
-    if [ "${LIBMSSDK_ALLOW_PUBLIC_HTTP:-0}" = "1" ]; then
+    # 逃生舱只认 "1"（与本脚本的 LIBMSSDK_SKIP_BUILD 同风格），不像 TRUST_PROXY 那样跟着服务扩取值：
+    # 它放开的是风险本身，写错就落回拒绝，这个方向保守一次是好事。空白与 CR 还是去掉 —— 用户已经写了
+    # "1" 却因为这行末尾多一个空格被拦，报错又叫他去做他做过的事，那是把人往绕过检查上推。
+    allow_public_http=${LIBMSSDK_ALLOW_PUBLIC_HTTP:-0}
+    allow_public_http=${allow_public_http//[[:space:]]/}
+    if [ "$allow_public_http" = "1" ]; then
         echo "注意：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 已放行 —— 宿主明文口 ${LIBMSSDK_PORT:-8899} 仍对外可达（LIBMSSDK_BIND=${LIBMSSDK_BIND}）。" >&2
         echo "      这只在「确实要同时保留对外的明文入口，且它在内网防火墙后面」时成立：token 等价于签名能力，它和 cookie 走的都是明文。" >&2
     else

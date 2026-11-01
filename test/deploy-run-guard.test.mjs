@@ -103,7 +103,17 @@ function runDeployScript(envLines) {
     }
 }
 
-/** 拼一份 .env：只关心跟这条检查有关的变量，其余给足跑通前置检查的占位值。 */
+/**
+ * 拼一份 .env：只关心跟这条检查有关的变量，其余给足跑通前置检查的占位值。
+ *
+ * 带空白的值一律加双引号：`LIBMSSDK_TRUST_PROXY= on ` 这种写法在 `. ./.env` 里会被 bash 当成
+ * 「赋值 + 命令」两段，变量根本没设上，用例号称测「值里有空白」其实测的是空值。加引号才把那个
+ * 带空白的值真的送进 run.sh（compose 读 .env 也是这么处理引号的）。
+ */
+function envLine(key, value) {
+    return `${key}=${/\s/.test(value) ? `"${value}"` : value}`
+}
+
 function deployEnv({ bind, hostname, trustProxy, allowPublicHttp } = {}) {
     const lines = [
         'LIBMSSDK_TOKEN=stub-token-not-a-secret',
@@ -111,10 +121,10 @@ function deployEnv({ bind, hostname, trustProxy, allowPublicHttp } = {}) {
         // 非空才过得了 LIBMSSDK_CLIENT_DIR 那道检查；脚本只要求填了，不探测它存在
         'LIBMSSDK_CLIENT_DIR=/tmp/libmssdk-stub-client-dir',
     ]
-    if (bind !== undefined) lines.push(`LIBMSSDK_BIND=${bind}`)
-    if (hostname !== undefined) lines.push(`SIGNER_HOSTNAME=${hostname}`)
-    if (trustProxy !== undefined) lines.push(`LIBMSSDK_TRUST_PROXY=${trustProxy}`)
-    if (allowPublicHttp !== undefined) lines.push(`LIBMSSDK_ALLOW_PUBLIC_HTTP=${allowPublicHttp}`)
+    if (bind !== undefined) lines.push(envLine('LIBMSSDK_BIND', bind))
+    if (hostname !== undefined) lines.push(envLine('SIGNER_HOSTNAME', hostname))
+    if (trustProxy !== undefined) lines.push(envLine('LIBMSSDK_TRUST_PROXY', trustProxy))
+    if (allowPublicHttp !== undefined) lines.push(envLine('LIBMSSDK_ALLOW_PUBLIC_HTTP', allowPublicHttp))
     return lines
 }
 
@@ -155,6 +165,20 @@ test('逃生舱：LIBMSSDK_ALLOW_PUBLIC_HTTP=1 放行，但要说破明文这件
     assert.match(stderr, /LIBMSSDK_ALLOW_PUBLIC_HTTP/, `提醒要点名是逃生舱放行的：${stderr}`)
     assert.match(stderr, /明文/, `提醒要说清风险还在：${stderr}`)
     assert.equal(started, true, '放行就要继续往下走')
+
+    // 值里带空白（或 .env 是 CRLF）不该让人被拦下后去做他已经在做的事：这里照样放行
+    for (const value of [' 1 ', '1\r']) {
+        const spaced = runDeployScript(deployEnv({ bind: '0.0.0.0', hostname: 'signer.example.com', allowPublicHttp: value }))
+
+        assert.equal(spaced.status, REACHED_COMPOSE, `LIBMSSDK_ALLOW_PUBLIC_HTTP=${JSON.stringify(value)} 也该放行`)
+        assert.equal(spaced.started, true)
+    }
+    // 但它只认 "1"，别的写法一律当作没开（放开风险的开关，保守方向要落在拦这边）
+    for (const value of ['true', '0', '']) {
+        const { status } = runDeployScript(deployEnv({ bind: '0.0.0.0', hostname: 'signer.example.com', allowPublicHttp: value }))
+
+        assert.equal(status, 1, `LIBMSSDK_ALLOW_PUBLIC_HTTP=${JSON.stringify(value)} 不该当成放行`)
+    }
 })
 
 test('没声明反向代理时不拦：0.0.0.0 归部署者自己管，脚本不替内网部署做主', { skip: skipIfNoBash() }, () => {
@@ -188,17 +212,17 @@ test('LIBMSSDK_TRUST_PROXY 的「打开」跟服务里 envFlag 同口径：true/
     // compose 把这个变量原样透传进容器，而 src/config.mjs 认 ['1','true','yes','on']（先去空白、不分大小写）。
     // 脚本只认 "1" 的话，LIBMSSDK_TRUST_PROXY=true 就变成「服务在公网口上认 XFF，脚本一声不吭」；
     // 少了 trim 的话 `" on "` 又会溜过去 —— .env 里带空格是常事，两种都得拦住。
-    for (const value of ['true', 'TRUE', 'yes', 'on', '" on "', '"  Yes  "', '"\tON\t"']) {
+    for (const value of ['true', 'TRUE', 'yes', 'on', ' on ', '  Yes  ', '\tON\t', '1 ']) {
         const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
 
-        assert.equal(status, 1, `TRUST_PROXY=${value} 也是打开了，要拦住`)
-        assert.equal(started, false, `TRUST_PROXY=${value} 要拦在起容器之前`)
+        assert.equal(status, 1, `TRUST_PROXY=${JSON.stringify(value)} 也是打开了，要拦住`)
+        assert.equal(started, false, `TRUST_PROXY=${JSON.stringify(value)} 要拦在起容器之前`)
     }
-    for (const value of ['0', 'false', 'off', '', '" "', '"false "']) {
+    for (const value of ['0', 'false', 'off', '', ' ', 'false ', 'no']) {
         const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
 
-        assert.equal(status, REACHED_COMPOSE, `TRUST_PROXY=${value} 是没打开，不该误拦`)
-        assert.equal(started, true, `TRUST_PROXY=${value} 要继续往下走`)
+        assert.equal(status, REACHED_COMPOSE, `TRUST_PROXY=${JSON.stringify(value)} 是没打开，不该误拦`)
+        assert.equal(started, true, `TRUST_PROXY=${JSON.stringify(value)} 要继续往下走`)
     }
 })
 

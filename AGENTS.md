@@ -34,7 +34,7 @@ src/serve.mjs        默认服务装配：/sign 走分发器，其余端点交�
 src/probe.mjs        track_v2 真机自检与整曲 / 试听判定；src 下唯一一处出网代码（fetchTrackV2）
 src/endpoints.mjs    签名之外的 HTTP 面：/livez、/readyz（/healthz 别名）、/stat、旧诊断端点的回执、404
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
-test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例）
+test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例；deploy-run-guard 用 bash 跑真实的 deploy/run.sh，靠一个 docker 桩，不装 docker 也能跑）
 tools/               验证与对照脚本（不随包发布）：entitlement-matrix 打真机、不进 npm test；reverse-proxy-check 供 CI 校验反代配置、纯函数进 npm test
 verify/wine-multi/   手动验证：Docker + Wine 下多进程（不进 npm test，也不进 CI）
 docs/CONTRACT.md     服务契约
