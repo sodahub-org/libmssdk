@@ -54,8 +54,8 @@ Wine（Wine 只把 Ctrl+C 语义带进 Windows 进程），所以容器里也能
 - **排空窗口**：`deploy/docker-compose.yml` 把 `LIBMSSDK_DRAIN_DELAY_MS` 默认设成 8 秒（`deploy/.env`
   可覆盖，设 0 = 信号一到就停监听）；直接用 `docker run` 跑镜像时用的是代码默认值 0，探针可能只看到
   连接被拒。窗口只推迟「停监听」，不推迟「改口」——它的作用就是让探针真的读到 503。
-  **窗口必须大于探针间隔**：镜像内 `HEALTHCHECK` 是 5 秒，compose 的 8 秒窗口至少能被采到一次；
-  自己维护探针时也按这条对齐。
+  **窗口必须大于探针的「间隔 + 超时」**：镜像内 `HEALTHCHECK` 是 5 秒 + 2 秒，compose 的 8 秒窗口
+  满足这条规则；自己维护探针时也按同一规则对齐。
 - **停止宽限期**：compose 已设 `stop_grace_period: 30s`。排空窗口 + 在飞请求必须在这段时间内跑完，
   否则 Docker 会 `SIGKILL`，客户端看到的就不是 503 而是连接重置。
 - **前面的反向代理/负载均衡要按 `/readyz` 摘流**，别等连接失败才发现实例下线；只靠 `docker stop`

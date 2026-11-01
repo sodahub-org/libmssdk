@@ -199,8 +199,8 @@ Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM` 
    404（下一版本 410），第三个直接 404。改成命令行 `probe` / 客户端自己判断 / 读身份文件；
    `trustProxy` 的运行时视图改看 `GET /stat`。
 7. 自己维护探针的话：「进程在不在」用 `/livez`，「能不能干活」用 `/readyz`；Docker 健康检查
-   已改指 `/readyz`（间隔 5 秒，起始宽限期仍 180 秒）。间隔必须小于排空窗口，否则停止期间
-   可能一次都读不到那个 503；自己维护探针时也照这条对齐。
+   已改指 `/readyz`（间隔 5 秒、超时 2 秒，起始宽限期仍 180 秒）：「间隔 + 超时」必须小于排空窗口，
+   否则停止期间可能一次都读不到那个 503；自己维护探针时也照这条对齐。
 8. 决定上 TLS 的，配置抄 `deploy/reverse-proxy/`，然后**换一个新的 `LIBMSSDK_TOKEN`**。
 9. 出问题时先看 `GET /stat`；调参期可把 state 目录下的 `rate-limit.mode` 写成 `log`。
 10. 发版到「旧诊断端点改 410」那一版的人：先看一眼 `src/endpoints.mjs` 里的 `SUNSET_HTTP_DATE`。

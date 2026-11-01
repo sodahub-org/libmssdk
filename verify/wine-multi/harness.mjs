@@ -677,8 +677,9 @@ async function main() {
     if (typeof driver.observeStop === 'function') {
         // 判据 7 只是记录：观察阶段自己出错（容器已经不在、docker exec 失败……）不能把已经
         // 跑完的 1–6 一起报成「未执行」——就地 catch，记一条 ERROR，结论照常出。
+        // 输出放在 try 外：写日志再失败也不该把已经记好的观察覆盖成 ERROR。
+        let message = ''
         try {
-            say('[verify] 判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…')
             // 判据 4 已经杀掉一个进程，它的端口注定是 refused；只观察停之前还活着的那些。
             const alive = []
             for (let index = 0; index < driver.hostPorts.length; index += 1) {
@@ -689,8 +690,9 @@ async function main() {
                     status: 'SKIPPED',
                     reason: '停止前已经没有活着的 serve 进程（前面的判据已把进程杀光），没有可观察的收尾',
                 }
-                say('[verify] 判据 7 SKIPPED：停止前没有活着的 serve 进程')
+                message = '判据 7 SKIPPED：停止前没有活着的 serve 进程'
             } else {
+                message = '判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…'
                 const observed = await driver.observeStop({ graceSeconds: 30, indexes: alive })
                 const sawReadable503 = observed.sequences.map(entry => entry.sequence.includes('http-503'))
                 const graceful = sawReadable503.filter(Boolean).length
@@ -707,13 +709,14 @@ async function main() {
                     sequences: observed.sequences.map(entry => `${entry.port}: ${entry.sequence.join(' → ')}`),
                     ...(observed.stopError ? { stopError: observed.stopError } : {}),
                 }
-                say(`[verify] 判据 7 ${report.observations.stopObservation.status}：${report.observations.stopObservation.sequences.join(' | ')}`)
+                message = `判据 7 ${report.observations.stopObservation.status}：${report.observations.stopObservation.sequences.join(' | ')}`
             }
         } catch (error) {
             const detail = redactor.sanitize('stop-observation', String(error?.message || error))
             report.observations.stopObservation = { status: 'ERROR', reason: detail }
-            say(`[verify] 判据 7 ERROR：${detail}`)
+            message = `判据 7 ERROR：${detail}`
         }
+        say(`[verify] ${message}`)
     } else {
         report.observations.stopObservation = {
             status: 'SKIPPED',

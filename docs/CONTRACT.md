@@ -149,7 +149,8 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 
 表中「先 503」要排空窗口大于 0 才观察得到：默认 `LIBMSSDK_DRAIN_DELAY_MS=0` 时改口与停监听几乎
 同时发生，探针仍可能只看到连接被拒。容器 compose 与 `verify/wine-multi` 都已显式给窗口；窗口还必须
-大于探针间隔（镜像 `HEALTHCHECK` 5 秒、compose 窗口 8 秒），否则采样可能整个落在窗口之外。
+大于探针的「间隔 + 超时」（镜像 `HEALTHCHECK` 5 秒 + 2 秒、compose 窗口 8 秒），否则采样可能整个
+落在窗口之外。
 
 - Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM`；容器里的转发就是补这一跳。
 - **排空窗口**：`markClosing()` 之后先保持监听，让探针真的读到 503，再停监听、收在飞与排队请求。

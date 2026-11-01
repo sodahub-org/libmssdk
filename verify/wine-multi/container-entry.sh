@@ -14,8 +14,8 @@ export LIBMSSDK_BIND=0.0.0.0
 export LIBMSSDK_CLIENT_DIR="${LIBMSSDK_CLIENT_DIR:-/app/client}"
 export LIBMSSDK_STATE_DIR=/app/data
 # 收尾观察要看到「可读的 503」而不是一开始就连接被拒：留一个排空窗口再停监听。
-# 与 deploy/docker-compose.yml 同一个默认量级；验证脚本不依赖用户去改 compose。
-export LIBMSSDK_DRAIN_DELAY_MS="${LIBMSSDK_DRAIN_DELAY_MS:-5000}"
+# 与 deploy/docker-compose.yml 同一个默认值（8 秒 > HEALTHCHECK 的 5 秒 + 2 秒）。
+export LIBMSSDK_DRAIN_DELAY_MS="${LIBMSSDK_DRAIN_DELAY_MS:-8000}"
 
 if [ ! -f "${WINEPREFIX}/system.reg" ]; then
     echo "[verify] 首次启动：初始化 Wine prefix（约 20-40 秒）" >&2
