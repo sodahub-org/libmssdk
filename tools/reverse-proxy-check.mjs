@@ -106,12 +106,42 @@ export function nginxNoLogPaths(conf) {
     return paths
 }
 
+/** 去掉注释与引号里的花括号后数括号：site block 才是 matcher 的作用域。 */
+function braceDelta(line) {
+    const code = line.replace(/\s+#.*$/, '').replace(/"(?:[^"\\]|\\.)*"/g, '')
+    let delta = 0
+    for (const char of code) {
+        if (char === '{') delta += 1
+        else if (char === '}') delta -= 1
+    }
+    return delta
+}
+
+/** 把一个 caddyfile 代码块按顶层 `address { … }` 切开；块外的前导行忽略。 */
+function splitCaddySiteBlocks(text) {
+    const blocks = []
+    let current = []
+    let depth = 0
+    for (const line of text.split('\n')) {
+        const outsideBlock = depth === 0 && current.length === 0
+        if (outsideBlock && !line.replace(/\s+#.*$/, '').includes('{')) continue
+        current.push(line)
+        depth += braceDelta(line)
+        if (depth === 0) {
+            blocks.push(current.join('\n'))
+            current = []
+        }
+    }
+    if (current.length > 0) blocks.push(current.join('\n'))
+    return blocks
+}
+
 /**
- * 解析一段 caddyfile 里的路径规则。
+ * 解析一个 site block 里的路径规则。
  *
- * Caddy 的命名 matcher 只在被指令引用的地方生效，而且作用域是单个 site block：所以这里
- * 按代码块分别解析，只认 `respond @name … 4xx` 引用到的 matcher（`respond` 默认 200，2xx/3xx
- * 是正常应答，不是拦截）。定义形态决定语义：
+ * Caddy 的命名 matcher 只在被指令引用的地方生效，作用域是单个 site block；所以调用方要先把
+ * 代码块切成 site block。只认 `respond @name … 4xx` 引用到的 matcher（`respond` 默认 200，
+ * 2xx/3xx 是正常应答，不是拦截）。定义形态决定语义：
  *   `@name not path /a /b` → 只放行 /a /b，其余 404（白名单）
  *   `@name path /a /b`     → 额外拦截 /a /b（从白名单里减掉）
  *
@@ -133,7 +163,9 @@ export function parseCaddyPathRules(block) {
         }
         const reference = /^respond\s+(@[\w-]+)\b(.*)$/.exec(line)
         if (!reference) continue
-        const statuses = reference[2].match(/\b\d{3}\b/g)
+        // 引号里可能写着「404 page」这类正文，不能当成状态码。
+        const withoutBody = reference[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+        const statuses = withoutBody.match(/\b\d{3}\b/g)
         const status = statuses ? Number(statuses.at(-1)) : 200
         if (status >= 400) denyReferences.push(reference[1])
     }
@@ -157,9 +189,14 @@ export function parseCaddyPathRules(block) {
     return { allowed, blocked, hasGate: denyReferences.length > 0 }
 }
 
-/** 按代码块返回每段的路径规则：命名 matcher 不跨 site block，不能并成一张表。 */
+/** 按 site block 返回路径规则，并记住它来自第几段代码块、第几个 site，供报错定位。 */
 export function extractCaddyPathRules(markdown, source = 'Markdown') {
-    return extractCaddyfileBlocks(markdown, source).map(block => parseCaddyPathRules(block))
+    return extractCaddyfileBlocks(markdown, source).flatMap((block, fenceIndex) =>
+        splitCaddySiteBlocks(block).map((site, siteIndex) => ({
+            ...parseCaddyPathRules(site),
+            fence: fenceIndex + 1,
+            site: siteIndex + 1,
+        })))
 }
 
 /**
@@ -205,8 +242,8 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
             detail: '没有可核对的白名单示例',
         })
     }
-    gates.forEach((gate, index) => {
-        const label = gates.length > 1 ? `第 ${index + 1} 段 caddyfile 示例：` : ''
+    gates.forEach(gate => {
+        const label = gates.length > 1 ? `第 ${gate.fence} 段示例第 ${gate.site} 个 site：` : ''
         if (gate.allowed === null) {
             problems.push({
                 check: STRUCTURE_CHECKS.whitelist,
@@ -375,8 +412,9 @@ function main() {
             readme: readFileSync(README_PATH, 'utf8'),
         })
         for (const check of Object.values(STRUCTURE_CHECKS)) {
-            const problem = structure.find(item => item.check === check)
-            report(check, !problem, problem?.detail ?? '')
+            const problems = structure.filter(item => item.check === check)
+            if (problems.length === 0) report(check, true, '')
+            else for (const problem of problems) report(check, false, problem.detail)
         }
 
         const certDir = join(workDir, 'certs', EXAMPLE_DOMAIN)
