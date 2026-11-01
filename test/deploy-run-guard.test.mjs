@@ -26,15 +26,15 @@ const RUN_SH = path.join(here, '..', 'deploy', 'run.sh')
 const REACHED_COMPOSE = 42
 
 // 桩：`docker compose version` 必须成功（run.sh 开头就探测它）；起容器那一步固定回 42，并顺手记下
-// 自己环境里有哪些 run.sh 的局部变量被导出来了 —— allexport 没关掉时，连签名自检拿到的响应都会跟着
-// 进子进程环境，那是外部可见的事实，值得钉一条。
+// 自己环境里有哪些 run.sh 的局部变量被导出来了 —— allexport 没关掉时 bind_value、is_loopback 这些
+// 会一路带进子进程环境，那是外部可见的事实，值得钉一条。
 const COMPOSE_STUB = [
     '#!/usr/bin/env bash',
     'echo "docker $*" >>"$COMPOSE_STUB_LOG"',
     'case "$*" in',
     '    *version*) exit 0 ;;',
     '    *)',
-    '        echo "leaked:$(compgen -e | grep -E \'^(bind_value|octet|is_loopback|trust_proxy|SIGN)$\' | tr \'\\n\' \',\')" >>"$COMPOSE_STUB_LOG"',
+    '        echo "leaked:$(compgen -e | grep -E \'^(bind_value|octet|is_loopback|trust_proxy)$\' | tr \'\\n\' \',\')" >>"$COMPOSE_STUB_LOG"',
     '        exit 42 ;;',
     'esac',
     '',
@@ -339,6 +339,10 @@ test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: ""'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ["LIBMSSDK_BIND: ''"] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: # 留着当备忘'] }),
+        // 判据只看「最后一次声明」，这两种都必须放行：先一行有值、后一行清空（两边都按没填走缺省），
+        // 以及先一行是坏形状、后一行改对了（后写的盖掉先写的，脚本没有理由再拦前一行的旧写法）。
+        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND='] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = 0.0.0.0', 'LIBMSSDK_BIND=127.0.0.1'] }),
     ]
     for (const lines of empties) {
         const { status, stderr, started } = runDeployScript(lines)

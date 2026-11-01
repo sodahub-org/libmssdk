@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 一键部署：生成 token → 构建镜像 → 启动 → 等健康检查 → 打印用法
+# 一键部署：生成 token → 检查 .env 里脚本读不进去的行 → 检查客户端目录 → 检查「挂了反代却开着
+# 宿主明文口」→ 构建镜像 → 启动 → 等健康检查 → 打印用法
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -43,8 +44,8 @@ fi
 
 # shellcheck disable=SC1091
 # 三条分开写：`. ./.env` 里只要有一行 bash 跑失败（见 1.1），用 && 串起来就会跳过 `set +a`，
-# allexport 一直开着 —— 后面 bind_value、is_loopback，连签名自检拿到的 SIGN（X-Helios/X-Medusa）
-# 都会被导进 compose 与 curl 的子进程环境。读不动的那一行交给 1.1 去判，这里只保证一定收尾。
+# allexport 一直开着 —— 后面 bind_value、is_loopback 这些局部变量会一路被导进 compose 与 curl 的
+# 子进程环境（签名自检那一步拿到的响应也在其中）。读不进去的行交给 1.1 去判，这里只保证一定收尾。
 set -a
 . ./.env || :
 set +a
@@ -54,32 +55,50 @@ set +a
 #      「找一个叫 LIBMSSDK_BIND 的命令」：变量根本没设上，后面的检查看见的是空值、按缺省的回环放行，
 #      而 compose 用它自己那套 .env 解析，两边读到的不一定是同一份配置。脚本读不动这份文件时不能替它担保。
 #      `LIBMSSDK_BIND: 0.0.0.0` 是同一类的第二种写法：compose 认 YAML 式的冒号（compose-go 的 dotenv
-#      解析把 '=' 和 ':' 都当分隔符），bash 只把 `LIBMSSDK_BIND:` 当成一个命令名 —— 所以分隔符两种都认。
-#      判据不只看变量现在的值：同一个键写了两行、后一行是坏形状时，bash 留着前一行的好值继续跑，
-#      而 compose 那份解析取哪一行不是本脚本能验的事 —— 两边可能对不上，就一律不替它担保。
-#      值为空（KEY=、KEY=""、KEY: ）与没写这一行同义，两边都按缺省走，不算读不进去；注释行不算。
+#      解析把 '=' 和 ':' 都当分隔符），bash 只把 `LIBMSSDK_BIND:` 当成一个命令名。
+#      第三种是形状没问题、值里有空格却没加引号（`LIBMSSDK_CLIENT_DIR=C:\…\Soda Music\3.7.0` 就是这样，
+#      仓库的 .env.example 原本也这么写）：bash 把整行丢掉，脚本于是只会说「你还没填」。
+#      只看这个键在文件里最后一次声明的那一行：两边都是后写的盖掉先写的，先一行有值、后一行写成 `KEY=`
+#      的配置，bash 与 compose 都会按「没填」走缺省，那不该被拦。
 #      只管脚本自己会读的那几个变量。
-# 两条判据，命中一条就停：
-#   1) 形状读不进去：分隔符是冒号，或等号两侧有空白 —— 这种行 bash 永远当命令跑。
-#   2) 形状看着正常、变量却是空的：值里有空格又没加引号（`LIBMSSDK_CLIENT_DIR=C:\…\Soda Music\3.7.0`
-#      就是这么写的，仓库的 .env.example 第 10 行原本也是这一型），bash 会把这一行拆成
-#      「赋值 + 跑一个命令」，整行作废，而 compose 照旧读出那个值 —— 此时报错不能再说「你没填」。
-env_declares_value() {
-    # $1 = 变量名；文件里这一行有没有一个真实的值（引号包住的算，空值与只剩注释的不算）。
+env_last_declaration() {
+    # $1 = 变量名；返回它在 .env 里最后一次声明的那一行（没有就返回空）。
     local key=$1
-    grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*[=:][[:space:]]*([\"'][^\"']|[^[:space:]\"'#])" .env
+    grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*[=:]" .env | tail -n 1
 }
 
-env_unreadable_shape() {
-    # $1 = 变量名；判据 1 的三种坏分隔符形状：冒号、等号前有空白、等号后有空白。
-    # 同样要求后面跟得到一个真实的值（`KEY:`、`KEY: ""`、`KEY: # 注释` 都不算）。
-    local key=$1
-    grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}([[:space:]]*:[[:space:]]*|[[:space:]]+=|[[:space:]]*=[[:space:]]+)[[:space:]]*([\"'][^\"']|[^[:space:]\"'#])" .env
+env_declarations_are_empty() {
+    # $1 = 声明行；分隔符后面若只剩空白、成对的引号、或一段注释，就算「没有真实的值」——
+    # 这与压根没写这一行同义，两边都按缺省走，不需要拦。
+    local value=${1#*[=:]}
+    value=${value#"${value%%[![:space:]]*}"}
+    case "$value" in
+        '' | '""' | "''" | '#'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+env_unreadable_separator() {
+    # $1 = 声明行；分隔符是冒号，或它的任一侧有空白 —— 这三种形状 bash 都当命令跑。
+    local line=$1 head=${1%%[=:]*}
+    case ${line:${#head}} in
+        :*) return 0 ;;
+    esac
+    case "$head" in
+        *[[:space:]]) return 0 ;;
+    esac
+    case ${line:${#head}+1} in
+        [[:space:]]*) return 0 ;;
+    esac
+    return 1
 }
 
 for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
     LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
-    if env_unreadable_shape "$unread_key" || { [ -z "${!unread_key:-}" ] && env_declares_value "$unread_key"; }; then
+    last_declaration=$(env_last_declaration "$unread_key" || true)
+    [ -n "$last_declaration" ] || continue
+    env_declarations_are_empty "$last_declaration" && continue
+    if env_unreadable_separator "$last_declaration" || [ -z "${!unread_key:-}" ]; then
         echo "错误：deploy/.env 里的 ${unread_key} 这一行 bash 读不进去 —— 等号两侧带空格、写成 YAML 式的" >&2
         echo "      ${unread_key}: 值，或者值里有空格却没加引号（如 C:\Program Files\…），都会这样。" >&2
         echo "      compose 有自己的 .env 解析，脚本没法确认它看到的就是真正生效的那份，这条检查也就没法替你把关。" >&2
