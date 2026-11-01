@@ -25,25 +25,33 @@ async function captureStderr(run) {
     return output
 }
 
-test('stopPoolQuietly：同步抛与 reject 都会落定，错误按本机路径脱敏', async () => {
+test('stopPoolQuietly：两种失败形状都会落定、各记一笔，并按给定位置脱敏', async () => {
     const calls = []
-    const localPath = process.cwd()
+    // 用一个不含反斜杠的哨兵：JSON.stringify 不会改写它，Windows 上「没出现」才是真的没出现
+    const fakePath = 'libmssdk-fake-module-path-4f2a'
     const output = await captureStderr(async () => {
-        await stopPoolQuietly({
-            stop: () => {
-                calls.push('sync')
-                throw new Error(`boom ${localPath}/sync`)
+        await stopPoolQuietly(
+            {
+                stop: () => {
+                    calls.push('sync')
+                    throw new Error(`sync ${fakePath}`)
+                },
             },
-        })
-        await stopPoolQuietly({
-            stop: () => {
-                calls.push('async')
-                return Promise.reject(new Error(`boom ${localPath}/async`))
+            [fakePath],
+        )
+        await stopPoolQuietly(
+            {
+                stop: () => {
+                    calls.push('async')
+                    return Promise.reject(new Error(`async ${fakePath}`))
+                },
             },
-        })
+            [fakePath],
+        )
     })
 
     assert.deepEqual(calls, ['sync', 'async'], '两种形状都要真的调到 pool.stop；不调也会「落定」')
-    assert.match(output, /\(本机路径\)/, '错误文本要按本机路径脱敏')
-    assert.equal(output.includes(localPath), false, '原始本机路径不该出现在日志里')
+    assert.equal((output.match(/pool\.stop:/g) || []).length, 2, '每条失败都要各记一笔，不能有一条静默丢掉')
+    assert.equal(output.includes(fakePath), false, '显式传入的位置必须被换掉')
+    assert.equal((output.match(/\(本机路径\)/g) || []).length, 2, '两条错误的路径都要脱敏')
 })
