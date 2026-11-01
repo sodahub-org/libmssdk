@@ -15,7 +15,7 @@
 import { maskAddressKey } from './ratelimit.mjs'
 import { createEndpointsHandler } from './endpoints.mjs'
 import { startDispatcher } from './dispatcher.mjs'
-import { logError } from './log.mjs'
+import { logError, redactMachinePaths } from './log.mjs'
 
 /**
  * worker 读身份的两条路：环境变量钉死，或只读身份文件。
@@ -75,25 +75,32 @@ export function resolveDrainDelay(config) {
 }
 
 /**
+ * 收尾时收池子：失败只记一笔，绝不挂住收尾。
+ *
+ * 先包一层再调 —— 注入的 pool.stop 若同步抛，直接调会让异常从 server.close 的回调里逸出、
+ * resolve 永不执行；reject 则是一条无人处理的 rejection。错误文本按本机路径脱敏，
+ * 与 src/index.mjs 端口错误路径共用这一份形状。
+ */
+export function stopPoolQuietly(pool, locations = []) {
+    return Promise.resolve()
+        .then(() => pool.stop())
+        .catch(error => logError(`pool.stop: ${redactMachinePaths(String(error?.message || error), locations)}`))
+}
+
+/**
  * 收尾序列的唯一实现：先改口，再按需留排空窗口，然后停监听、等在飞与排队请求收完、最后收 worker。
  *
  * 顺序不能反：先 server.close() 会把排队中的请求直接掐掉，而且 /readyz 也再没人问得到。
  * 只经 startServe 暴露（beginShutdown），不单独导出：调用方不该绕过装配自己拼顺序。
  */
-function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0 }) {
+function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0, locations = [] }) {
     markClosing()
     const stopListening = () =>
         new Promise(resolve => {
             server.close(() => {
                 // pool.stop() 只发 shutdown 消息、不等待线程退出；等它返回再解析，
                 // 让调用方（index.mjs 的退出 / 用例的断言）看到的是「序列已经走完」。
-                // 失败只记一笔、不挂住收尾：先包一层再调，测试注入的 pool.stop 若同步抛，
-                // 异常会从 close 回调里逸出、resolve 永不执行；reject 则会是无人处理的 rejection。
-                // 与 src/index.mjs 端口错误路径上对同一调用的处理保持同一形状。
-                Promise.resolve()
-                    .then(() => pool.stop())
-                    .catch(error => logError(`pool.stop: ${error?.message || error}`))
-                    .finally(resolve)
+                stopPoolQuietly(pool, locations).finally(resolve)
             })
             server.closeIdleConnections?.()
         })
@@ -132,6 +139,12 @@ export function startServe({ config, env = process.env, ...options } = {}) {
         markClosing,
         drainDelayMs,
         beginShutdown: () =>
-            shutdownGracefully({ server: started.server, pool: started.pool, markClosing, drainDelayMs }),
+            shutdownGracefully({
+                server: started.server,
+                pool: started.pool,
+                markClosing,
+                drainDelayMs,
+                locations: [config.bdmsModule, config.clientDir].filter(Boolean),
+            }),
     }
 }

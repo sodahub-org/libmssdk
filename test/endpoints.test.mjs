@@ -17,7 +17,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 
 const { createEndpointsHandler, DEPRECATED_AT, DEPRECATION_HTTP_VALUE, SUNSET_HTTP_DATE } = await import('../src/endpoints.mjs')
 const { createDispatcher } = await import('../src/dispatcher.mjs')
-const { resolveDrainDelay, startServe } = await import('../src/serve.mjs')
+const { resolveDrainDelay, startServe, stopPoolQuietly } = await import('../src/serve.mjs')
 const { fakePool, signedBody } = await import('./helpers/fake-pool.mjs')
 const { FakeWorker } = await import('./helpers/fake-worker.mjs')
 const { rawExchange } = await import('./helpers/raw-request.mjs')
@@ -425,4 +425,15 @@ test('排空窗口参数：非法值回退 0，默认就是原先「信号一到
     assert.equal(resolveDrainDelay({ drainDelayMs: -5 }), 0)
     assert.equal(resolveDrainDelay({ drainDelayMs: 'abc' }), 0)
     assert.equal(resolveDrainDelay({ drainDelayMs: '250' }), 250)
+})
+
+// 收尾收池子最怕「失败把收尾挂住」：同步抛会让 server.close 的回调走不到 resolve，
+// reject 则是一条无人处理的 rejection（进程照样 exit 0，失败静默）。两种形状都必须落定。
+test('stopPoolQuietly：stop 同步抛或 reject 都只记一笔，收尾仍会落定', async () => {
+    await stopPoolQuietly({
+        stop: () => {
+            throw new Error('sync boom')
+        },
+    })
+    await stopPoolQuietly({ stop: () => Promise.reject(new Error('async boom')) })
 })
