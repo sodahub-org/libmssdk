@@ -211,7 +211,7 @@ export function parseCaddyPathRules(block) {
  * 只支持不含引号的字面量路径与收尾 `*`（前缀匹配）。其余 Caddy 路径语法（`?`、字符类 `[]`、
  * 占位符 `{}`、`%` 转义、`//`、中间/开头的 `*`、双引号/反引号包住的 token）不建模；遇到就
  * 判红而不是当字面量静默放过。引号在 Caddy 词法里会被剥掉且内部的空格不分词，按现在的
- * `split(/\\s+/)` 读会得到与 Caddy 不同的 token，所以一律拒绝，而不是猜。
+ * `split(/\s+/)` 读会得到与 Caddy 不同的 token，所以一律拒绝，而不是猜。
  */
 function isUnsupportedPathPattern(pattern) {
     if (/[?[\]{}%`"]/.test(pattern) || pattern.includes('//')) return true
