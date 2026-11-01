@@ -15,7 +15,8 @@ cd deploy
 启动容器 → 等健康检查通过 → 打印客户端接入方式。首次构建要装 Wine，约 3–5 分钟。
 
 容器默认绑定 `0.0.0.0`，所以会按物理核的 75% 拉起多个 worker；启动日志的
-`event=dispatcher` 写明实际值与来由。worker 预热完成前 `/healthz` 返回 503，预热完成后才回 200。
+`event=dispatcher` 写明实际值与来由。worker 预热完成前 `/readyz` 返回 503，预热完成后才回 200；
+`/livez` 是恒 200 的那个（只看进程在不在，不看能不能干活）。容器健康检查探的是 `/readyz`。
 `/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`；已入队的请求超过等待预算也回 503。两者都带
 `Retry-After: 1`，不会再回 502。
 
@@ -63,48 +64,65 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 ## 对外暴露（给多台机器/多个人用）
 
 1. `deploy/.env` 里的 `LIBMSSDK_TOKEN` 必须是随机长串——**这个 token 等于签名能力**；
-   没配 token 时服务会拒绝启动。`LIBMSSDK_BIND` 决定宿主机端口绑到哪：挂反代时写
-   `127.0.0.1`（只有本机反代能连）；不挂反代、直接对外时才用 `0.0.0.0`（务必配防火墙）。
-   Docker 部署里这个值只决定宿主机端口绑定，容器内始终监听 `0.0.0.0`。run.sh 生成时
-   默认是 `0.0.0.0`，请按部署形态改。
-2. 前面挂一个反向代理做 HTTPS（Caddy 最省事）：
-
-   ```caddyfile
-   signer.example.com {
-       reverse_proxy 127.0.0.1:8899
-   }
-   ```
-
-   反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
+   绑定非回环地址又没配 token 时，服务直接拒绝启动（只有绑回环才允许无令牌访问）。
+2. **挂上反向代理就把宿主明文口收掉**：`deploy/.env` 里写 `LIBMSSDK_BIND=127.0.0.1`。
+   这个变量控制的是**宿主**上把 `LIBMSSDK_PORT`（默认 8899）发布到哪张网卡；容器内的进程始终监听
+   `0.0.0.0`，所以代理经服务名 `libmssdk:8899` 照常访问，收紧的只是宿主那一侧。
+   `run.sh` 首次生成的默认是 `0.0.0.0`，请按部署形态改。不收的后果：任何客户端都能绕过 443 直接打
+   `http://<host>:8899/sign`，Bearer token 与请求里的 cookie 全走明文 —— 挂上反代之后人容易以为
+   自己已经在 HTTPS 后面。这一条同时是下面第 3 步（按真实客户端限流）的前提。
+3. 反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
    **同时**做两件事：
 
-   - `deploy/.env` 里 `LIBMSSDK_BIND=127.0.0.1`，让宿主机端口只有本机反代能连；
+   - 第 2 步的 `LIBMSSDK_BIND=127.0.0.1` —— 让宿主端口只有本机反代能连；
    - `deploy/.env` 里 `LIBMSSDK_TRUST_PROXY=1`（compose 会透传进容器），并确认反代会重写
-     `X-Forwarded-For`（Caddy 默认会）。
+     `X-Forwarded-For`（Caddy 与 nginx 的例子都会）。
 
-   只开 `TRUST_PROXY` 而端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
-   `X-Forwarded-For` 自选分桶键，等于没有限流。两个都不开时只认 TCP 对端，所有客户端会
-   共用反代那一个桶（默认 0.5 次/秒、突发 12）。
-
+   只开 `TRUST_PROXY` 而宿主端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
+   `X-Forwarded-For` 自选分桶键，等于没有限流。两个都不开时只认 TCP 对端，所有客户端会共用反代
+   那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
    其它 `LIBMSSDK_*` 调优变量不会自动进容器（compose 只透传上面列出的几项）；需要时在
    `docker-compose.yml` 的 `environment:` 里补同名项。
+4. 前面挂一个反向代理做 HTTPS。仓库里给的是能直接用的配置，不用自己拼：
 
-3. 只放行 `/sign`、`/healthz`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，
-   公网部署建议在反代里挡掉；`/stat` 是给部署者的诊断端点（不鉴权），同样不要经公网暴露：
+   | 形态 | 文件 | 起来的方式 |
+   | --- | --- | --- |
+   | Windows 裸机 | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) | 设好 `SIGNER_HOSTNAME` 与 `LIBMSSDK_UPSTREAM`，先 `caddy validate`，再 `caddy run --config Caddyfile` |
+   | Docker（同主 compose 叠一层） | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) + [`docker-compose.proxy.yml`](docker-compose.proxy.yml) | `docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d`（要 `SIGNER_HOSTNAME`） |
+   | 已有 nginx 的 Linux / Docker 主机 | [`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf) | 放进 `conf.d/`，证书路径与 `server_name` 换成你自己的 |
+
+   域名能解析到这台机器时 Caddy 自己签、自己续，你不用碰证书文件。本仓库不自签证书那套教程
+   （起一个本地 CA 再让每个客户端导入根证书）：客户端要么导入那个 CA、要么跳过校验（等于放弃
+   TLS）、要么做证书固定，而最后一条在双方都没法强制升级的场景里是明确的反面教材。只有你自己
+   用的话，走 SSH 隧道比自签更省事（见 `../docs/DEPLOY-WINDOWS.md`）。
+   叠那一层还要在 `deploy/.env` 里加一行 `SIGNER_HOSTNAME=<对外域名>`（`run.sh` 生成的模板里注释着）。
+5. **本服务进程内不做 TLS**，所以证书归代理。原因不是省事：证书续期意味着重启那个正握着
+   `bdms.node` 的进程，而冷启动恰恰是最危险的一步（预热没完成时每个 `/sign` 都是 503）；
+   进程内做 TLS 也没有任何办法照顾已经发布出去的老客户端。
+6. **明文通道上 token 会泄露**，而它等价于签名能力。**上了 TLS 必须换一个新 token**：
+   旧 token 已经在无数人的历史流量里出现过，换协议不等于换了凭据。
+7. 「不重定向」说的是**签名服务自己的明文端口**：它继续完整服务，不改成跳转 —— 308 对不跟随
+   重定向的客户端是直接失败，对已经拿到明文的请求又毫无增益。**代理自己的 80 端口不在这句话里**：
+   Caddy 的自动 HTTPS 默认就在 80 上放一个到 443 的跳转，不跟随 308 的客户端用不了 80。真要让 80
+   也只应 ACME 质询，在 Caddyfile 顶部全局块加 `auto_https disable_redirects`，加完跑一次
+   `caddy validate`。nginx 那份只有 443 的 server block，80 上压根没监听。
+8. 端点收拢之后反代里没什么必须挡的了：`/probe`、`/track/stream`、`/config` 已经不在 HTTP 上，
+   那三条路径只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、
+   `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
+   `/stat` 不鉴权、地址已脱敏，但**计数会暴露使用情况**（桶数、允许/拒绝、队列深度），公网部署
+   建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名与探针：
 
    ```caddyfile
    signer.example.com {
-       @deny not path /sign /healthz
+       @deny not path /sign /livez /readyz /healthz
        respond @deny 404
-       reverse_proxy 127.0.0.1:8899
+       reverse_proxy {$LIBMSSDK_UPSTREAM}
    }
    ```
 
-   `/stat` 的地址已脱敏，但计数会暴露使用情况。宿主机端口是否对外见步骤 1 的
-   `LIBMSSDK_BIND`。在宿主机上查看：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见
-   `deploy/.env` 的 `LIBMSSDK_PORT`，默认 8899）。
-
-4. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
+   在宿主机上直接看诊断：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
+   `LIBMSSDK_PORT`，默认 8899）。
+9. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
 
 ## 安全提醒（重要）
 
@@ -112,6 +130,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
   之一。多人共用时，服务方（也就是你）能看到使用者的登录态。要么明确告知使用者，
   要么让每个人本地跑一份（同样的镜像，`docker run -t -p 127.0.0.1:8899:8899 …`）。
 * **日志已脱敏**：只记请求形状、签名长度与脱敏设备号/IP，不落 cookie / X-Helios / X-Medusa。
+* **token 走明文等于公开**：见上面第 6 步；上 TLS 之后换 token，别复用旧的，并按第 2 步把宿主
+  明文端口收下来。
 * 公开端点等于公开「应用签名能力」，建议 token + 限速 + 不公开地址。限流默认生效，
   但阈值故意宽松（共享出口后面几十个人共用一个地址），不能替代 token 与网络隔离。
 

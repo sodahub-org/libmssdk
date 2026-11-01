@@ -1,7 +1,7 @@
 // 限流与诊断端点的真 HTTP 集成：429 的写出、XFF 开关、/stat、运行时模式切换、启动拒绝。
 //
 // worker 用假传输（test/helpers/fake-worker.mjs）：这一层验的是「主进程接线」——
-// 真的 TCP、真的分发器与过渡处理器，只是计算换成了可确定性的假 worker。
+// 真的 TCP、真的分发器与端点处理器，只是计算换成了可确定性的假 worker。
 // 端口只用 listen(0)，Windows 上自选端口会撞 TIME_WAIT。
 
 import assert from 'node:assert/strict'
@@ -13,18 +13,9 @@ import { after, test } from 'node:test'
 const { startServe } = await import('../src/serve.mjs')
 const { serveAuthError } = await import('../src/auth.mjs')
 const { createDispatcher } = await import('../src/dispatcher.mjs')
-const { createServer } = await import('../src/server.mjs')
 const { FakeWorker } = await import('./helpers/fake-worker.mjs')
 
 const token = 'test-token'
-const signer = {
-    available: true,
-    deviceId: '7000000000000001',
-    sign() {
-        throw new Error('默认路径不该在主进程里同步签名')
-    },
-}
-
 const running = []
 const tempDirs = []
 
@@ -76,7 +67,6 @@ async function start({ env = {}, config = {}, ready = true } = {}) {
             trustProxy: false,
             ...config,
         },
-        signer,
         env: {
             LIBMSSDK_WORKERS: '1',
             LIBMSSDK_WAIT_BUDGET_MS: '5000',
@@ -173,11 +163,9 @@ test('默认不信任 X-Forwarded-For；显式打开后按 XFF 最右一跳分�
         env: { LIBMSSDK_RATE_LIMIT_PER_SECOND: '0.001', LIBMSSDK_RATE_LIMIT_BURST: '1' },
     })
     assert.equal(trusted.notes.find(note => note.event === 'dispatcher').detail.trustProxy, true, '启动日志要写出信任 XFF')
-    const trustedConfig = await fetch(`${trusted.baseUrl}/config`, {
-        headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(5000),
-    })
-    assert.equal((await trustedConfig.json()).trustProxy, true, '/config 也要能核对这项部署开关')
+    // 运行时核对这项部署开关：#9 删掉了明文返回整套设备身份的 /config，开关挪进 /stat
+    const trustedStat = await getJson(trusted, '/stat')
+    assert.equal(trustedStat.body.rateLimit.trustProxy, true, '/stat 要能核对这项部署开关')
     assert.equal((await signOnce(trusted, { 'x-forwarded-for': '198.51.100.1' })).status, 200)
     assert.equal((await signOnce(trusted, { 'x-forwarded-for': '198.51.100.2' })).status, 200, '不同 XFF 是两个桶')
     const repeat = await post(trusted, signPayload(), { 'x-forwarded-for': '198.51.100.1' })
@@ -255,7 +243,6 @@ test('绑定非回环且没有令牌：拒绝启动并给出明确原因，且�
         () =>
             startServe({
                 config: { version: 'test', host: '0.0.0.0', token: '', deviceId: '1', identityFile: '' },
-                signer,
                 env: { LIBMSSDK_WORKERS: '1' },
                 spawn: () => {
                     spawned += 1
@@ -277,5 +264,4 @@ test('绑定非回环且没有令牌：拒绝启动并给出明确原因，且�
     // 直接构造的嵌入用法也守同一条规则，而不是只有 CLI 的 serve 才检查
     const openConfig = { version: 'test', host: '0.0.0.0', token: '', deviceId: '1' }
     assert.throws(() => createDispatcher({ config: openConfig, pool: { size: 1 } }), /LIBMSSDK_TOKEN/)
-    assert.throws(() => createServer({ config: openConfig, signer }), /LIBMSSDK_TOKEN/)
 })

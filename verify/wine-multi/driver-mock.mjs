@@ -11,7 +11,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { fetchHealthz, probeHealthz, tailLines, waitForReady } from './endpoints.mjs'
+import { fetchOwnIdentity, fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..', '..')
 const MOCK_BDMS = path.join(PROJECT_ROOT, 'test', 'fixtures', 'mock-bdms.mjs')
@@ -177,26 +177,18 @@ export function createMockDriver({ scenario = 'ok', cookie = '' }) {
             }))
         },
 
-        async healthz(index) {
-            return fetchHealthz(ports[index])
+        async readyz(index) {
+            return fetchReady(ports[index])
         },
 
         /** ready / http / refused / hung */
         async probePort(index) {
-            return probeHealthz(ports[index])
+            return probeReady(ports[index])
         },
 
-        /** 每个进程自己的身份视图（原值，只在内存比对，不落盘） */
-        async configIdentity(index) {
-            try {
-                const response = await fetch(`http://127.0.0.1:${ports[index]}/config`, { signal: AbortSignal.timeout(5000) })
-                if (!response.ok) return null
-                const payload = await response.json()
-                const identity = payload?.identity
-                return identity?.device_id ? identity : null
-            } catch {
-                return null
-            }
+        /** 每个进程自己的身份视图（原值只在内存比对，不落盘）。见 endpoints.mjs 里那段「不点名」的理由。 */
+        async ownIdentity(index) {
+            return fetchOwnIdentity(ports[index], 15000)
         },
 
         async waitForReady(timeoutMs) {

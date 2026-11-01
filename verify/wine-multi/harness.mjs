@@ -12,7 +12,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { maskDeviceId } from '../../src/config.mjs'
-import { buildTrackV2Request, summarizeTrackV2Response } from '../../src/probe.mjs'
+import { buildTrackV2Request, fetchTrackV2, summarizeTrackV2Response } from '../../src/probe.mjs'
 import { createDockerDriver } from './driver-docker.mjs'
 import { createMockDriver, SCENARIOS } from './driver-mock.mjs'
 
@@ -285,29 +285,28 @@ async function upstreamWithSignature(portIndex, device) {
     }
     const signed = await signOn(portIndex, { url: spec.url, method: spec.method, body: spec.body, headers: spec.headers, deviceId: device.deviceId })
     report.tally.upstreamAttempts += 1
-    let response
-    let text
+    let upstream
     try {
-        response = await fetch(spec.url, {
-            method: 'POST',
-            headers: { ...spec.headers, ...signed.headers },
+        // 出网走 src/probe.mjs 的那一个函数：与命令行 probe 同一条路径，不再自己拼 fetch
+        upstream = await fetchTrackV2({
+            url: spec.url,
             body: spec.body,
-            signal: AbortSignal.timeout(upstreamTimeoutMs),
+            headers: { ...spec.headers, ...signed.headers },
+            timeoutMs: upstreamTimeoutMs,
         })
-        text = await response.text()
     } catch (error) {
         report.tally.upstreamFailures += 1
         throw tagLeg(error, 'upstream')
     }
-    const summary = summarizeTrackV2Response(text, trackId)
+    const summary = summarizeTrackV2Response(upstream.text, trackId)
     // 「上游接受」= 200 且回包能解析成曲目；4xx/5xx 即使带 JSON 也不算接受
-    const accepted = response.status === 200 && Boolean(summary.accepted)
+    const accepted = upstream.status === 200 && Boolean(summary.accepted)
     if (!accepted) report.tally.upstreamFailures += 1
     return {
         sign: signed,
         upstream: {
-            http: response.status,
-            bodyBytes: Buffer.byteLength(text),
+            http: upstream.status,
+            bodyBytes: Buffer.byteLength(upstream.text),
             accepted,
             fullTrack: Boolean(summary.fullTrack),
             durations: { track: summary.trackDurationSeconds || 0, stream: summary.streamDurationSeconds || 0 },
@@ -345,7 +344,7 @@ async function main() {
         printConclusion()
         return
     }
-    say(`[verify] ${driver.hostPorts.length} 个进程都就绪（/healthz 200）`)
+    say(`[verify] ${driver.hostPorts.length} 个进程都就绪（/readyz 200）`)
     // 起控制面时 pid 文件可能还没写（容器入口先跑 wineboot / 身份前置），就绪后再读一次才是真值
     report.processes = await driver.processes()
 
@@ -404,66 +403,66 @@ async function main() {
     say(`[verify] 判据 1 ${report.criteria.bothSign.status}：${signResults.length - signFailures.length}/${signResults.length} 出签名`)
 
     // ——— 判据 5：两个进程读到同一份身份 ———
-    // 每个进程各问一次它自己的身份视图（/config 给的是该进程 resolveIdentity() 的结果，
-    // 原值只在内存比对），/healthz 的脱敏值作为第二道印证。
-    // 拿 /sign 的回包比是循环论证：那回的是我们发过去的 id，身份分裂也照样"一致"。
-    const healthMasks = []
+    // 每个进程各问一次它自己的身份视图：不点名设备号的 /sign，回包里的 device_id 就是该进程
+    // 自己解析出来的那一份（原值只在内存比对）。/readyz 的脱敏值作为第二道印证。
+    // 「我们发过去哪个设备号，回包就还哪个」那种比法是循环论证，所以请求里一个设备号都不给。
+    const readyMasks = []
     const processIdentities = []
     for (let index = 0; index < driver.hostPorts.length; index += 1) {
-        healthMasks.push((await driver.healthz(index))?.deviceId || '')
-        const info = await driver.configIdentity(index)
-        for (const key of ['device_id', 'iid', 'fp']) redactor.forbid(info?.[key], key)
+        readyMasks.push((await driver.readyz(index))?.deviceId || '')
+        const info = await driver.ownIdentity(index)
+        redactor.forbid(info?.deviceId, 'device_id')
         processIdentities.push(info || null)
     }
-    // 整套设备一起比：#1 的规矩是 device_id / iid / fp 必须成套一致，只比 device_id 会漏
-    const tupleOf = info => `${info.device_id}|${info.iid || ''}|${info.fp || ''}`
-    const fileTuple = `${device.deviceId}|${device.iid || ''}|${device.fp || ''}`
+    // #9 删掉了明文返回整套身份的 /config：每个进程只剩 device_id 一个原值视图，
+    // iid / fp 只在「与共享身份文件一致」那一边比（两个进程读的就是同一份文件）。
+    const deviceIdOf = info => String(info.deviceId)
+    const fileDeviceId = String(device.deviceId)
     const expectedMask = maskDeviceId(device.deviceId)
-    const masksOk = healthMasks.every(mask => mask && mask === expectedMask)
+    const masksOk = readyMasks.every(mask => mask && mask === expectedMask)
     const allRawSeen = processIdentities.every(info => info)
     // 「彼此相同」至少得有两个进程可比：单端口（手跑 --host-ports 一个值）不能空成立
     const comparable = allRawSeen && processIdentities.length >= 2
-    const agreeWithEachOther = comparable && processIdentities.every(info => tupleOf(info) === tupleOf(processIdentities[0]))
-    const agreeWithFile = allRawSeen && processIdentities.every(info => tupleOf(info) === fileTuple)
-    const sources = [...new Set(processIdentities.filter(Boolean).map(info => info.source || '?'))].join('/')
-    // 判据说的是「两个进程读到同一份身份」：主语是进程之间，身份文件与 /healthz 是印证
+    const agreeWithEachOther = comparable && processIdentities.every(info => deviceIdOf(info) === deviceIdOf(processIdentities[0]))
+    const agreeWithFile = allRawSeen && processIdentities.every(info => deviceIdOf(info) === fileDeviceId)
+    // 判据说的是「两个进程读到同一份身份」：主语是进程之间，身份文件与 /readyz 是印证
     let identityStatus
     let identityNote
     if (comparable && !agreeWithEachOther) {
         identityStatus = 'FAIL'
-        identityNote = `两个进程各自解析出的设备成套（device_id/iid/fp）互不相同：分裂（属 #2 的范围）；各自的来源 ${sources}`
+        identityNote = '两个进程各自解析出的 device_id 互不相同：分裂（属 #2 的范围）'
     } else if (comparable && !agreeWithFile) {
         // 进程之间一致，但和共享文件对不上：判据主体成立，「来自这份文件」的印证断了，
-        // 原因这里分不出来（显式覆盖？卷挂错？），所以只到 PARTIAL 并留下 source 供人核对
+        // 原因这里分不出来（显式覆盖？卷挂错？），所以只到 PARTIAL 并写清要人工核对什么
         identityStatus = 'PARTIAL'
-        identityNote = `两个进程的设备成套逐字节相同，但与共享身份文件不一致（各自来源 ${sources}）——可能是显式覆盖，也可能是状态目录挂错，本脚本分不出来，需要人工核对`
+        identityNote =
+            '两个进程的 device_id 逐字节相同，但与共享身份文件不一致——可能是显式覆盖 LIBMSSDK_DEVICE_ID，也可能是状态目录挂错，本脚本分不出来，需要人工核对'
     } else if (comparable) {
         identityStatus = masksOk ? 'PASS' : 'PARTIAL'
         identityNote = masksOk
-            ? `两个进程各自解析出的设备成套逐字节相同，且等于共享身份文件（来源 ${sources}）；/healthz 的脱敏值作为第二道印证也一致`
-            : '设备成套的原值比对通过（两个进程相同且等于身份文件），但有进程的 /healthz 读不到脱敏值，第二道印证缺失'
+            ? '两个进程各自解析出的 device_id 逐字节相同，且等于共享身份文件；/readyz 的脱敏值作为第二道印证也一致（iid / fp 的原值视图已随 /config 删除，只剩文件侧可比）'
+            : 'device_id 的原值比对通过（两个进程相同且等于身份文件），但有进程的 /readyz 读不到脱敏值，第二道印证缺失'
     } else if (masksOk) {
         identityStatus = 'PARTIAL'
         identityNote = allRawSeen
             ? `只有 ${processIdentities.length} 个进程，进程之间无从比对，只比了脱敏的前 3 后 3 位——不足以证明「共用同一份身份」`
-            : '有进程的 /config 读不到原值（鉴权或进程未响应），只比了脱敏的前 3 后 3 位——不足以证明同一份身份'
+            : '有进程的 /sign 读不到它自己的设备号（鉴权、进程未响应或签名失败），只比了脱敏的前 3 后 3 位——不足以证明同一份身份'
     } else {
         identityStatus = 'BLOCKED'
-        identityNote = `身份判据无法执行：${allRawSeen ? '进程数不足两个，做不了进程间比对' : '原值读不到（/config 未响应或鉴权）'}，${masksOk ? '且脱敏值不足以替代比对' : '脱敏值也读不到'}（不等于身份分裂）`
+        identityNote = `身份判据无法执行：${allRawSeen ? '进程数不足两个，做不了进程间比对' : '原值读不到（/sign 未响应或鉴权）'}，${masksOk ? '且脱敏值不足以替代比对' : '脱敏值也读不到'}（不等于身份分裂）`
     }
     report.criteria.identity = {
         status: identityStatus,
         expected: expectedMask,
         perProcess: driver.hostPorts.map((port, index) => ({
             port,
-            masked: healthMasks[index],
-            source: processIdentities[index]?.source || null,
+            masked: readyMasks[index],
             rawSeen: Boolean(processIdentities[index]),
             agreesWithOtherProcesses: comparable ? agreeWithEachOther : null,
-            agreesWithSharedFile: allRawSeen ? tupleOf(processIdentities[index]) === fileTuple : null,
+            agreesWithSharedFile: allRawSeen ? deviceIdOf(processIdentities[index]) === fileDeviceId : null,
         })),
         maskedValuesMatch: masksOk,
-        comparedFields: ['device_id', 'iid', 'fp'],
+        comparedFields: ['device_id'],
         note: identityNote,
     }
     if (identityStatus === 'FAIL') recordFailure('identity', null, 'unclassified', identityNote)
@@ -621,7 +620,7 @@ async function main() {
     if (victimPidState === null) recordFailure('survivor', victimIndex, 'unclassified', '读不到被杀进程的 pid 文件，无法判断它是否还在')
     else if (victimPortState === 'hung') recordFailure('survivor', victimIndex, 'unclassified', '被杀方端口接了但不答话，不是干净退出')
     else if (victimPortState === 'ready' || victimPortState === 'http')
-        recordFailure('survivor', victimIndex, 'unclassified', '被杀方仍在应答 /healthz，杀没生效')
+        recordFailure('survivor', victimIndex, 'unclassified', '被杀方仍在应答 /readyz，杀没生效')
     else if (victimPidState) recordFailure('survivor', victimIndex, 'unclassified', '被杀进程的 pid 仍存活')
     if (hasUpstream && survivor.ok) {
         try {

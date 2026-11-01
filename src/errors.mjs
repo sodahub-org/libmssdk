@@ -2,8 +2,8 @@
 //
 // 只有两类失败是「等一会儿会好」——被限流、服务忙；其余都必须有人改请求或改机器，
 // 所以只有它们带等待时长。502（网关从上游收到无效响应）不在分类表里：本进程不是网关。
-// #7 起默认路径（src/dispatcher.mjs）与过渡端点（src/server.mjs）都走这张表，
-// `src` 下不再有任何发 502 的出口；/probe 的非 200 上游响应也按 INTERNAL_ERROR 收口。
+// #9 起这张表只服务 /sign（src/dispatcher.mjs）：诊断端点已从 HTTP 收掉，`src` 下不再有
+// 任何一个发 502 的出口。
 //
 // 时间不做成接缝：需要的地方把当前时刻当参数传进来，定时器只负责用当前时间去调；
 // 本模块自己不读墙上时钟，所以同一组入参永远算出同一个秒数。
@@ -66,7 +66,7 @@ export function classify(kind, { retryAtMs, nowMs } = {}) {
     return { status: entry.status, code: entry.code, retryAfterSeconds }
 }
 
-/** 429 的提示语：分发器与过渡端点共用同一句，避免两边各写一份慢慢漂移。 */
+/** 429 的提示语只有一句：#9 之后 HTTP 上只剩 `/sign` 会被限流，将来再有计算入口也复用这句。 */
 export const RATE_LIMITED_MESSAGE = '请求过于频繁：这个地址的额度已用完'
 
 /**

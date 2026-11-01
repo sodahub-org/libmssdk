@@ -77,8 +77,9 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
 （`availableParallelism() / 2` 估算）。用 `LIBMSSDK_WORKERS` 可以钉死数量。启动日志的
 `event=dispatcher` 写着实际值与来由，`event=serve` 写着监听的 `workers`。
 
-预热期间（首次 `bdms.init`，通常几秒）`GET /healthz` 返回 503，预热完成后才回 200；
-`/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`，已入队的请求超过等待预算也回 503；两者都带
+预热期间（首次 `bdms.init`，通常几秒）`GET /readyz` 返回 503，worker 就绪后才回 200；
+`GET /livez` 恒 200，只回答「进程还在不在」；`GET /healthz` 是 `/readyz` 的别名，留给已有的
+编排配置。`/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`，已入队的请求超过等待预算也回 503；两者都带
 `Retry-After: 1`。这不影响 `nssm`/计划任务：
 服务进程本身已经起来了，只是还没能接流量。
 
@@ -97,6 +98,42 @@ export QISHUI_SIGNER_URL=http://127.0.0.1:18899/sign
 ```
 
 确需监听局域网时，必须设置 `LIBMSSDK_TOKEN`（否则 `serve` 拒绝启动），并用防火墙限制来源网段。
+
+### 要 HTTPS 就挂反向代理（进程内不做 TLS）
+
+Windows 裸机用仓库里那份 [`deploy/reverse-proxy/Caddyfile`](../deploy/reverse-proxy/Caddyfile)，
+不用自己拼配置：
+
+```powershell
+cd C:\libmssdk\deploy\reverse-proxy
+$env:SIGNER_HOSTNAME   = "signer.example.com"      # 对外域名
+$env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"          # 上游地址不给默认值
+caddy validate --config .\Caddyfile               # 先验一遍再上
+caddy run --config .\Caddyfile
+```
+
+常驻就把这条 `caddy run` 交给 Windows 服务或计划任务 —— 与上面第 3 节里 nssm / schtasks 跑
+`serve` 的两种办法相同（Caddy 没有 `service install` 这个子命令）。
+
+域名能解析到这台机器时 Caddy 自己签、自己续。**本仓库不自签证书那套教程**（起一个本地 CA、
+让每个客户端导入根证书）：客户端要么导入那个 CA、要么跳过校验（等于放弃 TLS）、要么做证书固定，
+而最后一条在双方都没法强制升级的场景里是明确的反面教材。要让多个客户端信你，就用一个它们本来就
+信任的域名；只有你自己用就走上一小节的 SSH 隧道。
+
+四条必须知道的：
+
+1. **本服务进程内不做 TLS**。证书续期意味着重启那个正握着 `bdms.node` 的进程，而冷启动恰恰是
+   最危险的一步（预热没完成时每个 `/sign` 都是 503）；进程内做 TLS 也没有任何办法照顾已经
+   发布出去的老客户端。证书归反向代理。
+2. **明文通道上 token 会泄露**，而这个 token 等价于签名能力。**上了 TLS 要换一个新 token**：
+   旧 token 已经在无数人的历史流量里出现过，换协议不等于换凭据。
+3. **「不重定向」说的是本服务的明文 8899**：它继续完整服务，不改成跳转 —— 308 对不跟随重定向的
+   客户端是直接失败，对已经拿到明文的请求又毫无增益。**Caddy 自己的 80 不在这句话里**：自动 HTTPS
+   默认会在 80 上放一个到 443 的跳转，要让 80 只应 ACME 质询就加 `auto_https disable_redirects`。
+   同理不开 HSTS：一旦下发，还在走明文的客户端会被锁死。
+4. **挂上反代就把监听地址收回来**：`LIBMSSDK_BIND` 别再留 `0.0.0.0`（那是宿主上明文 8899 的发布
+   地址），否则客户端能绕过 443 直连 `http://<host>:8899/sign`，token 与 cookie 照旧走明文。
+   反代在本机的话，服务绑 `127.0.0.1` 就够了。
 
 服务以 SYSTEM/服务账号运行时，若仓库目录不可写，用 `LIBMSSDK_STATE_DIR`
 指一个可写目录放 `identity.json`。目录不可用时设备号只在内存里、重启就变，
@@ -151,9 +188,9 @@ SODA_DEVICE_ID=<device_id> SODA_IID=<iid> SODA_FP=<fp> \
 
 - **设备指纹不必"抓"**：默认由服务自己生成一份 16 位设备号并落盘复用；对照实验显示上游不要求
   它与账号登录设备一致。「静态抓包凭证回放」那条路是否要求设备号与那次抓包同源，本票没有重测。
-- **Cookie 过期不会被 `/probe` 抓到**：本次在**一首**有授权的曲目上，不发 Cookie 也拿到整曲
+- **Cookie 过期不会被 `probe` 命令抓到**：本次在**一首**有授权的曲目上，不发 Cookie 也拿到整曲
   （样本只有这一首，别把它当通用结论，未测组合见调查报告第七节），所以「整曲」不代表 Cookie
   仍然有效。Cookie 是不是活的，要用你自己的播放器能不能登录态功能来判断，
-  不要拿 `/probe` 当登录态探针。
+  不要拿 `node src/index.mjs probe` 当登录态探针。
 - **日志**：stdout 是 JSON 行，只含请求形状与签名长度；可直接接文件/日志系统。
 - **安全**：服务等于你账号的取流能力，不要公网暴露、不要分享 token。

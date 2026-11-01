@@ -1,0 +1,45 @@
+# 签名服务的 TLS 终结示例：Windows 裸机与 Docker 用同一份文件。
+#
+# 两个必填的环境变量（故意不给默认值：悄悄反代到别处的签名器，比启动失败危险得多）
+#   SIGNER_HOSTNAME     对外域名，例如 signer.example.com
+#   LIBMSSDK_UPSTREAM   签名服务地址：本机裸机填 127.0.0.1:8899，compose 里填 libmssdk:8899
+#
+# Windows 裸机（PowerShell，Caddy 是单文件可执行）：
+#   $env:SIGNER_HOSTNAME   = "signer.example.com"
+#   $env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"
+#   caddy validate --config .\Caddyfile     # 先验一遍再上
+#   caddy run --config .\Caddyfile
+#   # 常驻：交给 Windows 服务或计划任务，与 docs/DEPLOY-WINDOWS.md 第 3 节里 nssm / schtasks
+#   # 那两种跑 serve 的方式相同（Caddy 没有 service install 这个子命令）
+#
+# Docker（在 deploy/ 目录，与主 compose 叠一层）：
+#   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+#
+# 改完任何一行都要跑一次 `caddy validate --config Caddyfile`（或 caddy adapt）：Caddyfile 的
+# 指令表随版本变，这里只写能被验出来的那几行，别照着别人的项目抄半句就跑。
+#
+# 证书：域名能解析到这台机器时，Caddy 自己找 ACME 签、自己续，你不用碰证书文件。
+# 本仓库不来自签证书那套教程（没有可解析域名时的自签 CA + 让客户端导入根证书）：客户端要么导入
+# 那个 CA、要么跳过校验（等于放弃 TLS）、要么做证书固定，而最后一条在双方都没法强制升级的场景里
+# 是明确的反面教材。要让多个客户端信你，就用一个它们本来就信的域名。
+#
+# 顺带一句：自动 HTTPS 会在 80 上放一个到 443 的跳转 —— 这说的是代理自己的 80，签名服务的明文
+# 端口不在这条路径上，照旧完整服务。真要让 80 只应 ACME 质询，就在文件最顶部加一个全局块：
+#   {
+#       auto_https disable_redirects
+#   }
+# 加完照旧跑一次 caddy validate。
+
+{$SIGNER_HOSTNAME} {
+	# 代理侧的兜底上限。真正的限制在服务自己身上：LIBMSSDK_MAX_BODY_BYTES（默认 256 KB），
+	# 超了会回可读的 400 而不是把连接掀掉，所以这里要留得比它大。
+	request_body {
+		max_size 1MB
+	}
+
+	# X-Forwarded-For 与 X-Forwarded-Proto 是 Caddy 默认就会加的，不用手写。
+	# 注意：签名服务默认只认 TCP 对端地址。要让它按 XFF 的最右一跳分桶，得设 LIBMSSDK_TRUST_PROXY=1，
+	# 而那时宿主端口必须只对这台反代开放（绑 127.0.0.1）—— 否则调用方绕过反代直连、自己伪造 XFF，
+	# 就等于自选分桶键、绕过限流。两头要一起配。
+	reverse_proxy {$LIBMSSDK_UPSTREAM}
+}

@@ -1,6 +1,7 @@
 // 鉴权：一次 Bearer Token 比对，以及 serve 启动前的「没令牌能不能开门」检查。
 //
-// 抽出来只因为分发器和老路径要用同一份判据 —— 计时安全比较这种东西不该有两份各写一遍。
+// 抽出来是因为鉴权判据只该有一份 —— 计时安全比较这种东西不该各写一遍。#9 之后只有分发器
+// 调它（签名之外的端点里，探针与回执不看凭据，见 src/endpoints.mjs）。
 //
 // 没配令牌时的规则（#8 起）：只有绑定回环地址才放行（本机自用）；绑定非回环地址一律拒绝启动，
 // 而不是静默敞开。命令行的 bridge / selftest / probe 不经过这里，它们本来就不监听。
@@ -16,7 +17,7 @@ function timingSafeEqual(a, b) {
 
 export function isAuthorized(request, config) {
     // 没配令牌时恒为放行：默认服务的启动检查（assertServeAuth）已经确认绑定的是回环地址；
-    // 直接构造 createDispatcher / createLegacyHandler 的嵌入用法也会在构造时过同一道检查。
+    // 直接构造 createDispatcher 的嵌入用法也会在构造时过同一道检查。
     if (!config.token) return true
     const header = request.headers.authorization || ''
     const token = header.startsWith('Bearer ') ? header.slice(7) : ''

@@ -20,13 +20,16 @@ if [ ! -f .env ]; then
     cat >.env <<EOF
 # libmssdk 部署配置（run.sh 生成，勿提交）
 LIBMSSDK_TOKEN=${TOKEN}
-# 0.0.0.0 = 允许外部访问（务必配合防火墙/反向代理）；只想本机用就写 127.0.0.1
+# 宿主上把明文 8899 发布到哪张网卡：0.0.0.0 = 允许外部直连（配合防火墙 + token）；
+# 只想本机用、或前面挂了反向代理，就写 127.0.0.1（代理在容器网络里照样能访问服务）
 LIBMSSDK_BIND=${LIBMSSDK_BIND:-0.0.0.0}
 LIBMSSDK_PORT=${LIBMSSDK_PORT:-8899}
 # 前面挂同机反向代理时改成 1，并把上面的 LIBMSSDK_BIND 改成 127.0.0.1
 # LIBMSSDK_TRUST_PROXY=0
 # 指向你自己安装的汽水客户端版本目录（内含 resources/）
 LIBMSSDK_CLIENT_DIR=
+# 只在上反向代理那一层时需要（docker compose -f docker-compose.yml -f docker-compose.proxy.yml）
+# SIGNER_HOSTNAME=signer.example.com
 EOF
     chmod 600 .env
     echo "✓ 已生成 deploy/.env（含随机 token）"
@@ -63,9 +66,9 @@ fi
 
 # 3) 等健康检查
 echo -n "• 等待服务就绪"
-# /healthz 现在要等至少一台 worker 预热完成；Docker 的起始宽限期是 180 秒，这里给到约 200 秒
+# /readyz 要等至少一台 worker 预热完成（/livez 才是恒 200 的那个）；Docker 的起始宽限期是 180 秒，这里给到约 200 秒
 for _ in $(seq 1 100); do
-    if curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/healthz" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/readyz" >/dev/null 2>&1; then
         echo " ✓"
         break
     fi
@@ -73,7 +76,7 @@ for _ in $(seq 1 100); do
     sleep 2
 done
 
-if ! curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/healthz" >/dev/null 2>&1; then
+if ! curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/readyz" >/dev/null 2>&1; then
     echo
     echo "✗ 服务未在约 3 分钟内就绪，看日志： $COMPOSE logs -f" >&2
     exit 1
@@ -82,7 +85,7 @@ fi
 # 4) 自检 + 打印用法
 echo
 echo "── 状态 ─────────────────────────────────────────────"
-curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/healthz"; echo
+curl -fsS "http://127.0.0.1:${LIBMSSDK_PORT}/readyz"; echo
 
 echo "── 签名自检（POST /sign，真跑一次）──────────────────"
 SIGN=$(curl -fsS -X POST "http://127.0.0.1:${LIBMSSDK_PORT}/sign" \

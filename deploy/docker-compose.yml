@@ -9,7 +9,9 @@ services:
     # Wine 下的 Node 无法使用管道型 stdio（会 open EBADF），必须分配 TTY
     tty: true
     ports:
-      # 宿主机端口绑定：compose 缺省只绑回环；run.sh 生成的 .env 默认写 0.0.0.0
+      # 这里是**宿主**绑定地址：compose 缺省只绑回环，而 run.sh 生成的 .env 默认写 0.0.0.0，
+      # 也就是明文 8899 直接对外可达。挂了反向代理就改回 127.0.0.1 —— 容器内进程另有
+      # environment 里写死的 0.0.0.0，代理经服务名访问不受这一行影响。
       - "${LIBMSSDK_BIND:-127.0.0.1}:${LIBMSSDK_PORT:-8899}:8899"
     environment:
       LIBMSSDK_TOKEN: "${LIBMSSDK_TOKEN:?请先在 deploy/.env 里设置 LIBMSSDK_TOKEN（run.sh 会自动生成）}"

@@ -2,6 +2,10 @@
 //
 // 这是部署完服务后最有用的一条命令 —— 只看 /sign 返回 200 说明不了问题，
 // 因为服务端对签名不对的请求会回 `HTTP 200 + 0 字节`（我们踩过这个坑）。
+//
+// src/ 里向外发请求的代码只有这一处（fetchTrackV2）：入口只有命令行 `probe` 与手动验证脚本，
+// #9 之后 HTTP 层不再有任何拿调用方输入打上游的路径（test/endpoints.test.mjs 有结构守卫）。
+// tools/ 下那份对照实验脚本自己构造请求是另一回事：它要的是与本机服务不同的请求形状，故意不合并。
 
 import crypto from 'node:crypto'
 
@@ -65,6 +69,41 @@ export function buildTrackV2Request({
     }
     if (cookie) headers.cookie = cookie
     return { url, method: 'POST', body, headers }
+}
+
+/**
+ * 打一次 track_v2 上游：src 里唯一向外发请求的地方。
+ *
+ * 只回 `{status, text}`，判定交给 summarizeTrackV2Response —— 命令行与手动验证脚本共用同一条
+ * 出网路径，别让人再给 HTTP 层加一条「顺便帮我打个上游」的路由。
+ */
+export async function fetchTrackV2({ url, body, headers, timeoutMs, fetchImpl = globalThis.fetch }) {
+    const response = await fetchImpl(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+    })
+    return { status: response.status, text: await response.text() }
+}
+
+/**
+ * 一次真机自检：签名 → 打上游 → 汇总。命令行 `probe` 只负责拼参数和打印。
+ *
+ * 签名器与 fetch 都从参数进来：这条链路要能在没有原生模块、没有网络的用例里跑完整，
+ * 也顺手保证「出网只此一处」——想加第二条的人得先经过这里。
+ */
+export async function probeTrack({ signer, trackId, deviceId, iid = '', fp = '', cookie = '', timeoutMs, fetchImpl }) {
+    const spec = buildTrackV2Request({ trackId, deviceId, iid, fp, cookie })
+    const signed = signer.sign({ url: spec.url, headers: spec.headers, deviceId })
+    const upstream = await fetchTrackV2({
+        url: spec.url,
+        body: spec.body,
+        headers: { ...spec.headers, ...signed.headers },
+        timeoutMs,
+        fetchImpl,
+    })
+    return { http: upstream.status, deviceId: signed.deviceId, summary: summarizeTrackV2Response(upstream.text, trackId) }
 }
 
 /** 汇总服务端回包：整曲还是试听、有哪些档位。 */

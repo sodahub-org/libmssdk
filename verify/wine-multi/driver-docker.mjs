@@ -6,7 +6,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fetchHealthz, probeHealthz, tailLines, waitForReady } from './endpoints.mjs'
+import { fetchOwnIdentity, fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -99,29 +99,18 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
                 .filter(line => /node\.exe|wineserver/.test(line))
         },
 
-        async healthz(index) {
-            return fetchHealthz(publicPorts[index])
+        async readyz(index) {
+            return fetchReady(publicPorts[index])
         },
 
         /** ready / http / refused / hung —— 判据 4 用它确认被杀方真的不再应答。 */
         async probePort(index) {
-            return probeHealthz(publicPorts[index])
+            return probeReady(publicPorts[index])
         },
 
-        /**
-         * 这个进程自己 resolveIdentity() 出来的设备号（原值，只在内存里比对）。
-         * 不能拿 /sign 的回包做这个比对——那回的是我们发过去的那个 id，永远同一个。
-         */
-        async configIdentity(index) {
-            try {
-                const response = await fetch(`http://127.0.0.1:${publicPorts[index]}/config`, { signal: AbortSignal.timeout(5000) })
-                if (!response.ok) return null
-                const payload = await response.json()
-                const identity = payload?.identity
-                return identity?.device_id ? identity : null
-            } catch {
-                return null
-            }
+        /** 这个进程自己的身份视图（原值只在内存里比对）。Wine 冷启动下签一次要几十秒，别用探活那档超时。 */
+        async ownIdentity(index) {
+            return fetchOwnIdentity(publicPorts[index], 60000)
         },
 
         async waitForReady(timeoutMs) {

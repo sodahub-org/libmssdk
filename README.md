@@ -136,26 +136,47 @@ Cloudflare Workers 不能运行 `bdms.node` / `metasecml.dll`，因此不能承�
 
 | 路由 | 说明 |
 | --- | --- |
-| `GET /healthz` | 至少一台 worker 就绪时 200；预热中 503。不泄露凭据 |
-| `GET /stat` | 诊断：活跃限流桶、允许/拒绝计数、队列深度、worker 数；IP 脱敏、不过限流 |
-| `GET /config` | 配置摘要和脱敏设备号（需要 Token）；过渡端点 |
-| `POST /sign` | `{ url, method, headers, body }` → 签名请求头（默认经 worker 计算） |
-| `POST /probe` | 构造 `track_v2` 请求并判断整曲 / 试听；过渡端点 |
-| `POST /track/stream` | `/probe` 的别名；过渡端点 |
+| `POST /sign` | `{ url, method, headers, body }` → 签名请求头（主进程排队、worker 计算） |
+| `GET /livez` | 恒 200：只回答「进程还在不在」，不查任何依赖、不做任何计算 |
+| `GET /readyz` | 至少一台 worker 就绪且不在收尾中才 200，否则 503。不泄露凭据 |
+| `GET /healthz` | `/readyz` 的别名，留给已有的编排配置 |
+| `GET /stat` | 诊断：活跃限流桶、允许/拒绝计数、队列深度、worker 数；地址一律脱敏、不过限流 |
+
+HTTP 层只做签名与自身状态诊断：`/probe`、`/track/stream`、`/config` 三个端点已经拿掉了，真机自检是
+命令行 `node src/index.mjs probe --track <track_id>`。为什么拿掉、以及旧端点在弃用期回什么，见
+[`docs/UPGRADING.md`](docs/UPGRADING.md)。
 
 请求 / 响应契约见 [`docs/CONTRACT.md`](docs/CONTRACT.md)。
 
 ### 行为变化（本版本）
 
-- `/sign` 现在由主进程排队、worker 计算；没有就绪 worker 或队列已满时立即回 503，已入队的请求超过等待预算才回 503。
+- `/sign` 由主进程排队、worker 计算；没有就绪 worker 或队列已满时立即回 503，已入队的请求超过等待预算才回 503。
 - 失败状态码按「时间能否解决」分类：400 / 401 / 429 / 503 / 500，**502 不再出现**。
 - 只有服务忙（503 `BUSY`）与被限流（429 `RATE_LIMITED`）带 `Retry-After`。限流默认生效：
   按 TCP 对端地址分桶（IPv6 按 /64），超限回 429，等待时长是下次可请求时刻向上取整、最少 1 秒。
 - 绑定非回环地址又没有设置 `LIBMSSDK_TOKEN` 时拒绝启动；绑定回环地址才允许无令牌访问（本机自用）。
-- 新增 `GET /stat`，没有监控系统时用它看桶数、拒绝数、队列深度与 worker 数；地址全部脱敏。
-- `/healthz` 在 worker 预热完成前返回 503，避免编排器提前放流量。
+- 新增 `GET /stat`：没有监控系统时用它看桶数、拒绝数、队列深度与 worker 数，地址全部脱敏。
+- 健康检查拆成 `/livez`（恒 200）与 `/readyz`（跟 worker 就绪与收尾状态绑定），`/healthz` 是后者别名。
+- 诊断端点收拢：`/probe` 与 `/track/stream` 只回带 `Deprecation` / `Sunset` 的回执（下一版本 410），
+  `/config` 直接删除（它明文返回整套设备身份，而 #8 的 `trustProxy` 开关改由启动日志与 `/stat` 核对）。
+  出网代码只剩 `src/probe.mjs` 一处。
+- 交付能直接用的反向代理配置（`deploy/reverse-proxy/`）；进程内仍不做 TLS。
 
 完整升级影响见 [`docs/UPGRADING.md`](docs/UPGRADING.md)。
+
+## TLS：交给反向代理
+
+进程内不做 TLS：证书续期意味着重启那个正握着 `bdms.node` 的进程，而冷启动恰恰是最危险的一步。
+仓库里有能直接用的配置，覆盖 Windows 裸机与 Docker：
+
+- [`deploy/reverse-proxy/Caddyfile`](deploy/reverse-proxy/Caddyfile) —— 域名可解析时自动签、自动续
+- [`deploy/reverse-proxy/nginx.conf`](deploy/reverse-proxy/nginx.conf) —— 已有 nginx 的主机
+- [`deploy/docker-compose.proxy.yml`](deploy/docker-compose.proxy.yml) —— 容器形态叠一层
+
+三条必须知道：**明文通道上 token 会泄露**，而它等价于签名能力，所以上了 TLS 之后要换一个新 token
+（旧 token 已经在历史流量里出现过，换协议不等于换凭据）；**上了反代就把宿主上的明文 8899 收到
+127.0.0.1**，否则客户端能绕过 443 直连明文端口；「不做重定向」说的是服务自己的明文端口继续完整
+服务，而**代理自己的 80 会跳 443**（自动 HTTPS 的默认行为，要关掉就加 `auto_https disable_redirects`）。
 
 ## 连接 libresoda
 
@@ -180,7 +201,7 @@ npm test
 ```
 
 CI 使用 mock 签名模块，不依赖官方二进制。默认路径的黑盒用例会真 fork worker，覆盖预热、并发重叠、
-杀掉一台后其余继续服务，以及过渡端点仍挂在同一个监听上。
+杀掉一台后其余继续服务，以及签名之外的端点（健康检查与旧诊断端点的弃用回执）仍挂在同一个监听上。
 
 另有一条**手动执行**的部署形态验证（不进 `npm test`、不进 CI）：
 `bash verify/wine-multi/run.sh` 检查 Docker + Wine 下多个进程能否同时工作，
