@@ -5,9 +5,11 @@
 //   且报错要指到具体行（不是一句 exit code）。
 // - deploy/README.md 里标记为 caddyfile 的代码块（那段路径白名单示例）一起验。
 // - 结构对照：nginx 的免日志 location 必须覆盖 src/endpoints.mjs 的 PROBE_PATHS
-//   （/healthz 是 /readyz 的别名），README 白名单必须放行 /sign 与全部探针。漏一项
-//   nginx -t 不会报（语法是对的），所以单列这道检查。只查「覆盖」、不禁止多关一条日志：
+//   （/healthz 是 /readyz 的别名），README 白名单必须放行 /sign 与全部探针、挡住 /stat。
+//   漏一项 nginx -t 不会报（语法是对的），所以单列这道检查。只查「覆盖」、不禁止多关一条日志：
 //   额外收紧（比如 /stat）不该让 CI 红。
+// - Caddy 路径写法只在可核对范围内判：字面量与收尾 `*` 前缀匹配。`?`、字符类、占位符、
+//   `%` 转义、`//` 与非收尾 `*` 一律报「超出可核对范围」，绝不按字面量静默放过。
 // - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`（镜像自带的 nginx.conf
 //   就是那个最小 `http {}` 外壳）；再注入一条非法指令，确认失败信息能指到行号（证明验的确实是
 //   这个文件，而不是镜像自带的默认配置）。
@@ -185,7 +187,7 @@ export function parseCaddyPathRules(block) {
         const definition = definitions.get(name)
         if (!definition) continue
         for (const path of definition.paths) {
-            if (unsupportedPathPattern(path)) unsupported.add(path)
+            if (isUnsupportedPathPattern(path)) unsupported.add(path)
         }
         if (!definition.negated) {
             for (const path of definition.paths) blocked.add(path)
@@ -204,18 +206,12 @@ export function parseCaddyPathRules(block) {
 
 /**
  * 只支持字面量路径与收尾 `*`（前缀匹配）。其余 Caddy 路径语法（`?`、字符类 `[]`、占位符
- * `{}`、`%` 转义、`//`、中间/开头的 `*`）不建模；遇到就返回原因，让结构对照判红而不是
- * 当字面量静默放过。
+ * `{}`、`%` 转义、`//`、中间/开头的 `*`）不建模；遇到就判红而不是当字面量静默放过。
  */
-function unsupportedPathPattern(pattern) {
-    if (/[?[\]{}%]/.test(pattern) || pattern.includes('//')) {
-        return '只用到了 ? / [] / {} / % / // 这类未建模的路径语法'
-    }
+function isUnsupportedPathPattern(pattern) {
+    if (/[?[\]{}%]/.test(pattern) || pattern.includes('//')) return true
     const star = pattern.indexOf('*')
-    if (star !== -1 && star !== pattern.length - 1) {
-        return '只建模收尾 * 的前缀匹配，其余通配位置未建模'
-    }
-    return null
+    return star !== -1 && star !== pattern.length - 1
 }
 
 /**

@@ -346,12 +346,14 @@ test('Caddy 路径语法超出建模范围时判红，不能当字面量放过',
         '/sign /livez /readyz /healthz /a*b',
         '/sign /livez /readyz /healthz /sign//x',
     ]) {
-        const checks = reverseProxyStructureProblems({ nginxConf, readme: markdown(allowlist) })
-            .map(problem => problem.check)
-        assert.ok(checks.includes(patternCheck), `应判「超出可核对范围」：${allowlist}`)
-        assert.ok(
-            checks.includes('deploy/README.md：白名单挡住 /stat'),
-            `无法核对时 /stat 不能显示成 ok：${allowlist}`,
+        assert.deepEqual(
+            reverseProxyStructureProblems({ nginxConf, readme: markdown(allowlist) }).map(p => p.check),
+            [
+                patternCheck,
+                'deploy/README.md：白名单放行 /sign 与全部探针',
+                'deploy/README.md：白名单挡住 /stat',
+            ],
+            `越界写法要让三项都判红：${allowlist}`,
         )
     }
 })
