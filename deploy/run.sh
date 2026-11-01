@@ -42,16 +42,25 @@ else
 fi
 
 # shellcheck disable=SC1091
-set -a && . ./.env && set +a
+# 三条分开写：`. ./.env` 里只要有一行 bash 跑失败（见 1.1），用 && 串起来就会跳过 `set +a`，
+# allexport 一直开着 —— 后面 bind_value、is_loopback，连签名自检拿到的 SIGN（X-Helios/X-Medusa）
+# 都会被导进 compose 与 curl 的子进程环境。读不动的那一行交给 1.1 去判，这里只保证一定收尾。
+set -a
+. ./.env || :
+set +a
 
 # 1.1) .env 里有 bash 读不进去的行，就先停下
 #      `LIBMSSDK_BIND = 0.0.0.0`（等号两侧带空格，加 export 前缀同理）在 bash 里不是赋值，而是
 #      「找一个叫 LIBMSSDK_BIND 的命令」：变量根本没设上，后面的检查看见的是空值、按缺省的回环放行，
 #      而 compose 用它自己那套 .env 解析，两边读到的不一定是同一份配置。脚本读不动这份文件时不能替它担保。
-#      只查脚本自己会分支的那几个变量：值写成 "" 或 '' 是「设了但为空」，与没写这一行同义，不算读不进去。
-for unread_key in LIBMSSDK_CLIENT_DIR LIBMSSDK_BIND LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME LIBMSSDK_ALLOW_PUBLIC_HTTP; do
-    if [ -z "${!unread_key:-}" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${unread_key}[[:space:]]*=[[:space:]]*[\"']?[^[:space:]\"'#]" .env; then
-        echo "错误：deploy/.env 里写了 ${unread_key}，但 bash 没能把它读进来 —— 等号两侧带空格的写法最容易中，加 export 前缀同理。" >&2
+#      `LIBMSSDK_BIND: 0.0.0.0` 是同一类的第二种写法：compose 认 YAML 式的冒号（compose-go 的 dotenv
+#      解析把 '=' 和 ':' 都当分隔符），bash 只把 `LIBMSSDK_BIND:` 当成一个命令名 —— 所以分隔符两种都认。
+#      只管脚本自己会读的那几个变量；值写成 "" 或 '' 是「设了但为空」，与没写这一行同义，不算读不进去。
+for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
+    LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
+    if [ -z "${!unread_key:-}" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${unread_key}[[:space:]]*[=:][[:space:]]*[\"']?[^[:space:]\"'#]" .env; then
+        echo "错误：deploy/.env 里写了 ${unread_key}，但 bash 没能把它读进来 —— 等号两侧带空格、加 export 前缀，" >&2
+        echo "      或者写成 YAML 式的 ${unread_key}: 值，都会这样。" >&2
         echo "      compose 有自己的 .env 解析，脚本没法确认它看到的就是真正生效的那份，这条检查也就没法替你把关。" >&2
         echo "      请把 ${unread_key}=值 写成等号两侧都不带空格的形状。" >&2
         echo "      （值本身带空格的，用双引号把值包住：${unread_key}=\"…\"，bash 与 compose 都认。）" >&2

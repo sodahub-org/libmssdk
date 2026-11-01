@@ -11,9 +11,9 @@ cd deploy
 ./run.sh
 ```
 
-脚本会：生成 `deploy/.env`（随机 token）→ 检查 `LIBMSSDK_CLIENT_DIR` → 检查「要挂反向代理却把宿主
-明文口开着」这一组合（第 2 步）→ 构建镜像 → 启动容器 → 等健康检查通过 → 打印客户端接入方式。
-首次构建要装 Wine，约 3–5 分钟。
+脚本会：生成 `deploy/.env`（随机 token）→ 确认这份 `.env` 里脚本要用的每一行 bash 都读得进去 →
+检查 `LIBMSSDK_CLIENT_DIR` → 检查「要挂反向代理却把宿主明文口开着」这一组合（第 2 步）→ 构建镜像 →
+启动容器 → 等健康检查通过 → 打印客户端接入方式。首次构建要装 Wine，约 3–5 分钟。
 
 容器默认绑定 `0.0.0.0`，所以会按物理核的 75% 拉起多个 worker；启动日志的
 `event=dispatcher` 写明实际值与来由。worker 预热完成前 `/readyz` 返回 503，预热完成后才回 200；
@@ -75,10 +75,12 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    **这一步不再靠人读注释完成了**：`run.sh` 在构建与起容器之前自己检查 —— `.env` 里填了
    `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（取值集合与服务里 `envFlag` 一致：`1`/`true`/
    `yes`/`on`，不分大小写；两者都等于声明「前面挂了同机反代」），而 `LIBMSSDK_BIND` 不是回环
-   （`127/8` 的点分四段、`::1`、`localhost`）时直接退出，并点名触发的变量与改法。
+   （`127/8` 的点分四段、`::1` 与它的方括号写法、`localhost`）时直接退出，并点名触发的变量与改法。
    判据落在部署脚本侧而不是服务里：容器内的进程永远看到 `0.0.0.0`，在服务里判会把推荐的 Docker
-   形态误判成违规。`.env` 里这一行如果 bash 压根读不进去（`LIBMSSDK_BIND = 0.0.0.0` 这种等号两侧
-   带空格的写法，或加了 `export` 前缀），`run.sh` 也直接停下 —— 脚本读不懂这份配置时不替它担保。
+   形态误判成违规。`.env` 里某一行如果 bash 压根读不进去（`LIBMSSDK_BIND = 0.0.0.0` 这种等号两侧
+   带空格的写法、加了 `export` 前缀，或 YAML 式的 `LIBMSSDK_BIND: 0.0.0.0` —— 冒号那种 compose 认、
+   bash 不认），`run.sh` 也在起容器之前停下：脚本读不懂这份配置时不替它担保。这条管的是 `run.sh`
+   自己要用到的那几个变量，不只 `LIBMSSDK_BIND`。
    逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：**你故意同时保留对外的
    明文入口，且它在内网防火墙后面**。设了它 `run.sh` 放行，但在 stderr 留一句提醒 —— token 等价于
    签名能力，它与 cookie 走的都是明文。绕过 `run.sh` 直接敲 `docker compose -f ... -f ...` 的人

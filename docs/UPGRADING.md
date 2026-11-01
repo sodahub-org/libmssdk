@@ -176,6 +176,11 @@ Windows 进程，所以 `docker stop` 在这里走的是「进程直接消失」
   防火墙后面。判据不落在这台服务里 —— 容器内的进程永远看到 `0.0.0.0`，在进程内判会把推荐的 Docker
   形态误判成违规。手工 `docker compose -f docker-compose.yml -f docker-compose.proxy.yml` 不经过
   `run.sh`，那一行仍要自己核对。
+- **`deploy/.env` 里脚本读不进去的一行，现在会让 `run.sh` 停下**：`LIBMSSDK_BIND = 0.0.0.0`（等号
+  两侧带空格）、`export LIBMSSDK_BIND = 0.0.0.0`、`LIBMSSDK_BIND: 0.0.0.0`（YAML 式冒号：compose 的
+  `.env` 解析认，bash 不认）这三种写法，过去会被脚本当成「没设这个变量」而按缺省的回环放行，compose
+  却照文件里那个值去绑宿主端口。以前一声不吭的部署现在会在构建之前退出并说清怎么写才两边都认。
+  值写成 `KEY=`、`KEY=""` 或 `KEY=''` 仍算「没填」，按缺省走，不会被拦。
 ## 9. 升级检查清单
 
 1. 确认反向代理/客户端把非 2xx 当成「可重试与否」的信号，而不是一律当上游故障。

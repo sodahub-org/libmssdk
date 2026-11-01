@@ -25,12 +25,17 @@ const RUN_SH = path.join(here, '..', 'deploy', 'run.sh')
 // 桩对 compose 构建的固定返回值；见到它即表示前置检查都过了。
 const REACHED_COMPOSE = 42
 
+// 桩：`docker compose version` 必须成功（run.sh 开头就探测它）；起容器那一步固定回 42，并顺手记下
+// 自己环境里有哪些 run.sh 的局部变量被导出来了 —— allexport 没关掉时，连签名自检拿到的响应都会跟着
+// 进子进程环境，那是外部可见的事实，值得钉一条。
 const COMPOSE_STUB = [
     '#!/usr/bin/env bash',
     'echo "docker $*" >>"$COMPOSE_STUB_LOG"',
     'case "$*" in',
     '    *version*) exit 0 ;;',
-    '    *) exit 42 ;;',
+    '    *)',
+    '        echo "leaked:$(compgen -e | grep -E \'^(bind_value|octet|is_loopback|trust_proxy|SIGN)$\' | tr \'\\n\' \',\')" >>"$COMPOSE_STUB_LOG"',
+    '        exit 42 ;;',
     'esac',
     '',
 ].join('\n')
@@ -60,7 +65,7 @@ function childEnv() {
  * 在临时目录里跑一遍真实的 deploy/run.sh。
  *
  * @param {string[]} [envLines] deploy/.env 的内容；不传就不建这个文件，让 run.sh 走首次生成的分支
- * @returns {{status: number, stdout: string, stderr: string, composeCalls: string[], envFile: string}}
+ * @returns {{status: number, stderr: string, composeCalls: string[], leakedVars: string, envFile: string}}
  */
 function runDeployScript(envLines) {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-run-sh-'))
@@ -88,12 +93,15 @@ function runDeployScript(envLines) {
         if (result.error) throw result.error
 
         const logPath = path.join(work, 'compose-calls.log')
-        const composeCalls = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean) : []
+        const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean) : []
+        const composeCalls = log.filter(line => line.startsWith('docker '))
+        const leaked = log.find(line => line.startsWith('leaked:')) || ''
         return {
             status: result.status,
-            stdout: result.stdout,
             stderr: result.stderr,
             composeCalls,
+            // run.sh 的局部变量出现在 compose 子进程的环境里 = allexport 没关掉（见 run.sh 的 set -a）
+            leakedVars: leaked.slice('leaked:'.length),
             // run.sh 开头就探测 `docker compose version`，所以「调过 docker」不等于「起过容器」；
             // 拒启动的用例要判的是有没有走到 up。
             started: composeCalls.some(call => /(?:^|\s)up(?:\s|$)/.test(call)),
@@ -225,8 +233,8 @@ test('回环判据与 src/dispatch.mjs 的 isLoopbackBind 逐条一致', { skip:
 
 test('LIBMSSDK_TRUST_PROXY 的「打开」与服务里 envFlag 逐条一致', { skip: skipIfNoBash() }, () => {
     // compose 把这个变量原样透传进容器：脚本认得比服务窄（只认 "1"）时，LIBMSSDK_TRUST_PROXY=true
-    // 就变成「服务在对外口上认 XFF，脚本一声不吭」；认得比服务宽则会误拦本就安全的配置。
-    // 答案不在这张表里手写，而是现取 src/config.mjs 的 envFlag —— 那边加了新写法，这条用例才会红。
+    // 就变成「服务在对外口上认 XFF，脚本一声不吭」—— 那是要命的方向，必须逐条对上。
+    // 答案不在这张表里手写，而是现取 src/config.mjs 的 envFlag：那边加了新写法，这条用例要红。
     for (const value of ['1', 'true', 'TRUE', 'yes', 'on', ' on ', '\tON\t', '0', '', ' ', 'no', '2']) {
         const trusts = serviceTrustsProxy(value)
         const { status, started } = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: value }))
@@ -234,6 +242,13 @@ test('LIBMSSDK_TRUST_PROXY 的「打开」与服务里 envFlag 逐条一致', { 
         assert.equal(started, !trusts, `TRUST_PROXY=${JSON.stringify(value)}：envFlag 说 ${trusts}，脚本必须给同一个答案`)
         assert.equal(status, trusts ? 1 : REACHED_COMPOSE, `TRUST_PROXY=${JSON.stringify(value)}：退出码要和上面那句对得上`)
     }
+
+    // 反方向允许不一致：脚本去的是所有空白，envFlag 只 trim 两端。`t rue` 这种写法服务当没打开、
+    // 脚本当打开了 —— 多拦一道不会放出风险，误拦的代价是一句报错。这里把它钉成「已知更严」，
+    // 免得以后有人照着上面那句「逐条一致」去把脚本改宽。
+    const wider = runDeployScript(deployEnv({ bind: '0.0.0.0', trustProxy: 't rue' }))
+    assert.equal(serviceTrustsProxy('t rue'), false, 'envFlag 认不出 t rue')
+    assert.equal(wider.status, 1, '脚本按打开处理，多拦一道')
 })
 
 test('.env 没写 LIBMSSDK_BIND 时不误拦：compose 的缺省本来就只绑回环', { skip: skipIfNoBash() }, () => {
@@ -253,8 +268,13 @@ test('.env 里 bash 读不进去的那一行：宁可停，也不按缺省放行
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['export LIBMSSDK_BIND = 0.0.0.0'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = "0.0.0.0"'] }),
+        // YAML 式的 `KEY: 值` 是 compose 认、bash 不认的第二种写法：compose-go 的 dotenv 解析把
+        // '=' 和 ':' 都当分隔符，bash 只会把 `LIBMSSDK_BIND:` 当成一个命令名
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: 0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND:0.0.0.0'] }),
         deployEnv({ bind: '0.0.0.0', extra: ['SIGNER_HOSTNAME = signer.example.com'] }),
         deployEnv({ bind: '0.0.0.0', extra: ['LIBMSSDK_TRUST_PROXY = 1'] }),
+        deployEnv({ bind: '0.0.0.0', extra: ['LIBMSSDK_TRUST_PROXY: yes'] }),
     ]
     for (const lines of malformed) {
         const { status, stderr, started } = runDeployScript(lines)
@@ -290,6 +310,16 @@ test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127
     }
 })
 
+test('.env 里跑失败的一行不会把 allexport 留在开着：脚本的局部变量不进 compose 子进程', { skip: skipIfNoBash() }, () => {
+    // 1.1 只盯 run.sh 自己要用的那几个键；这份 .env 里坏掉的是别的键（NOTE），脚本必须照常走完，
+    // 但 `set -a && . ./.env && set +a` 这种串法会在这一行失败时跳过 set +a —— 之后 bind_value、
+    // is_loopback，连签名自检拿到的响应都会被导进容器环境。这里看的是起容器那一步的真实环境。
+    const { status, leakedVars } = runDeployScript(deployEnv({ bind: '127.0.0.1', hostname: 'signer.example.com', extra: ['NOTE = keep-plaintext'] }))
+
+    assert.equal(status, REACHED_COMPOSE, '与检查无关的坏行不该把部署拦下')
+    assert.equal(leakedVars, '', `run.sh 的局部变量不该出现在 compose 子进程的环境里：${leakedVars}`)
+})
+
 test('run.sh 首次生成的 .env 写清了这条检查与逃生舱', { skip: skipIfNoBash() }, () => {
     // 不传 envLines：走「首次生成 .env」那一支。生成的模板是唯一会给新用户看的东西，
     // 收紧这件事要么写在模板里，要么就别指望人读 README。
@@ -297,6 +327,8 @@ test('run.sh 首次生成的 .env 写清了这条检查与逃生舱', { skip: sk
 
     assert.equal(status, 1, 'LIBMSSDK_CLIENT_DIR 还没填，本该停在那一步')
     assert.match(stderr, /LIBMSSDK_CLIENT_DIR/)
+    // 1.1 现在排在 CLIENT_DIR 之前，模板本身一旦被判成「读不进去」就会顶掉这条更早的报错 —— 两种停下要分得开
+    assert.doesNotMatch(stderr, /bash 没能把它读进来/, `生成的模板不该被 1.1 误判：${stderr}`)
     assert.match(envFile, /run\.sh.*拒绝启动/, `模板要说清不收紧的后果：${envFile}`)
     assert.match(envFile, /# LIBMSSDK_ALLOW_PUBLIC_HTTP=0/, `逃生舱要在模板里看得见：${envFile}`)
     assert.match(envFile, /# SIGNER_HOSTNAME=signer\.example\.com/, '反代那一层的变量仍按原样注释着')
