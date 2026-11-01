@@ -87,9 +87,18 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
    | 形态 | 文件 | 起来的方式 |
    | --- | --- | --- |
-   | Windows 裸机 | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) | 设好 `SIGNER_HOSTNAME` 与 `LIBMSSDK_UPSTREAM`，先 `caddy validate`，再 `caddy run --config Caddyfile` |
+   | Windows 裸机 | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) | 设好 `SIGNER_HOSTNAME` 与 `LIBMSSDK_UPSTREAM`，`caddy run --config Caddyfile`（语法已由 CI 验过，见下） |
    | Docker（同主 compose 叠一层） | [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile) + [`docker-compose.proxy.yml`](docker-compose.proxy.yml) | `docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d`（要 `SIGNER_HOSTNAME`） |
    | 已有 nginx 的 Linux / Docker 主机 | [`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf) | 放进 `conf.d/`，证书路径与 `server_name` 换成你自己的 |
+
+   上面两份配置的语法由 CI 离线校验（`.github/workflows/ci.yml` 的 `reverse-proxy` 作业）：
+   Caddyfile 用 `caddy:2.11.7-alpine` 跑 `caddy validate`（变量齐全、缺任意一个都跑，缺变量时报错要指到行），
+   nginx.conf 用 `nginx:1.30.6-alpine` 跑 `nginx -t`（`http2 on;` 要求 nginx ≥ 1.25.1）。这就是「验过的版本」。
+   注意 `docker-compose.proxy.yml` 里的 `image: caddy:2` 是浮动大版本：拉到更新的 2.x 后，建议按上面的
+   命令自己再验一遍。
+   CI 验的是**语法**；你上线要验的是域名解析与证书可达。改过文件，或你本机装的 Caddy / nginx 不是这两个
+   版本时，仍要自己跑一次 `caddy validate` / `nginx -t`。本地复跑需要 Docker 与 openssl，命令见
+   [`../tools/reverse-proxy-check.mjs`](../tools/reverse-proxy-check.mjs) 开头的说明。
 
    域名能解析到这台机器时 Caddy 自己签、自己续，你不用碰证书文件。本仓库不自签证书那套教程
    （起一个本地 CA 再让每个客户端导入根证书）：客户端要么导入那个 CA、要么跳过校验（等于放弃
@@ -104,8 +113,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 7. 「不重定向」说的是**签名服务自己的明文端口**：它继续完整服务，不改成跳转 —— 308 对不跟随
    重定向的客户端是直接失败，对已经拿到明文的请求又毫无增益。**代理自己的 80 端口不在这句话里**：
    Caddy 的自动 HTTPS 默认就在 80 上放一个到 443 的跳转，不跟随 308 的客户端用不了 80。真要让 80
-   也只应 ACME 质询，在 Caddyfile 顶部全局块加 `auto_https disable_redirects`，加完跑一次
-   `caddy validate`。nginx 那份只有 443 的 server block，80 上压根没监听。
+   也只应 ACME 质询，在 Caddyfile 顶部全局块加 `auto_https disable_redirects`；这是你自己的改动，
+   改完自己跑一次 `caddy validate`（仓库原样的语法已由 CI 验过）。nginx 那份只有 443 的 server block，
+   80 上压根没监听。
 8. 端点收拢之后反代里没什么必须挡的了：`/probe`、`/track/stream`、`/config` 已经不在 HTTP 上，
    那三条路径只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、
    `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
@@ -116,7 +126,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    signer.example.com {
        @deny not path /sign /livez /readyz /healthz
        respond @deny 404
-       reverse_proxy {$LIBMSSDK_UPSTREAM}
+       reverse_proxy {
+           to {$LIBMSSDK_UPSTREAM}
+       }
    }
    ```
 

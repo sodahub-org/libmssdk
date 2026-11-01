@@ -7,16 +7,19 @@
 # Windows 裸机（PowerShell，Caddy 是单文件可执行）：
 #   $env:SIGNER_HOSTNAME   = "signer.example.com"
 #   $env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"
-#   caddy validate --config .\Caddyfile     # 先验一遍再上
 #   caddy run --config .\Caddyfile
+#   # 这份文件的语法已由 CI 用 caddy:2.11.7-alpine 验过（含变量缺失时的报错形态）；你上线要验的是
+#   # 域名解析与证书可达。改过文件、或你本机的 Caddy 不是这个版本时，再跑一次
+#   # `caddy validate --config .\Caddyfile`。
 #   # 常驻：交给 Windows 服务或计划任务，与 docs/DEPLOY-WINDOWS.md 第 3 节里 nssm / schtasks
 #   # 那两种跑 serve 的方式相同（Caddy 没有 service install 这个子命令）
 #
 # Docker（在 deploy/ 目录，与主 compose 叠一层）：
 #   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
 #
-# 改完任何一行都要跑一次 `caddy validate --config Caddyfile`（或 caddy adapt）：Caddyfile 的
-# 指令表随版本变，这里只写能被验出来的那几行，别照着别人的项目抄半句就跑。
+# 仓库原样的语法由 CI 兜住（.github/workflows/ci.yml 的 reverse-proxy 作业）；这里只写能被验出来的
+# 那几行。你自己改完任何一行，仍然要跑一次 `caddy validate --config Caddyfile`（或 caddy adapt）：
+# 指令表随版本变，别照着别人的项目抄半句就跑。
 #
 # 证书：域名能解析到这台机器时，Caddy 自己找 ACME 签、自己续，你不用碰证书文件。
 # 本仓库不来自签证书那套教程（没有可解析域名时的自签 CA + 让客户端导入根证书）：客户端要么导入
@@ -28,7 +31,7 @@
 #   {
 #       auto_https disable_redirects
 #   }
-# 加完照旧跑一次 caddy validate。
+# 这是你自己的改动：加完照旧跑一次 caddy validate（CI 只验仓库原样的那份）。
 
 {$SIGNER_HOSTNAME} {
 	# 代理侧的兜底上限。真正的限制在服务自己身上：LIBMSSDK_MAX_BODY_BYTES（默认 256 KB），
@@ -41,5 +44,9 @@
 	# 注意：签名服务默认只认 TCP 对端地址。要让它按 XFF 的最右一跳分桶，得设 LIBMSSDK_TRUST_PROXY=1，
 	# 而那时宿主端口必须只对这台反代开放（绑 127.0.0.1）—— 否则调用方绕过反代直连、自己伪造 XFF，
 	# 就等于自选分桶键、绕过限流。两头要一起配。
-	reverse_proxy {$LIBMSSDK_UPSTREAM}
+	# 用 `to` 子指令而不是 `reverse_proxy {$LIBMSSDK_UPSTREAM}`：变量为空时前者报 adapt 错误，
+	# 后者会静默变成「没有 upstream 的代理」，validate 也照样通过。
+	reverse_proxy {
+		to {$LIBMSSDK_UPSTREAM}
+	}
 }
