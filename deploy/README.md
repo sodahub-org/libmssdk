@@ -99,6 +99,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    CI 验的是**语法**；你上线要验的是域名解析与证书可达。改过文件，或你本机装的 Caddy / nginx 不是这两个
    版本时，仍要自己跑一次 `caddy validate` / `nginx -t`。本地复跑需要 Docker 与 openssl，命令见
    [`../tools/reverse-proxy-check.mjs`](../tools/reverse-proxy-check.mjs) 开头的说明。
+   本文件里标成 `caddyfile` 的代码块（第 8 步那段路径白名单）也在同一个作业里：脚本取出每一段、当
+   独立 Caddyfile 跑一遍 `caddy validate`，所以改那段同样要过这一关。
 
    域名能解析到这台机器时 Caddy 自己签、自己续，你不用碰证书文件。本仓库不自签证书那套教程
    （起一个本地 CA 再让每个客户端导入根证书）：客户端要么导入那个 CA、要么跳过校验（等于放弃
@@ -120,17 +122,42 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    那三条路径只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、
    `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
    `/stat` 不鉴权、地址已脱敏，但**计数会暴露使用情况**（桶数、允许/拒绝、队列深度），公网部署
-   建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名与探针：
+   建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名、三个探针与三条已删端点的回执：
 
    ```caddyfile
    signer.example.com {
-       @deny not path /sign /livez /readyz /healthz
+       @deny not path /sign /livez /readyz /healthz /probe /probe/ /track/stream /track/stream/ /config /config/
        respond @deny 404
        reverse_proxy {
            to {$LIBMSSDK_UPSTREAM}
        }
    }
    ```
+
+   放这三条是为了保住回执，不是放行能力：它们只回一句固定的「没有了 + 改用哪个命令」，不签名、
+   不出网、也不看凭据，`/stat` 仍留在被挡的一侧。把它们挡在代理层就成了裸 404 —— 没有
+   `code: "endpoint_removed"`、没有 `replacement`，`/probe` 与 `/track/stream` 还会少掉
+   `Deprecation` / `Sunset` 两个头（`/config` 本就没有这一对，它不是弃用期而是当场删除），
+   正好毁掉 `../docs/UPGRADING.md` 里那段过渡。
+
+   三条回执各写了带尾斜杠与不带尾斜杠两种，是因为 Caddy 的 `path` 是整段精确匹配、大小写不敏感，
+   尾斜杠也算数（文档原话 `Slashes are significant`），所以 `/probe` 不覆盖 `/probe/`；而服务侧
+   把 `/probe/` 认成同一条路由（`../src/endpoints.mjs`）。手敲的 curl 很容易多带一个尾斜杠，漏掉
+   就又是一个裸 404。探针路径由编排器按固定值打，通常不带尾斜杠；你的探针若会带，照这个办法补
+   一条 `/livez/` 之类。`/sign` 不用补：服务侧只认 `/sign`，`/sign/` 本来就是 404。
+
+   nginx 那份示例（[`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf)）**不含路径白名单**：
+   它的 `location /` 把全部路径都转给上游，三条回执照样到得了服务、由服务自己回答，但 `/stat`
+   也因此经公网可达。随仓库的 `reverse-proxy/Caddyfile` 同样没有白名单 —— 默认两份都是全量转发，
+   上面那段是可选收紧。要跟上面这样收紧，得把兜底的 `location /` 换成 `return 404`，再给清单里
+   每条路径写一条精确匹配的 `location`（`= /probe` 与 `= /probe/` 各一条，其余同理）—— 只加
+   `location` 而不动那个兜底块等于什么也没挡。那几条 `proxy_set_header` 现在只写在 `location /`
+   里，新的 location 继承不到（nginx 只在某一层一条都没写时才整组继承上一层的），要提到 `server`
+   一级或逐条重写；少了 `X-Forwarded-For`，开了 `LIBMSSDK_TRUST_PROXY=1` 之后所有客户端会缩成
+   一个限流桶（见第 3 步与 `nginx.conf` 里的注释）。现成的 `= /livez` / `= /readyz` 也没带这几行，
+   但限流只覆盖 `/sign`，探针不进取数桶，所以现在这样没问题。
+   改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，多出来的白名单同样得有人维护，而现成的这份
+   是 CI 按原样验过的。
 
    在宿主机上直接看诊断：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
    `LIBMSSDK_PORT`，默认 8899）。
