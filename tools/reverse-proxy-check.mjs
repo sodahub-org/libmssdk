@@ -107,18 +107,52 @@ export function nginxNoLogPaths(conf) {
 }
 
 /**
- * 从 Markdown 的 caddyfile 示例里取出路径白名单：`@name not path /sign /livez ...`
- * 与 `@name path ...` 两种写法都认。用来核对「放行的清单」与探针清单一致。
+ * 从 Markdown 的 caddyfile 示例里读出这一段实际放行/拦截的路径。
+ *
+ * Caddy 的命名 matcher 只在被指令引用的地方生效：出现在某个 matcher 里不等于被放行，
+ * 例如为了 `log_skip` 加的 `@probes` 就不该算进白名单。所以只认 `respond @name …`
+ * 引用到的 matcher，并按定义形态解释：
+ *   `@name not path /a /b` → 只放行 /a /b，其余 404（白名单）
+ *   `@name path /a /b`     → 额外拦截 /a /b（从白名单里减掉）
+ *
+ * 没有 `not path` 白名单 matcher 时 `allowed` 为 null：示例不再是一张白名单，无法核对。
  */
-export function extractCaddyWhitelistPaths(markdown, source = 'Markdown') {
-    const paths = []
+export function extractCaddyPathRules(markdown, source = 'Markdown') {
+    const definitions = new Map()
+    const referenced = []
     for (const block of extractCaddyfileBlocks(markdown, source)) {
-        for (const line of block.split('\n')) {
-            const match = /^\s*@[\w-]+\s+(?:not\s+)?path\s+(.+)$/.exec(line)
-            if (match) paths.push(...match[1].replace(/\s+#.*$/, '').trim().split(/\s+/))
+        for (const raw of block.split('\n')) {
+            const line = raw.replace(/\s+#.*$/, '').trim()
+            const definition = /^(@[\w-]+)\s+(not\s+)?path\s+(.+)$/.exec(line)
+            if (definition) {
+                definitions.set(definition[1], {
+                    negated: Boolean(definition[2]),
+                    paths: definition[3].trim().split(/\s+/),
+                })
+                continue
+            }
+            const reference = /^respond\s+(@[\w-]+)\b/.exec(line)
+            if (reference) referenced.push(reference[1])
         }
     }
-    return paths
+
+    let allowed = null
+    const blocked = new Set()
+    for (const name of referenced) {
+        const definition = definitions.get(name)
+        if (!definition) continue
+        if (!definition.negated) {
+            for (const path of definition.paths) blocked.add(path)
+            continue
+        }
+        const paths = new Set(definition.paths)
+        // 多个 not path 白名单是交集：每个都把自己清单以外的路径 404 掉。
+        allowed = allowed === null
+            ? paths
+            : new Set([...allowed].filter(path => paths.has(path)))
+    }
+    if (allowed !== null) for (const path of blocked) allowed.delete(path)
+    return { allowed, blocked }
 }
 
 /**
@@ -153,21 +187,28 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
         })
     }
 
-    const whitelist = new Set(extractCaddyWhitelistPaths(readme))
-    const missingInWhitelist = ['/sign', ...PROBE_PATHS].filter(path => !whitelist.has(path))
-    if (missingInWhitelist.length > 0) {
+    const whitelist = extractCaddyPathRules(readme)
+    if (whitelist.allowed === null) {
         problems.push({
             check: STRUCTURE_CHECKS.whitelist,
-            detail: `少了：${missingInWhitelist.join(' ')}`,
+            detail: '找不到被 `respond` 引用的 `not path` 放行 matcher，没法核对白名单',
         })
-    }
-    // 示例的意图是「只放行签名与探针」：/stat 的计数会暴露使用情况，必须留在被挡的一侧。
-    // 放行三条弃用回执是 #21 的事，与这里无关。
-    if (whitelist.has('/stat')) {
-        problems.push({
-            check: STRUCTURE_CHECKS.statBlocked,
-            detail: '/stat 会暴露桶数、允许/拒绝与队列深度，该示例不该放行它',
-        })
+    } else {
+        const missingInWhitelist = ['/sign', ...PROBE_PATHS].filter(path => !whitelist.allowed.has(path))
+        if (missingInWhitelist.length > 0) {
+            problems.push({
+                check: STRUCTURE_CHECKS.whitelist,
+                detail: `少了：${missingInWhitelist.join(' ')}`,
+            })
+        }
+        // 示例的意图是「只放行签名与探针」：/stat 的计数会暴露使用情况，必须留在被挡的一侧。
+        // 放行三条弃用回执是 #21 的事，与这里无关。
+        if (whitelist.allowed.has('/stat')) {
+            problems.push({
+                check: STRUCTURE_CHECKS.statBlocked,
+                detail: '/stat 会暴露桶数、允许/拒绝与队列深度，该示例不该放行它',
+            })
+        }
     }
 
     return problems

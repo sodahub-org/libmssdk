@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { PROBE_PATHS } from '../src/endpoints.mjs'
 import {
     extractCaddyfileBlocks,
-    extractCaddyWhitelistPaths,
+    extractCaddyPathRules,
     nginxNoLogPaths,
     reverseProxyStructureProblems,
 } from '../tools/reverse-proxy-check.mjs'
@@ -114,21 +114,38 @@ test('nginx 注释掉的 location 不算数：不许拿注释充免日志清单'
     assert.deepEqual([...nginxNoLogPaths(conf)], [])
 })
 
-test('README 路径白名单：认 not path 与 path 两种写法', () => {
+test('README 路径规则：只认 respond 引用的 matcher，未被引用的不算', () => {
     const markdown = [
         '```caddyfile',
         'signer.example.com {',
         '    @deny not path /sign /livez /readyz /healthz  # 只放行这些',
         '    respond @deny 404',
         '    @only path /sign',
+        '    @probes path /healthz',
         '}',
         '```',
     ].join('\n')
 
-    assert.deepEqual(
-        new Set(extractCaddyWhitelistPaths(markdown)),
-        new Set(['/sign', '/livez', '/readyz', '/healthz']),
-    )
+    const rules = extractCaddyPathRules(markdown)
+    assert.deepEqual(rules.allowed, new Set(['/sign', '/livez', '/readyz', '/healthz']))
+    assert.deepEqual(rules.blocked, new Set(), '@only 与 @probes 没被 respond 引用，不进规则')
+})
+
+test('README 路径规则：respond 引用的 path matcher 是额外拦截，不是放行', () => {
+    const markdown = [
+        '```caddyfile',
+        'signer.example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
+        '    @blocked path /stat',
+        '    respond @blocked 404',
+        '}',
+        '```',
+    ].join('\n')
+
+    const rules = extractCaddyPathRules(markdown)
+    assert.equal(rules.allowed.has('/stat'), false)
+    assert.equal(rules.blocked.has('/stat'), true)
 })
 
 test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
@@ -153,6 +170,7 @@ test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名�
         '```caddyfile',
         'example.com {',
         '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
         '}',
         '```',
     ].join('\n')
@@ -167,5 +185,39 @@ test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名�
     assert.deepEqual(
         reverseProxyStructureProblems({ nginxConf, readme: withStat }).map(p => p.check),
         ['deploy/README.md：白名单挡住 /stat'],
+    )
+})
+
+test('结构对照看的是 respond 引用的白名单：@probes 补不出漏掉的别名', () => {
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const readme = [
+        '```caddyfile',
+        'example.com {',
+        '    @probes path /livez /readyz /healthz',
+        '    log_skip @probes',
+        '    @deny not path /sign /livez /readyz',
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
+
+    const problems = reverseProxyStructureProblems({ nginxConf, readme })
+    assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
+    assert.match(problems[0].detail, /\/healthz/)
+})
+
+test('结构对照：白名单用一个未被 respond 引用的 matcher 时明显报错', () => {
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const readme = [
+        '```caddyfile',
+        'example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '}',
+        '```',
+    ].join('\n')
+
+    assert.deepEqual(
+        reverseProxyStructureProblems({ nginxConf, readme }).map(p => p.check),
+        ['deploy/README.md：白名单放行 /sign 与全部探针'],
     )
 })
