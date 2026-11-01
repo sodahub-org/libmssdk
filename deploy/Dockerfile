@@ -50,10 +50,11 @@ VOLUME ["/app/data", "/wine"]
 EXPOSE 8899
 
 # 探的是就绪端点：至少一台 worker 预热完成才 200，零 worker 或正在收尾时 503。
-# 间隔从 30 秒缩到 10 秒，「worker 全没了」要早点被看见；起始宽限期保持 180 秒。
+# 间隔 5 秒必须小于排空窗口（compose 默认 8 秒），否则停止期间可能一次都读不到那个 503；
+# 起始宽限期保持 180 秒。
 # 一个坑：宽限期只在「从未成功过」时保护 —— 预热期间只要有一次 200，宽限当场作废，
 # 所以 /readyz 在没就绪时绝不回 200（轻量探针另走 /livez，不进健康检查）。
-HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=3 \
+HEALTHCHECK --interval=5s --timeout=3s --start-period=180s --retries=3 \
     CMD curl -fsS --max-time 3 http://127.0.0.1:8899/readyz || exit 1
 
 # 必须带 TTY 运行（compose 里 tty: true / docker run -t）：

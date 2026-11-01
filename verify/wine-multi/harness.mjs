@@ -675,36 +675,44 @@ async function main() {
     // 最后才变成连接被拒；没修好时从头就是 refused。Wine 的 Ctrl+C 转发有版本回归风险，
     // 所以这里如实记录形态序列，不折成一个通过/失败去掩盖差异。
     if (typeof driver.observeStop === 'function') {
-        say('[verify] 判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…')
-        // 判据 4 已经杀掉一个进程，它的端口注定是 refused；只观察停之前还活着的那些。
-        const alive = []
-        for (let index = 0; index < driver.hostPorts.length; index += 1) {
-            if ((await driver.pidAlive(index)) === true) alive.push(index)
-        }
-        if (alive.length === 0) {
-            report.observations.stopObservation = {
-                status: 'SKIPPED',
-                reason: '停止前已经没有活着的 serve 进程（前面的判据已把进程杀光），没有可观察的收尾',
+        // 判据 7 只是记录：观察阶段自己出错（容器已经不在、docker exec 失败……）不能把已经
+        // 跑完的 1–6 一起报成「未执行」——就地 catch，记一条 ERROR，结论照常出。
+        try {
+            say('[verify] 判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…')
+            // 判据 4 已经杀掉一个进程，它的端口注定是 refused；只观察停之前还活着的那些。
+            const alive = []
+            for (let index = 0; index < driver.hostPorts.length; index += 1) {
+                if ((await driver.pidAlive(index)) === true) alive.push(index)
             }
-            say('[verify] 判据 7 SKIPPED：停止前没有活着的 serve 进程')
-        } else {
-            const observed = await driver.observeStop({ graceSeconds: 30, indexes: alive })
-            const sawReadable503 = observed.sequences.map(entry => entry.sequence.includes('http-503'))
-            const graceful = sawReadable503.filter(Boolean).length
-            report.observations.stopObservation = {
-                status:
-                    sawReadable503.length > 0 && graceful === sawReadable503.length
-                        ? 'saw-503'
-                        : graceful > 0
-                          ? 'mixed'
-                          : 'refused-only',
-                graceful,
-                processes: sawReadable503.length,
-                alivePorts: observed.sequences.map(entry => entry.port),
-                sequences: observed.sequences.map(entry => `${entry.port}: ${entry.sequence.join(' → ')}`),
-                ...(observed.stopError ? { stopError: observed.stopError } : {}),
+            if (alive.length === 0) {
+                report.observations.stopObservation = {
+                    status: 'SKIPPED',
+                    reason: '停止前已经没有活着的 serve 进程（前面的判据已把进程杀光），没有可观察的收尾',
+                }
+                say('[verify] 判据 7 SKIPPED：停止前没有活着的 serve 进程')
+            } else {
+                const observed = await driver.observeStop({ graceSeconds: 30, indexes: alive })
+                const sawReadable503 = observed.sequences.map(entry => entry.sequence.includes('http-503'))
+                const graceful = sawReadable503.filter(Boolean).length
+                report.observations.stopObservation = {
+                    status:
+                        sawReadable503.length > 0 && graceful === sawReadable503.length
+                            ? 'saw-503'
+                            : graceful > 0
+                              ? 'mixed'
+                              : 'refused-only',
+                    graceful,
+                    processes: sawReadable503.length,
+                    alivePorts: observed.sequences.map(entry => entry.port),
+                    sequences: observed.sequences.map(entry => `${entry.port}: ${entry.sequence.join(' → ')}`),
+                    ...(observed.stopError ? { stopError: observed.stopError } : {}),
+                }
+                say(`[verify] 判据 7 ${report.observations.stopObservation.status}：${report.observations.stopObservation.sequences.join(' | ')}`)
             }
-            say(`[verify] 判据 7 ${report.observations.stopObservation.status}：${report.observations.stopObservation.sequences.join(' | ')}`)
+        } catch (error) {
+            const detail = redactor.sanitize('stop-observation', String(error?.message || error))
+            report.observations.stopObservation = { status: 'ERROR', reason: detail }
+            say(`[verify] 判据 7 ERROR：${detail}`)
         }
     } else {
         report.observations.stopObservation = {

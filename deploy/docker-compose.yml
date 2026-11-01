@@ -26,7 +26,8 @@ services:
       # 反向代理部署时从 deploy/.env 透传；默认 0 = 只认 TCP 对端
       LIBMSSDK_TRUST_PROXY: "${LIBMSSDK_TRUST_PROXY:-0}"
       # 收尾排空窗口：改口 /readyz 之后先保持监听，让探针/编排器读到 503 再停监听。
-      # 0 = 信号一到就停监听（不需要摘流的直连部署）。总时长要小于上面的 stop_grace_period。
+      # 0 = 信号一到就停监听（不需要摘流的直连部署）。窗口必须大于探针间隔
+      # （镜像内 HEALTHCHECK 是 5 秒），总时长要小于上面的 stop_grace_period。
       LIBMSSDK_DRAIN_DELAY_MS: "${LIBMSSDK_DRAIN_DELAY_MS:-8000}"
     volumes:
       # 用户必须提供自己官方客户端内的 bdms.node + metasecml.dll
