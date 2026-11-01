@@ -105,6 +105,15 @@ test('nginx 精确 location：多个名字都收，没关日志的不收', () =>
     assert.deepEqual([...nginxNoLogPaths(conf)].sort(), ['/livez', '/readyz'])
 })
 
+test('nginx 注释掉的 location 不算数：不许拿注释充免日志清单', () => {
+    const conf = [
+        '# location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }',
+        'location / { proxy_pass http://libmssdk; }',
+    ].join('\n')
+
+    assert.deepEqual([...nginxNoLogPaths(conf)], [])
+})
+
 test('README 路径白名单：认 not path 与 path 两种写法', () => {
     const markdown = [
         '```caddyfile',

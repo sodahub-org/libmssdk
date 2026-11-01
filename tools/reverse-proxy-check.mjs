@@ -81,8 +81,10 @@ export function extractCaddyfileBlocks(markdown, source = 'Markdown') {
  */
 export function nginxNoLogPaths(conf) {
     const paths = new Set()
+    // 先剥掉 # 注释：注释里抄的那条 location 不是生效配置，不能拿来充数。
+    const effective = conf.replace(/#.*$/gm, '')
     const locationPattern = /location\s+(=\s*|~\*?\s*|\^~\s*)?([^\s{]+)\s*\{([^}]*)\}/g
-    for (const match of conf.matchAll(locationPattern)) {
+    for (const match of effective.matchAll(locationPattern)) {
         const [, operator = '', spec, body] = match
         if (!/\baccess_log\s+off\b/.test(body)) continue
         const kind = operator.trim()
