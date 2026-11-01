@@ -678,6 +678,8 @@ async function main() {
         // 判据 7 只是记录：观察阶段自己出错（容器已经不在、docker exec 失败……）不能把已经
         // 跑完的 1–6 一起报成「未执行」——就地 catch，记一条 ERROR，结论照常出。
         // 输出放在 try 外：写日志再失败也不该把已经记好的观察覆盖成 ERROR。
+        // 「观察中」先打出去：docker stop 最多要等 30 秒，别让控制台以为卡住了。
+        say('[verify] 判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…')
         let message = ''
         try {
             // 判据 4 已经杀掉一个进程，它的端口注定是 refused；只观察停之前还活着的那些。
@@ -692,7 +694,6 @@ async function main() {
                 }
                 message = '判据 7 SKIPPED：停止前没有活着的 serve 进程'
             } else {
-                message = '判据 7 观察：docker stop 期间 /readyz 的形态（最多 30 秒宽限）…'
                 const observed = await driver.observeStop({ graceSeconds: 30, indexes: alive })
                 const sawReadable503 = observed.sequences.map(entry => entry.sequence.includes('http-503'))
                 const graceful = sawReadable503.filter(Boolean).length

@@ -14,7 +14,8 @@ export LIBMSSDK_BIND=0.0.0.0
 export LIBMSSDK_CLIENT_DIR="${LIBMSSDK_CLIENT_DIR:-/app/client}"
 export LIBMSSDK_STATE_DIR=/app/data
 # 收尾观察要看到「可读的 503」而不是一开始就连接被拒：留一个排空窗口再停监听。
-# 与 deploy/docker-compose.yml 同一个默认值（8 秒 > HEALTHCHECK 的 5 秒 + 2 秒）。
+# 与 deploy/docker-compose.yml 同一个默认值；实际采样是 harness 的 250ms 轮询，
+# 这条只保证进容器时与 compose 一致，不是在复用镜像的 HEALTHCHECK 节奏。
 export LIBMSSDK_DRAIN_DELAY_MS="${LIBMSSDK_DRAIN_DELAY_MS:-8000}"
 
 if [ ! -f "${WINEPREFIX}/system.reg" ]; then
