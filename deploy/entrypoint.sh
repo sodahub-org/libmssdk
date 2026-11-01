@@ -20,8 +20,9 @@ set -m
 # 这里转一手：收到 SIGTERM/SIGINT 后把 SIGINT 交给 wine 的 Unix 进程，Wine 变成 Ctrl+C，
 # Node 侧的 SIGINT 处理器照常先改口 /readyz、按需留排空窗口、再停监听收在飞请求。
 # trap 先于 spawn 安装：否则「子进程已起、trap 还没装」的窗口里来一个 SIGTERM 就会把
-# 入口脚本直接带走，wine 变成孤儿。但 trap 可能在 child 还没赋值时就到，所以用一个标记
-# 把它接住，spawn 完再补发一次；Docker 只发一次 SIGTERM，漏掉这次就是硬杀。
+# 入口脚本直接带走，wine 变成孤儿。信号若抢在 child 就绪之前到达，先记下来；那一刻
+# 还没有任何在飞请求可收，直接结束入口，不赌「补发一次 SIGINT」的时序（Wine 的处理器
+# 还没装好时，这一下会被忽略，然后容器要等满宽限期才被 SIGKILL）。
 child=''
 stop_requested=0
 forwarded=0
@@ -37,8 +38,11 @@ trap forward_stop TERM INT
 
 wine /opt/node-win/node.exe src/index.mjs "${1:-serve}" &
 child=$!
-# trap 抢在 spawn 之前到达时，这次才是真正把 SIGINT 送出去的那一下。
-[ "$stop_requested" = 0 ] || forward_stop
+if [ "$stop_requested" = 1 ]; then
+    echo "[deploy] 停止信号早于服务就绪：没有在飞请求可收，直接结束" >&2
+    kill -9 "$child" 2>/dev/null || true
+    exit 0
+fi
 
 # wait 会被信号打断：trap 跑完后再等一次，直到子进程真的退出。
 # 每次都用 wait 的返回值覆盖 status，正常退出（0）才不会被上一轮的中断码污染。

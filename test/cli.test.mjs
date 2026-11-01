@@ -82,8 +82,8 @@ test(
                 LIBMSSDK_WARMUP_BUDGET_MS: '20000',
                 LIBMSSDK_RATE_LIMIT_MODE: 'off',
                 LIBMSSDK_RATE_LIMIT_MODE_FILE: '',
-                // 排空窗口给足，客户端才追得上「改口」那一下
-                LIBMSSDK_DRAIN_DELAY_MS: '1000',
+                // 排空窗口给足，客户端才追得上「改口」那一下（轮询预算约 2 秒）
+                LIBMSSDK_DRAIN_DELAY_MS: '2000',
                 LIBMSSDK_TOKEN: '',
             },
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -136,7 +136,7 @@ test(
             child.kill('SIGTERM')
             // 信号处理器是异步落地的：在排空窗口内轮询，直到读到 503
             let shutting = 0
-            for (let attempt = 0; attempt < 40; attempt += 1) {
+            for (let attempt = 0; attempt < 100; attempt += 1) {
                 try {
                     shutting = (await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(2000) })).status
                 } catch {

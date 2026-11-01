@@ -114,8 +114,8 @@ worker 数按绑定地址推导，环境变量始终优先：
 
 | 形态 | 停止时发生什么 | 探针看到的 |
 | --- | --- | --- |
-| 前台 Ctrl+C、Linux/macOS 的 `SIGTERM`、nssm 停止 | 进程收到 `SIGINT` / `SIGTERM`，走完整收尾 | 先 503，再连接被拒 |
-| `docker stop` / compose | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 走完整收尾 | 先 503，再连接被拒 |
+| 前台 Ctrl+C、Linux/macOS 的 `SIGTERM`、nssm 停止 | 进程收到 `SIGINT` / `SIGTERM`，走完整收尾 | 先 503（需窗口 > 0），再连接被拒 |
+| `docker stop` / compose | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 走完整收尾 | 先 503（需窗口 > 0），再连接被拒 |
 | `schtasks /end`、`taskkill /F`、超过 `stop_grace_period` 的 `SIGKILL` | 拿不到信号，`TerminateProcess` 硬杀 | 从连接被拒/重置开始 |
 
 表中「先 503」要排空窗口大于 0 才观察得到；默认 0 时改口与停监听几乎同时，探针仍可能只看到连接被拒。

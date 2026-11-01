@@ -142,9 +142,9 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 
 | 形态 | 收尾触发 | 停止期间看到的 |
 | --- | --- | --- |
-| 前台 `Ctrl+C`、Linux/macOS 的 `SIGTERM` | 进程直接收到 `SIGINT` / `SIGTERM` | 先 503，再连接被拒 |
-| Docker（`docker stop` / compose） | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine | 先 503，再连接被拒 |
-| nssm 停止 | 默认先发 Ctrl+C，Node 收到 `SIGINT`；升级到终止进程时同下一行 | 先 503，再连接被拒 |
+| 前台 `Ctrl+C`、Linux/macOS 的 `SIGTERM` | 进程直接收到 `SIGINT` / `SIGTERM` | 先 503（需窗口 > 0），再连接被拒 |
+| Docker（`docker stop` / compose） | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine | 先 503（需窗口 > 0），再连接被拒 |
+| nssm 停止 | 默认先发 Ctrl+C，Node 收到 `SIGINT`；升级到终止进程时同下一行 | 先 503（需窗口 > 0），再连接被拒 |
 | `schtasks /end`、`taskkill /F`、超过宽限的 `SIGKILL` | 拿不到信号（`TerminateProcess`） | 从连接被拒/重置开始 |
 
 表中「先 503」要排空窗口大于 0 才观察得到：默认 `LIBMSSDK_DRAIN_DELAY_MS=0` 时改口与停监听几乎
