@@ -4,8 +4,9 @@
 // - Caddyfile：官方镜像里跑 `caddy validate`，变量齐全时须通过，缺任意一个变量时须失败，
 //   且报错要指到具体行（不是一句 exit code）。
 // - deploy/README.md 里标记为 caddyfile 的代码块（那段路径白名单示例）一起验。
-// - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`；再注入一条非法指令，
-//   确认失败信息能指到行号（证明验的确实是这个文件，而不是镜像自带的默认配置）。
+// - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`（镜像自带的 nginx.conf
+//   就是那个最小 `http {}` 外壳）；再注入一条非法指令，确认失败信息能指到行号（证明验的确实是
+//   这个文件，而不是镜像自带的默认配置）。
 //
 // 需要 docker 与 openssl。镜像 tag 由 CI 传入（CADDY_IMAGE / NGINX_IMAGE），这里不写默认值：
 // 「验过的版本」以 .github/workflows/ci.yml 为准，改 tag 时同步 deploy/README.md 与
@@ -33,29 +34,31 @@ let failures = 0;
 
 /**
  * 取出 Markdown 里 ```caddyfile 围起来的代码块，按出现顺序返回。
+ * 围栏允许带缩进（示例常嵌在编号列表里），内容按围栏自身的缩进剥掉前缀。
  * 未闭合时报错：宁可让 CI 红，也不要静默跳过一段示例。
  */
-export function extractCaddyfileBlocks(markdown) {
+export function extractCaddyfileBlocks(markdown, source = 'Markdown') {
   const blocks = [];
   let fence = null;
   const lines = markdown.split(/\r?\n/);
 
   lines.forEach((line, index) => {
     if (fence === null) {
-      const opening = /^```(.*)$/.exec(line);
-      if (opening) fence = { language: opening[1].trim(), lines: [], line: index + 1 };
+      const opening = /^(\s*)```(.*)$/.exec(line);
+      if (opening) fence = { indent: opening[1].length, language: opening[2].trim(), lines: [], line: index + 1 };
       return;
     }
-    if (/^```\s*$/.test(line)) {
+    if (/^\s*```\s*$/.test(line)) {
       if (fence.language === 'caddyfile') blocks.push(`${fence.lines.join('\n')}\n`);
       fence = null;
       return;
     }
-    fence.lines.push(line);
+    const leading = /^\s*/.exec(line)[0].length;
+    fence.lines.push(line.slice(Math.min(fence.indent, leading)));
   });
 
   if (fence !== null) {
-    throw new Error(`deploy/README.md 第 ${fence.line} 行开始的代码块没有闭合`);
+    throw new Error(`${source} 第 ${fence.line} 行开始的代码块没有闭合`);
   }
   return blocks;
 }
@@ -147,6 +150,8 @@ function main() {
   }
 
   const workDir = mkdtempSync(join(tmpdir(), 'libmssdk-proxy-'));
+  // 各检查彼此独立、没有先后依赖：一项失败不跳过后面的，最后统一按失败数退出，
+  // 这样一次 CI 就能把两份文件的问题都列出来。
   try {
     writeFileSync(join(workDir, 'Caddyfile'), readFileSync(CADDYFILE_PATH, 'utf8'));
 
@@ -168,7 +173,7 @@ function main() {
       );
     }
 
-    const blocks = extractCaddyfileBlocks(readFileSync(README_PATH, 'utf8'));
+    const blocks = extractCaddyfileBlocks(readFileSync(README_PATH, 'utf8'), 'deploy/README.md');
     if (blocks.length === 0) {
       report('deploy/README.md 里的 caddyfile 示例', false, '一个 caddyfile 代码块都没找到');
     }

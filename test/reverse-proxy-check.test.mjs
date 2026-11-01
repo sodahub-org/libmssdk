@@ -40,6 +40,25 @@ test('多个 caddyfile 代码块按出现顺序返回，CRLF 也认', () => {
   ]);
 });
 
+test('列表里缩进的代码块也能取到，并按围栏的缩进剥掉前缀', () => {
+  const markdown = [
+    '8. 想收紧就在反代里只放行签名与探针：',
+    '',
+    '   ```caddyfile',
+    '   signer.example.com {',
+    '       reverse_proxy {',
+    '           to {$LIBMSSDK_UPSTREAM}',
+    '       }',
+    '   }',
+    '   ```',
+    '   后面还有正文。',
+  ].join('\n');
+
+  assert.deepEqual(extractCaddyfileBlocks(markdown), [
+    'signer.example.com {\n    reverse_proxy {\n        to {$LIBMSSDK_UPSTREAM}\n    }\n}\n',
+  ]);
+});
+
 test('没有 caddyfile 代码块时返回空数组', () => {
   const markdown = ['```bash', 'echo hi', '```'].join('\n');
   assert.deepEqual(extractCaddyfileBlocks(markdown), []);
@@ -48,6 +67,10 @@ test('没有 caddyfile 代码块时返回空数组', () => {
 test('代码块没闭合时报错，而不是静默跳过', () => {
   assert.throws(
     () => extractCaddyfileBlocks('```caddyfile\nfoo {\n'),
+    /Markdown 第 1 行开始的代码块没有闭合/,
+  );
+  assert.throws(
+    () => extractCaddyfileBlocks('```caddyfile\nfoo {\n', 'deploy/README.md'),
     /deploy\/README\.md 第 1 行开始的代码块没有闭合/,
   );
 });
