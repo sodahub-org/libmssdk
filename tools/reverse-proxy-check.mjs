@@ -216,7 +216,7 @@ function isUnsupportedPathPattern(pattern) {
 
 /**
  * 支持的 Caddy `path` 语义：字面量精确匹配，或收尾 `*` 的前缀匹配；斜杠敏感、大小写不敏感。
- * 超出这个范围由 `unsupportedPathPattern` 负责判红，这里遇到只按不匹配处理。
+ * 超出这个范围由 `isUnsupportedPathPattern` 负责判红，这里遇到只按不匹配处理。
  */
 export function caddyPathMatches(pattern, path) {
     const wanted = pattern.toLowerCase()
@@ -247,8 +247,14 @@ export function extractCaddyPathRules(markdown, source = 'Markdown') {
         })))
 }
 
+/** Caddyfile 注释里的 log_skip 写法示例：`#   @probes path /livez /readyz /healthz`。 */
+export function caddyLogSkipExamplePaths(caddyfile) {
+    const match = /^\s*#\s*@probes\s+path\s+(.+)$/m.exec(caddyfile)
+    return match ? match[1].trim().split(/\s+/) : null
+}
+
 /**
- * 结构对照固定跑这三项；main 逐项打印 ok/FAIL，npm test 直接看问题清单是否为空。
+ * 结构对照固定跑这几项；main 逐项打印 ok/FAIL，npm test 直接看问题清单是否为空。
  * 名称写在这里而不是散在判断里，新增一项时两边都不会漏。
  *
  * 不把 Caddy 的 log/log_skip 纳入自动检查：log_skip 只收一个 matcher，用命名 matcher
@@ -260,6 +266,7 @@ export const STRUCTURE_CHECKS = Object.freeze({
     whitelist: 'deploy/README.md：白名单放行 /sign 与全部探针',
     statBlocked: 'deploy/README.md：白名单挡住 /stat',
     caddyPatterns: 'deploy/README.md：Caddy 路径写法在可核对范围内',
+    caddyDoc: 'deploy/reverse-proxy/Caddyfile：log_skip 注释示例与探针清单一致',
 })
 
 /**
@@ -268,7 +275,7 @@ export const STRUCTURE_CHECKS = Object.freeze({
  * 只查「覆盖」、不禁止额外条目：多关一条日志（比如部署者顺手把 /stat 也关掉）是收紧，
  * 不该让 CI 红。这样新增别名漏改一处会红，而合理的额外条目不会。
  */
-export function reverseProxyStructureProblems({ nginxConf, readme }) {
+export function reverseProxyStructureProblems({ nginxConf, readme, caddyfile }) {
     const problems = []
 
     const nginxPaths = nginxNoLogPaths(nginxConf)
@@ -278,6 +285,27 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
             check: STRUCTURE_CHECKS.nginxProbes,
             detail: `少了：${missingInNginx.join(' ')}`,
         })
+    }
+
+    // Caddyfile 注释里的 log_skip 示例也是探针清单的一份抄本，同样要跟 PROBE_PATHS 对齐。
+    const docPaths = caddyLogSkipExamplePaths(caddyfile)
+    if (docPaths === null) {
+        problems.push({
+            check: STRUCTURE_CHECKS.caddyDoc,
+            detail: '找不到注释里的 `@probes path …` 示例',
+        })
+    } else {
+        const missingInDoc = PROBE_PATHS.filter(path => !docPaths.includes(path))
+        const extraInDoc = docPaths.filter(path => !PROBE_PATHS.includes(path))
+        if (missingInDoc.length > 0 || extraInDoc.length > 0) {
+            problems.push({
+                check: STRUCTURE_CHECKS.caddyDoc,
+                detail: [
+                    missingInDoc.length > 0 ? `少了：${missingInDoc.join(' ')}` : '',
+                    extraInDoc.length > 0 ? `多了：${extraInDoc.join(' ')}` : '',
+                ].filter(Boolean).join('\n'),
+            })
+        }
     }
 
     const gates = extractCaddyPathRules(readme).filter(rule => rule.hasGate)
@@ -476,6 +504,7 @@ function main() {
         const structure = reverseProxyStructureProblems({
             nginxConf: readFileSync(NGINX_CONF_PATH, 'utf8'),
             readme: readFileSync(README_PATH, 'utf8'),
+            caddyfile: readFileSync(CADDYFILE_PATH, 'utf8'),
         })
         for (const check of Object.values(STRUCTURE_CHECKS)) {
             const problems = structure.filter(item => item.check === check)

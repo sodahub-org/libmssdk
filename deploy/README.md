@@ -120,7 +120,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    那三条路径只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、
    `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
    这三条探针的清单以 `src/endpoints.mjs` 的 `PROBE_PATHS` 为准：`nginx.conf` 的免日志
-   location 与下面白名单都照它写，新增别名时同步那两处（`npm test` 与 CI 的反代校验会核对）。
+   location、下面白名单和 Caddyfile 注释里的 `log_skip` 示例都照它写，新增别名时同步这三处
+   （`npm test` 与 CI 的反代校验会核对）。
    Caddy 默认不写访问日志，三条探针同样不进取数日志；若你自己加了 `log`，要按 Caddyfile
    注释里的写法用命名 matcher 排除它们（`@probes path /livez /readyz /healthz` 加
    `log_skip @probes`，`log_skip` 只收一个参数）。

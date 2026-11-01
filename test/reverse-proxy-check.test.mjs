@@ -13,6 +13,11 @@ import {
     reverseProxyStructureProblems,
 } from '../tools/reverse-proxy-check.mjs'
 
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const readRepo = relative => fs.readFileSync(path.join(repoRoot, relative), 'utf8')
+// 注释里的 log_skip 示例也属于探针清单的一份抄本，默认按仓库里的写法给。
+const CADDYFILE_DOC = '#   @probes path /livez /readyz /healthz\n'
+
 test('只提取 caddyfile 代码块，别的语言原样略过', () => {
     const markdown = [
         '前言',
@@ -189,7 +194,7 @@ test('README 路径规则按代码块隔离：后一段白名单补不了前一�
     assert.equal(pathAllowed(second, '/healthz'), true)
 
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
-    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
+    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /第 1 段/)
     assert.match(problems[0].detail, /\/healthz/)
@@ -214,7 +219,7 @@ test('README 路径规则按 site block 隔离：同一段里的第二个 site �
     assert.equal(pathAllowed(loose, '/healthz'), true)
 
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
-    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
+    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /第 1 段示例第 1 个 site/)
     assert.match(problems[0].detail, /\/healthz/)
@@ -268,7 +273,7 @@ test('README 路径规则：行首注释里的花括号不参与 site block 切�
     assert.equal(pathAllowed(loose, '/healthz'), true)
 
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
-    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
+    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /\/healthz/)
 })
@@ -290,7 +295,7 @@ test('结构对照：多段示例的问题都要报出来，不能只留第一�
         '```',
     ].join('\n')
 
-    const problems = reverseProxyStructureProblems({ nginxConf, readme }).filter(
+    const problems = reverseProxyStructureProblems({ nginxConf, readme, caddyfile: CADDYFILE_DOC }).filter(
         p => p.check === 'deploy/README.md：白名单放行 /sign 与全部探针',
     )
     assert.equal(problems.length, 2)
@@ -315,13 +320,13 @@ test('Caddy path 通配：/stat* 放行 /stat 要判红，/live* 覆盖 /livez �
     ].join('\n')
 
     assert.deepEqual(
-        reverseProxyStructureProblems({ nginxConf, readme: markdown('/sign /livez /readyz /healthz /stat*') })
+        reverseProxyStructureProblems({ nginxConf, readme: markdown('/sign /livez /readyz /healthz /stat*'), caddyfile: CADDYFILE_DOC })
             .map(p => p.check),
         ['deploy/README.md：白名单挡住 /stat'],
         '/stat* 在 Caddy 里放行 /stat，不能按字面量漏判',
     )
     assert.deepEqual(
-        reverseProxyStructureProblems({ nginxConf, readme: markdown('/sign /live* /ready* /health*') }),
+        reverseProxyStructureProblems({ nginxConf, readme: markdown('/sign /live* /ready* /health*'), caddyfile: CADDYFILE_DOC }),
         [],
         '通配覆盖三条探针，不能按字面量误判',
     )
@@ -347,7 +352,7 @@ test('Caddy 路径语法超出建模范围时判红，不能当字面量放过',
         '/sign /livez /readyz /healthz /sign//x',
     ]) {
         assert.deepEqual(
-            reverseProxyStructureProblems({ nginxConf, readme: markdown(allowlist) }).map(p => p.check),
+            reverseProxyStructureProblems({ nginxConf, readme: markdown(allowlist), caddyfile: CADDYFILE_DOC }).map(p => p.check),
             [
                 patternCheck,
                 'deploy/README.md：白名单放行 /sign 与全部探针',
@@ -358,14 +363,44 @@ test('Caddy 路径语法超出建模范围时判红，不能当字面量放过',
     }
 })
 
-test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
-    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-    const read = relative => fs.readFileSync(path.join(repoRoot, relative), 'utf8')
+test('Caddyfile 注释里的 log_skip 示例也跟 PROBE_PATHS 对齐', () => {
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const readme = [
+        '```caddyfile',
+        'example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
 
+    const missing = reverseProxyStructureProblems({
+        nginxConf,
+        readme,
+        caddyfile: '#   @probes path /livez /readyz\n',
+    })
+    assert.deepEqual(missing.map(p => p.check), [
+        'deploy/reverse-proxy/Caddyfile：log_skip 注释示例与探针清单一致',
+    ])
+    assert.match(missing[0].detail, /\/healthz/)
+
+    const extra = reverseProxyStructureProblems({
+        nginxConf,
+        readme,
+        caddyfile: '#   @probes path /livez /readyz /healthz /stat\n',
+    })
+    assert.deepEqual(extra.map(p => p.check), [
+        'deploy/reverse-proxy/Caddyfile：log_skip 注释示例与探针清单一致',
+    ])
+    assert.match(extra[0].detail, /\/stat/)
+})
+
+test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
     assert.deepEqual(
         reverseProxyStructureProblems({
-            nginxConf: read('deploy/reverse-proxy/nginx.conf'),
-            readme: read('deploy/README.md'),
+            nginxConf: readRepo('deploy/reverse-proxy/nginx.conf'),
+            readme: readRepo('deploy/README.md'),
+            caddyfile: readRepo('deploy/reverse-proxy/Caddyfile'),
         }),
         [],
     )
@@ -386,14 +421,14 @@ test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名�
     ].join('\n')
 
     assert.deepEqual(
-        reverseProxyStructureProblems({ nginxConf, readme }),
+        reverseProxyStructureProblems({ nginxConf, readme, caddyfile: CADDYFILE_DOC }),
         [],
         '多关一条 /stat 是收紧，不该失败',
     )
 
     const withStat = readme.replace('/sign /livez', '/sign /stat /livez')
     assert.deepEqual(
-        reverseProxyStructureProblems({ nginxConf, readme: withStat }).map(p => p.check),
+        reverseProxyStructureProblems({ nginxConf, readme: withStat, caddyfile: CADDYFILE_DOC }).map(p => p.check),
         ['deploy/README.md：白名单挡住 /stat'],
     )
 })
@@ -411,7 +446,7 @@ test('结构对照看的是 respond 引用的白名单：@probes 补不出漏掉
         '```',
     ].join('\n')
 
-    const problems = reverseProxyStructureProblems({ nginxConf, readme })
+    const problems = reverseProxyStructureProblems({ nginxConf, readme, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /\/healthz/)
 })
@@ -427,7 +462,7 @@ test('结构对照：白名单用一个未被 respond 引用的 matcher 时明�
     ].join('\n')
 
     assert.deepEqual(
-        reverseProxyStructureProblems({ nginxConf, readme }).map(p => p.check),
+        reverseProxyStructureProblems({ nginxConf, readme, caddyfile: CADDYFILE_DOC }).map(p => p.check),
         ['deploy/README.md：白名单放行 /sign 与全部探针', 'deploy/README.md：白名单挡住 /stat'],
         '没有可核对的示例时两项都不能显示成 ok',
     )

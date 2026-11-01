@@ -36,9 +36,9 @@ export const DEPRECATION_HTTP_VALUE = `@${Math.floor(Date.parse(DEPRECATED_AT) /
  * 探针路径的唯一清单：`/healthz` 只是 `/readyz` 的别名，回的是同一份内容。
  *
  * 反向代理示例里的「探针不进访问日志」也照这份清单写：`deploy/reverse-proxy/nginx.conf`
- * 的那条正则、`deploy/README.md` 收紧示例里的路径白名单，都由
- * `tools/reverse-proxy-check.mjs` 与这里对照。**新增别名时改这一处，再同步那两份配置**；
- * 漏了哪边，`npm test` 与 CI 的反代校验都会红。
+ * 的那条正则、`deploy/README.md` 收紧示例里的路径白名单、`deploy/reverse-proxy/Caddyfile`
+ * 注释里的 log_skip 示例，都由 `tools/reverse-proxy-check.mjs` 与这里对照。
+ * **新增别名时改这一处，再同步那三处**；漏了哪边，`npm test` 与 CI 的反代校验都会红。
  */
 export const LIVEZ_PATH = '/livez'
 export const READINESS_PATHS = Object.freeze(['/readyz', '/healthz'])
