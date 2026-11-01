@@ -339,6 +339,12 @@ test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: ""'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ["LIBMSSDK_BIND: ''"] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: # 留着当备忘'] }),
+        // 「没填」的写法还要多认几种：空引号后面跟注释、后面拖空白，以及 CRLF 文件里那个 \r。
+        // 少认一种，就会把一份本就安全的配置报成「读不进去」，或者回一句「现在是 」。
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND="" # 备忘'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND=""  '] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND=\r'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: ""\r'] }),
         // 判据只看「最后一次声明」，这两种都必须放行：先一行有值、后一行清空（两边都按没填走缺省），
         // 以及先一行是坏形状、后一行改对了（后写的盖掉先写的，脚本没有理由再拦前一行的旧写法）。
         deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND='] }),

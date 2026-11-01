@@ -47,6 +47,7 @@ fi
 # allexport 一直开着 —— 后面 bind_value、is_loopback 这些局部变量会一路被导进 compose 与 curl 的
 # 子进程环境（签名自检那一步拿到的响应也在其中）。读不进去的行交给 1.1 去判，这里只保证一定收尾。
 set -a
+# shellcheck disable=SC1091
 . ./.env || :
 set +a
 
@@ -67,11 +68,14 @@ env_last_declaration() {
     grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*[=:]" .env | tail -n 1
 }
 
-env_declarations_are_empty() {
+env_declaration_is_empty() {
     # $1 = 声明行；分隔符后面若只剩空白、成对的引号、或一段注释，就算「没有真实的值」——
-    # 这与压根没写这一行同义，两边都按缺省走，不需要拦。
+    # 这与压根没写这一行同义，两边都按缺省走，不需要拦。两端空白都要去掉：CRLF 的 .env 里
+    # 那个 \r 也算空白，不去掉就会把 `KEY=` 读成一个有值的行，报错还会说「现在是 」。
     local value=${1#*[=:]}
     value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    value=${value%%[[:space:]]#*}
     case "$value" in
         '' | '""' | "''" | '#'*) return 0 ;;
         *) return 1 ;;
@@ -97,7 +101,7 @@ for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROX
     LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
     last_declaration=$(env_last_declaration "$unread_key" || true)
     [ -n "$last_declaration" ] || continue
-    env_declarations_are_empty "$last_declaration" && continue
+    env_declaration_is_empty "$last_declaration" && continue
     if env_unreadable_separator "$last_declaration" || [ -z "${!unread_key:-}" ]; then
         echo "错误：deploy/.env 里的 ${unread_key} 这一行 bash 读不进去 —— 等号两侧带空格、写成 YAML 式的" >&2
         echo "      ${unread_key}: 值，或者值里有空格却没加引号（如 C:\Program Files\…），都会这样。" >&2
