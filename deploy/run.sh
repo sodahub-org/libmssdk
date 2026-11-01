@@ -55,27 +55,35 @@ set +a
 #      而 compose 用它自己那套 .env 解析，两边读到的不一定是同一份配置。脚本读不动这份文件时不能替它担保。
 #      `LIBMSSDK_BIND: 0.0.0.0` 是同一类的第二种写法：compose 认 YAML 式的冒号（compose-go 的 dotenv
 #      解析把 '=' 和 ':' 都当分隔符），bash 只把 `LIBMSSDK_BIND:` 当成一个命令名 —— 所以分隔符两种都认。
-#      判据只看这一行的形状（bash 读得进去的那一种只有 KEY=值，等号两侧不留空白、也不用冒号），
-#      不看变量现在的值：同一个键写了两行、后一行是坏形状时，bash 会留着前一行的好值继续跑，而
-#      compose 按「后写的盖掉先写的」生效 —— 只看「变量非空」就会把这种配置放过去。
+#      判据不只看变量现在的值：同一个键写了两行、后一行是坏形状时，bash 留着前一行的好值继续跑，
+#      而 compose 那份解析取哪一行不是本脚本能验的事 —— 两边可能对不上，就一律不替它担保。
 #      值为空（KEY=、KEY=""、KEY: ）与没写这一行同义，两边都按缺省走，不算读不进去；注释行不算。
 #      只管脚本自己会读的那几个变量。
+# 两条判据，命中一条就停：
+#   1) 形状读不进去：分隔符是冒号，或等号两侧有空白 —— 这种行 bash 永远当命令跑。
+#   2) 形状看着正常、变量却是空的：值里有空格又没加引号（`LIBMSSDK_CLIENT_DIR=C:\…\Soda Music\3.7.0`
+#      就是这么写的，仓库的 .env.example 第 10 行原本也是这一型），bash 会把这一行拆成
+#      「赋值 + 跑一个命令」，整行作废，而 compose 照旧读出那个值 —— 此时报错不能再说「你没填」。
+env_declares_value() {
+    # $1 = 变量名；文件里这一行有没有一个真实的值（引号包住的算，空值与只剩注释的不算）。
+    local key=$1
+    grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*[=:][[:space:]]*([\"'][^\"']|[^[:space:]\"'#])" .env
+}
+
 env_unreadable_shape() {
-    # $1 = 变量名。三种 bash 读不进去的分隔符形状：冒号、等号前有空白、等号后有空白。
-    # 后面还要跟得到一个真实的值：引号包住的算（连 "#…" 这种以 # 开头的也算），裸着的以 # 开头是注释；
-    # `KEY=`、`KEY=""`、`KEY:` 这些没有值的形状不算 —— 两边都按「没填」走缺省。
+    # $1 = 变量名；判据 1 的三种坏分隔符形状：冒号、等号前有空白、等号后有空白。
+    # 同样要求后面跟得到一个真实的值（`KEY:`、`KEY: ""`、`KEY: # 注释` 都不算）。
     local key=$1
     grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}([[:space:]]*:[[:space:]]*|[[:space:]]+=|[[:space:]]*=[[:space:]]+)[[:space:]]*([\"'][^\"']|[^[:space:]\"'#])" .env
 }
 
 for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
     LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
-    if env_unreadable_shape "$unread_key"; then
-        echo "错误：deploy/.env 里写了 ${unread_key}，但 bash 没能把它读进来 —— 等号两侧带空格、加 export 前缀，" >&2
-        echo "      或者写成 YAML 式的 ${unread_key}: 值，都会这样。" >&2
+    if env_unreadable_shape "$unread_key" || { [ -z "${!unread_key:-}" ] && env_declares_value "$unread_key"; }; then
+        echo "错误：deploy/.env 里的 ${unread_key} 这一行 bash 读不进去 —— 等号两侧带空格、写成 YAML 式的" >&2
+        echo "      ${unread_key}: 值，或者值里有空格却没加引号（如 C:\Program Files\…），都会这样。" >&2
         echo "      compose 有自己的 .env 解析，脚本没法确认它看到的就是真正生效的那份，这条检查也就没法替你把关。" >&2
-        echo "      请把 ${unread_key}=值 写成等号两侧都不带空格的形状。" >&2
-        echo "      （值本身带空格的，用双引号把值包住：${unread_key}=\"…\"，bash 与 compose 都认。）" >&2
+        echo "      请把这一行写成 ${unread_key}=值（等号两侧不留空白）；值里带空格的用双引号包住：${unread_key}=\"…\"。" >&2
         exit 1
     fi
 done

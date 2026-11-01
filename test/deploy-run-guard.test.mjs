@@ -265,30 +265,34 @@ test('.env 里 bash 读不进去的那一行：宁可停，也不按缺省放行
     // 这时按缺省值判，等于对着一份 compose 照旧会用的 0.0.0.0 说「没问题」。走 extra 写裸行，
     // 要复现的正是人手写 .env 时最容易敲出来的那一型（等号两侧空格、export 前缀）。
     const malformed = [
+        // 坏分隔符形状：等号前有空白、等号后有空白、YAML 式冒号（compose-go 的 dotenv 把 '=' 与 ':'
+        // 都当分隔符，bash 只会把 `LIBMSSDK_BIND:` 当一个命令名），以及它们与引号／export 的组合
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
-        deployEnv({ hostname: 'signer.example.com', extra: ['export LIBMSSDK_BIND = 0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND= 0.0.0.0'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND = "0.0.0.0"'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ["LIBMSSDK_BIND = '0.0.0.0'"] }),
-        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: "#0.0.0.0"'] }),
-        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND= 0.0.0.0'] }),
-        // 同一个键写两行、后一行是坏形状：bash 留着前一行的好值继续跑，compose 却按「后写盖先写」生效。
-        // 只看「变量是不是空」就会把这种配置放过去，所以判据只看行形状。
-        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND: 0.0.0.0'] }),
-        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
-        // YAML 式的 `KEY: 值` 是 compose 认、bash 不认的第二种写法：compose-go 的 dotenv 解析把
-        // '=' 和 ':' 都当分隔符，bash 只会把 `LIBMSSDK_BIND:` 当成一个命令名
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: 0.0.0.0'] }),
         deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND:0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND: "#0.0.0.0"'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['export LIBMSSDK_BIND = 0.0.0.0'] }),
         deployEnv({ bind: '0.0.0.0', extra: ['SIGNER_HOSTNAME = signer.example.com'] }),
         deployEnv({ bind: '0.0.0.0', extra: ['LIBMSSDK_TRUST_PROXY = 1'] }),
         deployEnv({ bind: '0.0.0.0', extra: ['LIBMSSDK_TRUST_PROXY: yes'] }),
+        // 同一个键写两行、后一行是坏形状：bash 留着前一行的好值继续跑，脚本只看「变量非空」就会放过去
+        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND: 0.0.0.0'] }),
+        deployEnv({ hostname: 'signer.example.com', bind: '127.0.0.1', extra: ['LIBMSSDK_BIND = 0.0.0.0'] }),
+        // 形状没问题、值里有空格又没加引号：bash 把整行丢掉（那个赋值只在紧随其后的命令的有效范围内
+        // 存在），变量为空 —— 只看形状会漏这一型，所以还配了「变量为空 + 文件确实声明了值」那条判据
+        deployEnv({ extra: ['SIGNER_HOSTNAME=signer example.com', 'LIBMSSDK_BIND=0.0.0.0'] }),
+        deployEnv({ extra: ['LIBMSSDK_BIND=0.0.0.0', 'LIBMSSDK_TRUST_PROXY=1 x'] }),
+        deployEnv({ hostname: 'signer.example.com', extra: ['LIBMSSDK_BIND=0.0.0.0 127.0.0.1'] }),
     ]
     for (const lines of malformed) {
         const { status, stderr, started } = runDeployScript(lines)
 
         assert.equal(status, 1, `读不动的 .env 要停下，不能靠缺省放行：${stderr}`)
         assert.equal(started, false, '不能带着「脚本看不见这个值」继续起容器')
-        assert.match(stderr, /bash 没能把它读进来/, `要说清是这一行读不进去：${stderr}`)
+        assert.match(stderr, /bash 读不进去/, `要说清是这一行读不进去：${stderr}`)
     }
 
     // 逃生舱同判据里的一条：它写坏了却不去认，报错就会叫用户去做他已经做过的事
@@ -296,8 +300,30 @@ test('.env 里 bash 读不进去的那一行：宁可停，也不按缺省放行
         deployEnv({ bind: '0.0.0.0', trustProxy: '1', extra: ['LIBMSSDK_ALLOW_PUBLIC_HTTP = 1'] }),
     )
     assert.equal(hatch.status, 1, '逃生舱写坏时也是拒启动')
-    assert.match(hatch.stderr, /bash 没能把它读进来/, `要说的是这一行读不进去：${hatch.stderr}`)
+    assert.match(hatch.stderr, /bash 读不进去/, `要说的是这一行读不进去：${hatch.stderr}`)
     assert.doesNotMatch(hatch.stderr, /设 LIBMSSDK_ALLOW_PUBLIC_HTTP=1/, `不该反过来教用户设他正设着的东西：${hatch.stderr}`)
+})
+
+test('客户端目录里有空格又没加引号：报「这一行读不进去」，不是「你还没填」', { skip: skipIfNoBash() }, () => {
+    // `.env.example` 之前就是这一型（LIBMSSDK_CLIENT_DIR=C:\Users\<you>\...\Soda Music\3.7.0）。
+    // bash 把整行丢掉，变量为空，于是 1.2 会报「请先设置 LIBMSSDK_CLIENT_DIR」—— 叫用户去做他刚做过的事。
+    // 这条用例盯的就是那个误导：诊断必须是「这一行读不进去」，并且改法是加引号。
+    const { status, stderr } = runDeployScript([
+        'LIBMSSDK_TOKEN=stub-token-not-a-secret',
+        'LIBMSSDK_CLIENT_DIR=C:\\Program Files\\Soda Music\\3.7.0',
+    ])
+
+    assert.equal(status, 1, `读不进去的行要停下：${stderr}`)
+    assert.match(stderr, /bash 读不进去/, `要说清是这一行读不进去：${stderr}`)
+    assert.doesNotMatch(stderr, /请先在 deploy\/\.env 设置 LIBMSSDK_CLIENT_DIR/, `不该说「你还没填」：${stderr}`)
+
+    // 同一个值加上双引号就是合法配置，必须一路走到 compose
+    const quoted = runDeployScript([
+        'LIBMSSDK_TOKEN=stub-token-not-a-secret',
+        'LIBMSSDK_CLIENT_DIR="C:\\Program Files\\Soda Music\\3.7.0"',
+        'LIBMSSDK_BIND=127.0.0.1',
+    ])
+    assert.equal(quoted.status, REACHED_COMPOSE, `带引号的同一路径不该被拦：${quoted.stderr}`)
 })
 
 test('.env 把 LIBMSSDK_BIND 写成空值：与 compose 的 ${LIBMSSDK_BIND:-127.0.0.1} 一样按回环算', { skip: skipIfNoBash() }, () => {
@@ -340,7 +366,7 @@ test('run.sh 首次生成的 .env 写清了这条检查与逃生舱', { skip: sk
     assert.equal(status, 1, 'LIBMSSDK_CLIENT_DIR 还没填，本该停在那一步')
     assert.match(stderr, /LIBMSSDK_CLIENT_DIR/)
     // 1.1 现在排在 CLIENT_DIR 之前，模板本身一旦被判成「读不进去」就会顶掉这条更早的报错 —— 两种停下要分得开
-    assert.doesNotMatch(stderr, /bash 没能把它读进来/, `生成的模板不该被 1.1 误判：${stderr}`)
+    assert.doesNotMatch(stderr, /bash 读不进去/, `生成的模板不该被 1.1 误判：${stderr}`)
     assert.match(envFile, /run\.sh.*拒绝启动/, `模板要说清不收紧的后果：${envFile}`)
     assert.match(envFile, /# LIBMSSDK_ALLOW_PUBLIC_HTTP=0/, `逃生舱要在模板里看得见：${envFile}`)
     assert.match(envFile, /# SIGNER_HOSTNAME=signer\.example\.com/, '反代那一层的变量仍按原样注释着')
