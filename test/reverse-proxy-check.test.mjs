@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { PROBE_PATHS } from '../src/endpoints.mjs'
 import {
     extractCaddyfileBlocks,
     extractCaddyPathRules,
@@ -126,7 +125,7 @@ test('README 路径规则：只认 respond 引用的 matcher，未被引用的�
         '```',
     ].join('\n')
 
-    const rules = extractCaddyPathRules(markdown)
+    const [rules] = extractCaddyPathRules(markdown)
     assert.deepEqual(rules.allowed, new Set(['/sign', '/livez', '/readyz', '/healthz']))
     assert.deepEqual(rules.blocked, new Set(), '@only 与 @probes 没被 respond 引用，不进规则')
 })
@@ -143,9 +142,52 @@ test('README 路径规则：respond 引用的 path matcher 是额外拦截，不
         '```',
     ].join('\n')
 
-    const rules = extractCaddyPathRules(markdown)
+    const [rules] = extractCaddyPathRules(markdown)
     assert.equal(rules.allowed.has('/stat'), false)
     assert.equal(rules.blocked.has('/stat'), true)
+})
+
+test('README 路径规则：respond 200 是正常应答，不算拦截', () => {
+    const markdown = [
+        '```caddyfile',
+        'signer.example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
+        '    @open path /stat',
+        '    respond @open 200',
+        '}',
+        '```',
+    ].join('\n')
+
+    const [rules] = extractCaddyPathRules(markdown)
+    assert.equal(rules.blocked.has('/stat'), false, 'respond 200 不是拦截')
+})
+
+test('README 路径规则按代码块隔离：后一段白名单补不了前一段的漏项', () => {
+    const markdown = [
+        '```caddyfile',
+        'first.example.com {',
+        '    @deny not path /sign /livez /readyz',
+        '    respond @deny 404',
+        '}',
+        '```',
+        '```caddyfile',
+        'second.example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
+
+    const [first, second] = extractCaddyPathRules(markdown)
+    assert.equal(first.allowed.has('/healthz'), false)
+    assert.equal(second.allowed.has('/healthz'), true)
+
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
+    assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
+    assert.match(problems[0].detail, /第 1 段/)
+    assert.match(problems[0].detail, /\/healthz/)
 })
 
 test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
@@ -218,6 +260,7 @@ test('结构对照：白名单用一个未被 respond 引用的 matcher 时明�
 
     assert.deepEqual(
         reverseProxyStructureProblems({ nginxConf, readme }).map(p => p.check),
-        ['deploy/README.md：白名单放行 /sign 与全部探针'],
+        ['deploy/README.md：白名单放行 /sign 与全部探针', 'deploy/README.md：白名单挡住 /stat'],
+        '没有可核对的示例时两项都不能显示成 ok',
     )
 })

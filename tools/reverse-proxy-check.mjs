@@ -107,38 +107,40 @@ export function nginxNoLogPaths(conf) {
 }
 
 /**
- * 从 Markdown 的 caddyfile 示例里读出这一段实际放行/拦截的路径。
+ * 解析一段 caddyfile 里的路径规则。
  *
- * Caddy 的命名 matcher 只在被指令引用的地方生效：出现在某个 matcher 里不等于被放行，
- * 例如为了 `log_skip` 加的 `@probes` 就不该算进白名单。所以只认 `respond @name …`
- * 引用到的 matcher，并按定义形态解释：
+ * Caddy 的命名 matcher 只在被指令引用的地方生效，而且作用域是单个 site block：所以这里
+ * 按代码块分别解析，只认 `respond @name … 4xx` 引用到的 matcher（`respond` 默认 200，2xx/3xx
+ * 是正常应答，不是拦截）。定义形态决定语义：
  *   `@name not path /a /b` → 只放行 /a /b，其余 404（白名单）
  *   `@name path /a /b`     → 额外拦截 /a /b（从白名单里减掉）
  *
- * 没有 `not path` 白名单 matcher 时 `allowed` 为 null：示例不再是一张白名单，无法核对。
+ * 返回 `{ allowed, blocked, hasGate }`；没有 4xx 拦截引用时 `hasGate` 为 false，
+ * 有拦截引用却没有 `not path` 白名单时 `allowed` 为 null（无法核对，交给调用方报错）。
  */
-export function extractCaddyPathRules(markdown, source = 'Markdown') {
+export function parseCaddyPathRules(block) {
     const definitions = new Map()
-    const referenced = []
-    for (const block of extractCaddyfileBlocks(markdown, source)) {
-        for (const raw of block.split('\n')) {
-            const line = raw.replace(/\s+#.*$/, '').trim()
-            const definition = /^(@[\w-]+)\s+(not\s+)?path\s+(.+)$/.exec(line)
-            if (definition) {
-                definitions.set(definition[1], {
-                    negated: Boolean(definition[2]),
-                    paths: definition[3].trim().split(/\s+/),
-                })
-                continue
-            }
-            const reference = /^respond\s+(@[\w-]+)\b/.exec(line)
-            if (reference) referenced.push(reference[1])
+    const denyReferences = []
+    for (const raw of block.split('\n')) {
+        const line = raw.replace(/\s+#.*$/, '').trim()
+        const definition = /^(@[\w-]+)\s+(not\s+)?path\s+(.+)$/.exec(line)
+        if (definition) {
+            definitions.set(definition[1], {
+                negated: Boolean(definition[2]),
+                paths: definition[3].trim().split(/\s+/),
+            })
+            continue
         }
+        const reference = /^respond\s+(@[\w-]+)\b(.*)$/.exec(line)
+        if (!reference) continue
+        const statuses = reference[2].match(/\b\d{3}\b/g)
+        const status = statuses ? Number(statuses.at(-1)) : 200
+        if (status >= 400) denyReferences.push(reference[1])
     }
 
     let allowed = null
     const blocked = new Set()
-    for (const name of referenced) {
+    for (const name of denyReferences) {
         const definition = definitions.get(name)
         if (!definition) continue
         if (!definition.negated) {
@@ -152,7 +154,12 @@ export function extractCaddyPathRules(markdown, source = 'Markdown') {
             : new Set([...allowed].filter(path => paths.has(path)))
     }
     if (allowed !== null) for (const path of blocked) allowed.delete(path)
-    return { allowed, blocked }
+    return { allowed, blocked, hasGate: denyReferences.length > 0 }
+}
+
+/** 按代码块返回每段的路径规则：命名 matcher 不跨 site block，不能并成一张表。 */
+export function extractCaddyPathRules(markdown, source = 'Markdown') {
+    return extractCaddyfileBlocks(markdown, source).map(block => parseCaddyPathRules(block))
 }
 
 /**
@@ -187,29 +194,46 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
         })
     }
 
-    const whitelist = extractCaddyPathRules(readme)
-    if (whitelist.allowed === null) {
+    const gates = extractCaddyPathRules(readme).filter(rule => rule.hasGate)
+    if (gates.length === 0) {
         problems.push({
             check: STRUCTURE_CHECKS.whitelist,
-            detail: '找不到被 `respond` 引用的 `not path` 放行 matcher，没法核对白名单',
+            detail: '找不到被 `respond … 4xx` 引用的 `not path` 放行 matcher，没法核对白名单',
         })
-    } else {
-        const missingInWhitelist = ['/sign', ...PROBE_PATHS].filter(path => !whitelist.allowed.has(path))
+        problems.push({
+            check: STRUCTURE_CHECKS.statBlocked,
+            detail: '没有可核对的白名单示例',
+        })
+    }
+    gates.forEach((gate, index) => {
+        const label = gates.length > 1 ? `第 ${index + 1} 段 caddyfile 示例：` : ''
+        if (gate.allowed === null) {
+            problems.push({
+                check: STRUCTURE_CHECKS.whitelist,
+                detail: `${label}没有 \`not path\` 放行 matcher，没法核对白名单`,
+            })
+            problems.push({
+                check: STRUCTURE_CHECKS.statBlocked,
+                detail: `${label}白名单不可解析，无法核对 /stat 是否被挡住`,
+            })
+            return
+        }
+        const missingInWhitelist = ['/sign', ...PROBE_PATHS].filter(path => !gate.allowed.has(path))
         if (missingInWhitelist.length > 0) {
             problems.push({
                 check: STRUCTURE_CHECKS.whitelist,
-                detail: `少了：${missingInWhitelist.join(' ')}`,
+                detail: `${label}少了：${missingInWhitelist.join(' ')}`,
             })
         }
         // 示例的意图是「只放行签名与探针」：/stat 的计数会暴露使用情况，必须留在被挡的一侧。
         // 放行三条弃用回执是 #21 的事，与这里无关。
-        if (whitelist.allowed.has('/stat')) {
+        if (gate.allowed.has('/stat')) {
             problems.push({
                 check: STRUCTURE_CHECKS.statBlocked,
-                detail: '/stat 会暴露桶数、允许/拒绝与队列深度，该示例不该放行它',
+                detail: `${label}/stat 会暴露桶数、允许/拒绝与队列深度，该示例不该放行它`,
             })
         }
-    }
+    })
 
     return problems
 }
