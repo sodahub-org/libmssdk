@@ -6,8 +6,9 @@
 // - deploy/README.md 里标记为 caddyfile 的代码块（那段路径白名单示例）一起验。
 // - 结构对照：nginx 的免日志 location 必须覆盖 src/endpoints.mjs 的 PROBE_PATHS
 //   （/healthz 是 /readyz 的别名），README 白名单必须放行 /sign 与全部探针、挡住 /stat。
-//   漏一项 nginx -t 不会报（语法是对的），所以单列这道检查。只查「覆盖」、不禁止多关一条日志：
-//   额外收紧（比如 /stat）不该让 CI 红。
+//   漏一项 nginx -t 不会报（语法是对的），所以单列这道检查。nginx 与 README 白名单只查
+//   「覆盖」（额外收紧比如顺手关掉 /stat 不算错）；Caddyfile 注释里的 `@probes path …`
+//   是清单抄本，要求与 PROBE_PATHS 逐项相等。
 // - Caddy 路径写法只在可核对范围内判：字面量与收尾 `*` 前缀匹配。`?`、字符类、占位符、
 //   `%` 转义、`//` 与非收尾 `*` 一律报「超出可核对范围」，绝不按字面量静默放过。
 // - nginx.conf：临时造一份自签证书，按官方镜像的 conf.d 用法跑 `nginx -t`（镜像自带的 nginx.conf
