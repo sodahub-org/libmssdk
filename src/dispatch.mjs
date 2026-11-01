@@ -3,6 +3,8 @@
 // 时间不做成接缝 —— 每个判据都把当前时刻当参数收进来，所以同一组入参永远算出同一个答案，
 // 测试不需要假时钟。真正的墙上时间只由分发器里的定时器读取，那里不含判断。
 
+import net from 'node:net'
+
 /**
  * 排队的请求是否已经超出等待预算。
  *
@@ -69,8 +71,20 @@ export function parsePositiveInt(raw, fallback) {
     return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
-/** 只在回环上转义：这些地址上来的流量一定是本机自己。 */
-const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0:0:0:0:0:0:0:1'])
+const LOOPBACK_HOSTS = new Set(['localhost', '::1', '0:0:0:0:0:0:0:1', '[::1]'])
+
+/**
+ * 绑定地址是不是只有本机能连上。
+ *
+ * 127/8 整段都是回环，不只是 127.0.0.1；空地址在 Node 里等于监听所有网卡，不算回环。
+ * worker 数推导与「没令牌能不能开门」共用这一份判据，避免两边对 127.0.0.2 各说各话。
+ */
+export function isLoopbackBind(host) {
+    const value = String(host || '').trim().toLowerCase()
+    if (!value) return false
+    if (LOOPBACK_HOSTS.has(value)) return true
+    return net.isIPv4(value) && value.startsWith('127.')
+}
 
 /** 非回环时留 25% 的核给别人：这台机器通常还跑着别的东西。 */
 const CORE_SHARE = 0.75
@@ -87,7 +101,7 @@ export function deriveWorkerCount({ bind = '', override = '', parallelism = 1 } 
         return { count: requested, reason: `LIBMSSDK_WORKERS=${requested}` }
     }
     const address = String(bind).trim()
-    if (LOOPBACK.has(address)) {
+    if (isLoopbackBind(address)) {
         return { count: 1, reason: `绑定 ${address} 是回环地址，本机自用开 1 个` }
     }
     // 物理核估算：逻辑核除以 2（超线程）。宁可低估 —— 多开的 worker 每个都要吃一份原生模块的内存。

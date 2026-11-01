@@ -19,6 +19,15 @@ cd deploy
 `/sign` 在没有就绪 worker（例如预热中）或队列满时**立即**回 503 `BUSY`；已入队的请求超过等待预算也回 503。两者都带
 `Retry-After: 1`，不会再回 502。
 
+从本版本起还默认按客户端地址限流：单 IP 持续 0.5 次/秒、突发 12，超限回 **429 `RATE_LIMITED`**，
+`Retry-After` 是精确的下次可请求时刻向上取整（最少 1 秒）。`GET /stat` 能看到活跃桶数、
+允许/拒绝计数、队列深度和 worker 数，地址脱敏，且它自己不过限流、不打访问日志。
+调参期把数据卷里的 `rate-limit.mode` 写成 `log`（只记日志）或 `off`（关闭）即可，约 2 秒生效：
+
+```bash
+docker compose exec libmssdk sh -c 'echo log > /app/data/rate-limit.mode'
+```
+
 常用变体：
 
 ```bash
@@ -53,8 +62,11 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 
 ## 对外暴露（给多台机器/多个人用）
 
-1. `deploy/.env` 里 `LIBMSSDK_BIND=0.0.0.0`（默认就是），并且 `LIBMSSDK_TOKEN`
-   必须是随机长串——**这个 token 等于签名能力**。
+1. `deploy/.env` 里的 `LIBMSSDK_TOKEN` 必须是随机长串——**这个 token 等于签名能力**；
+   没配 token 时服务会拒绝启动。`LIBMSSDK_BIND` 决定宿主机端口绑到哪：挂反代时写
+   `127.0.0.1`（只有本机反代能连）；不挂反代、直接对外时才用 `0.0.0.0`（务必配防火墙）。
+   Docker 部署里这个值只决定宿主机端口绑定，容器内始终监听 `0.0.0.0`。run.sh 生成时
+   默认是 `0.0.0.0`，请按部署形态改。
 2. 前面挂一个反向代理做 HTTPS（Caddy 最省事）：
 
    ```caddyfile
@@ -63,8 +75,22 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    }
    ```
 
-3. 只放行 `/sign`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，公网部署
-   建议在反代里挡掉：
+   反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
+   **同时**做两件事：
+
+   - `deploy/.env` 里 `LIBMSSDK_BIND=127.0.0.1`，让宿主机端口只有本机反代能连；
+   - `deploy/.env` 里 `LIBMSSDK_TRUST_PROXY=1`（compose 会透传进容器），并确认反代会重写
+     `X-Forwarded-For`（Caddy 默认会）。
+
+   只开 `TRUST_PROXY` 而端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
+   `X-Forwarded-For` 自选分桶键，等于没有限流。两个都不开时只认 TCP 对端，所有客户端会
+   共用反代那一个桶（默认 0.5 次/秒、突发 12）。
+
+   其它 `LIBMSSDK_*` 调优变量不会自动进容器（compose 只透传上面列出的几项）；需要时在
+   `docker-compose.yml` 的 `environment:` 里补同名项。
+
+3. 只放行 `/sign`、`/healthz`。`/probe`、`/track/stream` 会拿你的服务去打官方接口，
+   公网部署建议在反代里挡掉；`/stat` 是给部署者的诊断端点（不鉴权），同样不要经公网暴露：
 
    ```caddyfile
    signer.example.com {
@@ -74,6 +100,10 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    }
    ```
 
+   `/stat` 的地址已脱敏，但计数会暴露使用情况。宿主机端口是否对外见步骤 1 的
+   `LIBMSSDK_BIND`。在宿主机上查看：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见
+   `deploy/.env` 的 `LIBMSSDK_PORT`，默认 8899）。
+
 4. 国内主机用 80/443 需要备案，可以先跑非标端口（如 8443）验证。
 
 ## 安全提醒（重要）
@@ -81,8 +111,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 * **调用方会把 cookie 发给签名服务**：签名覆盖「URL + 全部请求头」，cookie 是其中
   之一。多人共用时，服务方（也就是你）能看到使用者的登录态。要么明确告知使用者，
   要么让每个人本地跑一份（同样的镜像，`docker run -t -p 127.0.0.1:8899:8899 …`）。
-* **日志已脱敏**：只记请求形状与签名长度，不落 cookie / X-Helios / X-Medusa。
-* 公开端点等于公开「应用签名能力」，建议 token + 限速 + 不公开地址。
+* **日志已脱敏**：只记请求形状、签名长度与脱敏设备号/IP，不落 cookie / X-Helios / X-Medusa。
+* 公开端点等于公开「应用签名能力」，建议 token + 限速 + 不公开地址。限流默认生效，
+  但阈值故意宽松（共享出口后面几十个人共用一个地址），不能替代 token 与网络隔离。
 
 ## 其他
 

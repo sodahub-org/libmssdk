@@ -15,6 +15,8 @@ const LOCAL_NATIVE_DIR = path.join(PROJECT_ROOT, 'vendor', 'soda-music')
 
 const env = key => (process.env[key] || '').trim()
 
+const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
+
 /** 用户提供的原生模块信息（文件缺失时为 ''，便于回退到客户端目录或显式环境变量）。 */
 export function bundledNative() {
     const modulePath = path.join(LOCAL_NATIVE_DIR, 'bdms.node')
@@ -113,7 +115,8 @@ export function loadConfig() {
         host: env('LIBMSSDK_BIND') || env('BIND') || '127.0.0.1',
         port: Number(env('LIBMSSDK_PORT') || env('PORT') || 8899),
         token: env('LIBMSSDK_TOKEN') || env('QISHUI_SIGNER_TOKEN'),
-        allowAnonymous: (env('LIBMSSDK_ALLOW_ANONYMOUS') || '') === '1',
+        // 只在前置反向代理会重写 X-Forwarded-For 时才打开；默认只认 TCP 对端地址。
+        trustProxy: envFlag('LIBMSSDK_TRUST_PROXY'),
         deviceId: identity.deviceId,
         iid: identity.iid,
         fp: identity.fp,

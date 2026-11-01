@@ -1,9 +1,11 @@
-// 鉴权：一次 Bearer Token 比对。
+// 鉴权：一次 Bearer Token 比对，以及 serve 启动前的「没令牌能不能开门」检查。
 //
 // 抽出来只因为分发器和老路径要用同一份判据 —— 计时安全比较这种东西不该有两份各写一遍。
-// 默认规则仍是「没配令牌就全开放」，那是 #8 要改的（绑定非回环又没配令牌应该拒绝启动），
-// 这一票不动对外行为。
+//
+// 没配令牌时的规则（#8 起）：只有绑定回环地址才放行（本机自用）；绑定非回环地址一律拒绝启动，
+// 而不是静默敞开。命令行的 bridge / selftest / probe 不经过这里，它们本来就不监听。
 import crypto from 'node:crypto'
+import { isLoopbackBind } from './dispatch.mjs'
 
 function timingSafeEqual(a, b) {
     const left = Buffer.from(String(a))
@@ -13,10 +15,28 @@ function timingSafeEqual(a, b) {
 }
 
 export function isAuthorized(request, config) {
-    // 没配令牌时恒为放行：这是老路径今天的规则，原样搬过来（改它会动默认行为）。
-    // #8 才收这条：绑定回环且没配令牌才放行，绑定非回环且没配令牌则拒绝启动。
+    // 没配令牌时恒为放行：默认服务的启动检查（assertServeAuth）已经确认绑定的是回环地址；
+    // 直接构造 createDispatcher / createLegacyHandler 的嵌入用法也会在构造时过同一道检查。
     if (!config.token) return true
     const header = request.headers.authorization || ''
     const token = header.startsWith('Bearer ') ? header.slice(7) : ''
     return token.length > 0 && timingSafeEqual(token, config.token)
+}
+
+/**
+ * 非回环 + 没有令牌 = 拒绝启动，返回给人看的原因；配置没问题返回 null。
+ *
+ * 令牌等于签名能力，对所有人开放等于把自己的出口 IP 和设备画像押上去。这个检查放在
+ * src/serve.mjs 装配之前：别先 fork 一堆 worker 再退出。
+ */
+export function serveAuthError(config = {}) {
+    if (config.token) return null
+    if (isLoopbackBind(config.host)) return null
+    const bind = String(config.host || '').trim() || '(未设置，Node 会监听所有网卡)'
+    return `绑定地址 ${bind} 不是回环地址，但没有设置 LIBMSSDK_TOKEN：拒绝启动。请设置 LIBMSSDK_TOKEN，或改为绑定 127.0.0.1。`
+}
+
+export function assertServeAuth(config = {}) {
+    const message = serveAuthError(config)
+    if (message) throw new Error(message)
 }

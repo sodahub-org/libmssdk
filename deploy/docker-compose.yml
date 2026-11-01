@@ -9,14 +9,17 @@ services:
     # Wine 下的 Node 无法使用管道型 stdio（会 open EBADF），必须分配 TTY
     tty: true
     ports:
-      # 只暴露公网时把 LIBMSSDK_BIND 改成 0.0.0.0（配合防火墙/反代 + token）
+      # 宿主机端口绑定：compose 缺省只绑回环；run.sh 生成的 .env 默认写 0.0.0.0
       - "${LIBMSSDK_BIND:-127.0.0.1}:${LIBMSSDK_PORT:-8899}:8899"
     environment:
       LIBMSSDK_TOKEN: "${LIBMSSDK_TOKEN:?请先在 deploy/.env 里设置 LIBMSSDK_TOKEN（run.sh 会自动生成）}"
       LIBMSSDK_CLIENT_DIR: /client
+      # 容器内始终监听 0.0.0.0；宿主机端口是否对外由上面的 ports 映射（LIBMSSDK_BIND）决定
       LIBMSSDK_BIND: 0.0.0.0
       LIBMSSDK_PORT: 8899
       LIBMSSDK_STATE_DIR: /app/data
+      # 反向代理部署时从 deploy/.env 透传；默认 0 = 只认 TCP 对端
+      LIBMSSDK_TRUST_PROXY: "${LIBMSSDK_TRUST_PROXY:-0}"
     volumes:
       # 用户必须提供自己官方客户端内的 bdms.node + metasecml.dll
       - ${LIBMSSDK_CLIENT_DIR:?请在 deploy/.env 设置 LIBMSSDK_CLIENT_DIR，指向你的汽水客户端版本目录}:/client:ro

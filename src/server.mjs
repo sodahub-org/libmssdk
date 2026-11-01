@@ -2,20 +2,24 @@
 // 过渡期的其余端点，由 src/serve.mjs 挂到同一个监听上：
 //
 //   GET  /healthz          服务状态（预热未完成时 503；#9 再拆成 /livez /readyz）
+//   GET  /stat             诊断计数（活跃桶、允许/拒绝、队列深度、worker 数；IP 脱敏）
 //   GET  /config           非敏感配置摘要（可选鉴权；#9 删除）
 //   POST /probe            真机自检（#9 收成命令行子命令）
 //   POST /track/stream     /probe 的别名（#9 删除）
 //
 // 直接构造 createServer 时仍带 /sign，给本地用例与旧路径用；默认服务不会走到它。
 // #7 的验收是「502 从所有出口消失」，所以这里的失败也走同一张分类表。
+// #8 起 POST 计算端点（/sign、/probe、/track/stream）在鉴权之后过同一个限流器；
+// /stat、/healthz、/config 不过限流计数，也不打访问日志。
 
 import http from 'node:http'
 import { maskDeviceId } from './config.mjs'
-import { isAuthorized } from './auth.mjs'
+import { isAuthorized, assertServeAuth } from './auth.mjs'
 import { errorResponse, normalizeSignRequest, signResponse, ValidationError } from './contract.mjs'
-import { ERROR_KINDS, failureResponse } from './errors.mjs'
+import { ERROR_KINDS, failureResponse, rateLimitedResponse } from './errors.mjs'
 import { buildTrackV2Request, summarizeTrackV2Response } from './probe.mjs'
 import { logError, logEvent } from './log.mjs'
+import { clientKey, maskAddressKey } from './ratelimit.mjs'
 import { requestPathname } from './route.mjs'
 
 function readBody(request, limit) {
@@ -54,8 +58,13 @@ async function postJson(url, body, headers, timeoutMs) {
  *
  * `readiness` 由默认服务注入（至少一台 worker 就绪）；不给时保持老行为（只看模块在不在）。
  * 不提前回 200 很重要：预热期间任何一次 200 都会让编排器的起始宽限期当场作废。
+ *
+ * `rateLimiter` 与 `stats` 同样由默认服务注入：#8 起 POST 计算端点共享同一个限流器，
+ * /stat 读同一份装配状态。直接构造 createServer 的老用例不注入时行为不变。
  */
-export function createLegacyHandler({ config, signer, readiness = null }) {
+export function createLegacyHandler({ config, signer, readiness = null, rateLimiter = null, stats = null }) {
+    // 直接构造老处理器（或 createServer）的嵌入用法也守同一条规则：非回环 + 没令牌不开门。
+    assertServeAuth(config)
     return async (request, response) => {
         const started = Date.now()
         // 只取 pathname，且解析本身永不抛：这条 handler 是 async，抛出去就是 unhandled
@@ -95,6 +104,15 @@ export function createLegacyHandler({ config, signer, readiness = null }) {
                 })
                 return
             }
+            if (pathname === '/stat') {
+                if (request.method !== 'GET' || !stats) {
+                    send(404, errorResponse('not found', 'not_found'))
+                    return
+                }
+                // 诊断端点：不过限流计数、不打访问日志；地址在 statResponse 里已经脱敏。
+                send(200, stats())
+                return
+            }
             if (pathname === '/config') {
                 if (!authorized()) {
                     sendFailure(failureResponse(ERROR_KINDS.UNAUTHORIZED, { message: '缺少或错误的 Bearer Token' }))
@@ -107,6 +125,8 @@ export function createLegacyHandler({ config, signer, readiness = null }) {
                     bundledBdms: config.bundledBdms,
                     clientDir: config.clientDir,
                     deviceId: maskDeviceId(config.deviceId),
+                    // 信任 XFF 时必须只让反代能连到服务端口；把开关本身暴露出来便于核对部署
+                    trustProxy: Boolean(config.trustProxy),
                     // 设备身份：客户端可以照抄这份，保证「签名器 / URL 参数」用同一份设备号
                     // （上游不要求它等于账号登录设备，见 docs/INVESTIGATION-DEVICE-ENTITLEMENT.md）
                     identity: {
@@ -126,6 +146,28 @@ export function createLegacyHandler({ config, signer, readiness = null }) {
             if (!authorized()) {
                 sendFailure(failureResponse(ERROR_KINDS.UNAUTHORIZED, { message: '缺少或错误的 Bearer Token' }))
                 return
+            }
+            if (rateLimiter) {
+                const now = Date.now()
+                const key = clientKey(request, { trustProxy: config.trustProxy })
+                const decision = rateLimiter.check(key, now)
+                if (decision.wouldDeny) {
+                    const failure = rateLimitedResponse({ retryAtMs: decision.retryAtMs, nowMs: now })
+                    logEvent('rate-limited', {
+                        path: pathname,
+                        method: request.method,
+                        ip: maskAddressKey(key),
+                        mode: decision.mode,
+                        retryAfterSeconds: failure.body.retry_after_seconds,
+                    })
+                    if (!decision.allowed) {
+                        // 请求体还没读：排掉剩余字节再关连接，客户端才读得到这个 429。
+                        request.resume()
+                        response.setHeader('Connection', 'close')
+                        sendFailure(failure)
+                        return
+                    }
+                }
             }
 
             // readBody 的 ValidationError（体超限）原样保留；只有 JSON 解析失败才是 400。

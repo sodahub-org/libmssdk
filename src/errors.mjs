@@ -66,6 +66,16 @@ export function classify(kind, { retryAtMs, nowMs } = {}) {
     return { status: entry.status, code: entry.code, retryAfterSeconds }
 }
 
+/** 429 的提示语：分发器与过渡端点共用同一句，避免两边各写一份慢慢漂移。 */
+export const RATE_LIMITED_MESSAGE = '请求过于频繁：这个地址的额度已用完'
+
+/**
+ * 429 的统一回包：等待时长由限流器给出的精确时刻算，头和体由 failureResponse 保证是同一个整数。
+ */
+export function rateLimitedResponse({ retryAtMs, nowMs } = {}) {
+    return failureResponse(ERROR_KINDS.RATE_LIMITED, { message: RATE_LIMITED_MESSAGE, retryAtMs, nowMs })
+}
+
 /**
  * 一次失败的回包：状态码、响应头、响应体。
  *
