@@ -154,8 +154,8 @@ function splitCaddySiteBlocks(text) {
  *   `@name not path /a /b` → 只放行 /a /b，其余 404（白名单）
  *   `@name path /a /b`     → 额外拦截 /a /b（从白名单里减掉）
  *
- * 返回 `{ allowed, blocked, hasGate }`；没有 4xx 拦截引用时 `hasGate` 为 false，
- * 有拦截引用却没有 `not path` 白名单时 `allowed` 为 null（无法核对，交给调用方报错）。
+ * 返回 `{ allowlists, blocked, hasGate }`；没有 4xx 拦截引用时 `hasGate` 为 false，
+ * 有拦截引用却没有 `not path` 白名单时 `allowlists` 为 null（无法核对，交给调用方报错）。
  */
 export function parseCaddyPathRules(block) {
     const definitions = new Map()
@@ -178,7 +178,7 @@ export function parseCaddyPathRules(block) {
         if (status >= 400) denyReferences.push(reference[1])
     }
 
-    let allowed = null
+    const allowlists = []
     const blocked = new Set()
     for (const name of denyReferences) {
         const definition = definitions.get(name)
@@ -187,14 +187,31 @@ export function parseCaddyPathRules(block) {
             for (const path of definition.paths) blocked.add(path)
             continue
         }
-        const paths = new Set(definition.paths)
-        // 多个 not path 白名单是交集：每个都把自己清单以外的路径 404 掉。
-        allowed = allowed === null
-            ? paths
-            : new Set([...allowed].filter(path => paths.has(path)))
+        // 多条 not path 白名单取交集：每个 matcher 都把自己清单以外的路径 404 掉。
+        allowlists.push(new Set(definition.paths))
     }
-    if (allowed !== null) for (const path of blocked) allowed.delete(path)
-    return { allowed, blocked, hasGate: denyReferences.length > 0 }
+    return { allowlists: allowlists.length > 0 ? allowlists : null, blocked, hasGate: denyReferences.length > 0 }
+}
+
+/**
+ * Caddy `path` matcher 的语义：`*` 是通配（首、尾、中间都可以），斜杠敏感，大小写不敏感。
+ * 只实现比较用的最小集合；`%*` 这类保留转义的写法不在示例范围内。
+ */
+export function caddyPathMatches(pattern, path) {
+    const source = pattern
+        .split('*')
+        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('.*')
+    return new RegExp(`^${source}$`, 'i').test(path)
+}
+
+/** 某条路径是否被这份规则放行：命中每一条 `not path` 白名单，且不命中任何拦截模式。 */
+export function pathAllowed(gate, path) {
+    if (gate.allowlists === null) return false
+    const inAllowlists = gate.allowlists.every(list =>
+        [...list].some(pattern => caddyPathMatches(pattern, path)))
+    const hitBlock = [...gate.blocked].some(pattern => caddyPathMatches(pattern, path))
+    return inAllowlists && !hitBlock
 }
 
 /** 按 site block 返回路径规则，并记住它来自第几段代码块、第几个 site，供报错定位。 */
@@ -252,7 +269,7 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
     }
     gates.forEach(gate => {
         const label = gates.length > 1 ? `第 ${gate.fence} 段示例第 ${gate.site} 个 site：` : ''
-        if (gate.allowed === null) {
+        if (gate.allowlists === null) {
             problems.push({
                 check: STRUCTURE_CHECKS.whitelist,
                 detail: `${label}没有 \`not path\` 放行 matcher，没法核对白名单`,
@@ -263,7 +280,8 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
             })
             return
         }
-        const missingInWhitelist = ['/sign', ...PROBE_PATHS].filter(path => !gate.allowed.has(path))
+        // 按 Caddy path matcher 的语义判定，不是字面量查表：`/live*` 放行 /livez，`/stat*` 也放行 /stat。
+        const missingInWhitelist = ['/sign', ...PROBE_PATHS].filter(path => !pathAllowed(gate, path))
         if (missingInWhitelist.length > 0) {
             problems.push({
                 check: STRUCTURE_CHECKS.whitelist,
@@ -272,7 +290,7 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
         }
         // 示例的意图是「只放行签名与探针」：/stat 的计数会暴露使用情况，必须留在被挡的一侧。
         // 放行三条弃用回执是 #21 的事，与这里无关。
-        if (gate.allowed.has('/stat')) {
+        if (pathAllowed(gate, '/stat')) {
             problems.push({
                 check: STRUCTURE_CHECKS.statBlocked,
                 detail: `${label}/stat 会暴露桶数、允许/拒绝与队列深度，该示例不该放行它`,

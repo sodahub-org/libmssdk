@@ -5,9 +5,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+    caddyPathMatches,
     extractCaddyfileBlocks,
     extractCaddyPathRules,
     nginxNoLogPaths,
+    pathAllowed,
     reverseProxyStructureProblems,
 } from '../tools/reverse-proxy-check.mjs'
 
@@ -126,7 +128,10 @@ test('README 路径规则：只认 respond 引用的 matcher，未被引用的�
     ].join('\n')
 
     const [rules] = extractCaddyPathRules(markdown)
-    assert.deepEqual(rules.allowed, new Set(['/sign', '/livez', '/readyz', '/healthz']))
+    for (const path_ of ['/sign', '/livez', '/readyz', '/healthz']) {
+        assert.equal(pathAllowed(rules, path_), true, `${path_} 应被放行`)
+    }
+    assert.equal(pathAllowed(rules, '/stat'), false)
     assert.deepEqual(rules.blocked, new Set(), '@only 与 @probes 没被 respond 引用，不进规则')
 })
 
@@ -143,7 +148,7 @@ test('README 路径规则：respond 引用的 path matcher 是额外拦截，不
     ].join('\n')
 
     const [rules] = extractCaddyPathRules(markdown)
-    assert.equal(rules.allowed.has('/stat'), false)
+    assert.equal(pathAllowed(rules, '/stat'), false)
     assert.equal(rules.blocked.has('/stat'), true)
 })
 
@@ -180,8 +185,8 @@ test('README 路径规则按代码块隔离：后一段白名单补不了前一�
     ].join('\n')
 
     const [first, second] = extractCaddyPathRules(markdown)
-    assert.equal(first.allowed.has('/healthz'), false)
-    assert.equal(second.allowed.has('/healthz'), true)
+    assert.equal(pathAllowed(first, '/healthz'), false)
+    assert.equal(pathAllowed(second, '/healthz'), true)
 
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
     const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
@@ -205,8 +210,8 @@ test('README 路径规则按 site block 隔离：同一段里的第二个 site �
     ].join('\n')
 
     const [strict, loose] = extractCaddyPathRules(markdown)
-    assert.equal(strict.allowed.has('/healthz'), false)
-    assert.equal(loose.allowed.has('/healthz'), true)
+    assert.equal(pathAllowed(strict, '/healthz'), false)
+    assert.equal(pathAllowed(loose, '/healthz'), true)
 
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
     const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
@@ -259,8 +264,8 @@ test('README 路径规则：行首注释里的花括号不参与 site block 切�
     ].join('\n')
 
     const [strict, loose] = extractCaddyPathRules(markdown)
-    assert.equal(strict.allowed.has('/healthz'), false)
-    assert.equal(loose.allowed.has('/healthz'), true)
+    assert.equal(pathAllowed(strict, '/healthz'), false)
+    assert.equal(pathAllowed(loose, '/healthz'), true)
 
     const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
     const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown })
@@ -291,6 +296,35 @@ test('结构对照：多段示例的问题都要报出来，不能只留第一�
     assert.equal(problems.length, 2)
     assert.match(problems[0].detail, /第 1 段示例第 1 个 site/)
     assert.match(problems[1].detail, /第 2 段示例第 1 个 site/)
+})
+
+test('Caddy path 通配：/stat* 放行 /stat 要判红，/live* 覆盖 /livez 要判绿', () => {
+    assert.equal(caddyPathMatches('/stat*', '/stat'), true)
+    assert.equal(caddyPathMatches('/live*', '/livez'), true)
+    assert.equal(caddyPathMatches('/foo/*', '/foo'), false, '斜杠敏感：/foo/* 不匹配 /foo')
+    assert.equal(caddyPathMatches('/Foo', '/foo'), true, '大小写不敏感')
+
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const markdown = allowlist => [
+        '```caddyfile',
+        'example.com {',
+        `    @deny not path ${allowlist}`,
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
+
+    assert.deepEqual(
+        reverseProxyStructureProblems({ nginxConf, readme: markdown('/sign /livez /readyz /healthz /stat*') })
+            .map(p => p.check),
+        ['deploy/README.md：白名单挡住 /stat'],
+        '/stat* 在 Caddy 里放行 /stat，不能按字面量漏判',
+    )
+    assert.deepEqual(
+        reverseProxyStructureProblems({ nginxConf, readme: markdown('/sign /live* /ready* /health*') }),
+        [],
+        '通配覆盖三条探针，不能按字面量误判',
+    )
 })
 
 test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
