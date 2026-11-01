@@ -327,6 +327,35 @@ test('Caddy path 通配：/stat* 放行 /stat 要判红，/live* 覆盖 /livez �
     )
 })
 
+test('Caddy 路径语法超出建模范围时判红，不能当字面量放过', () => {
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const markdown = allowlist => [
+        '```caddyfile',
+        'example.com {',
+        `    @deny not path ${allowlist}`,
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
+    const patternCheck = 'deploy/README.md：Caddy 路径写法在可核对范围内'
+
+    for (const allowlist of [
+        '/sign /livez /readyz /healthz /st[ae]t',
+        '/sign /live?z /readyz /healthz',
+        '/sign /livez /readyz /healthz {$SIGNER_HOSTNAME}/stat',
+        '/sign /livez /readyz /healthz /a*b',
+        '/sign /livez /readyz /healthz /sign//x',
+    ]) {
+        const checks = reverseProxyStructureProblems({ nginxConf, readme: markdown(allowlist) })
+            .map(problem => problem.check)
+        assert.ok(checks.includes(patternCheck), `应判「超出可核对范围」：${allowlist}`)
+        assert.ok(
+            checks.includes('deploy/README.md：白名单挡住 /stat'),
+            `无法核对时 /stat 不能显示成 ok：${allowlist}`,
+        )
+    }
+})
+
 test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处就红', () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
     const read = relative => fs.readFileSync(path.join(repoRoot, relative), 'utf8')

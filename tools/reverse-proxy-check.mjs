@@ -180,9 +180,13 @@ export function parseCaddyPathRules(block) {
 
     const allowlists = []
     const blocked = new Set()
+    const unsupported = new Set()
     for (const name of denyReferences) {
         const definition = definitions.get(name)
         if (!definition) continue
+        for (const path of definition.paths) {
+            if (unsupportedPathPattern(path)) unsupported.add(path)
+        }
         if (!definition.negated) {
             for (const path of definition.paths) blocked.add(path)
             continue
@@ -190,19 +194,42 @@ export function parseCaddyPathRules(block) {
         // 多条 not path 白名单取交集：每个 matcher 都把自己清单以外的路径 404 掉。
         allowlists.push(new Set(definition.paths))
     }
-    return { allowlists: allowlists.length > 0 ? allowlists : null, blocked, hasGate: denyReferences.length > 0 }
+    return {
+        allowlists: allowlists.length > 0 ? allowlists : null,
+        blocked,
+        unsupported: [...unsupported],
+        hasGate: denyReferences.length > 0,
+    }
 }
 
 /**
- * Caddy `path` matcher 的语义：`*` 是通配（首、尾、中间都可以），斜杠敏感，大小写不敏感。
- * 只实现比较用的最小集合；`%*` 这类保留转义的写法不在示例范围内。
+ * 只支持字面量路径与收尾 `*`（前缀匹配）。其余 Caddy 路径语法（`?`、字符类 `[]`、占位符
+ * `{}`、`%` 转义、`//`、中间/开头的 `*`）不建模；遇到就返回原因，让结构对照判红而不是
+ * 当字面量静默放过。
+ */
+function unsupportedPathPattern(pattern) {
+    if (/[?[\]{}%]/.test(pattern) || pattern.includes('//')) {
+        return '只用到了 ? / [] / {} / % / // 这类未建模的路径语法'
+    }
+    const star = pattern.indexOf('*')
+    if (star !== -1 && star !== pattern.length - 1) {
+        return '只建模收尾 * 的前缀匹配，其余通配位置未建模'
+    }
+    return null
+}
+
+/**
+ * 支持的 Caddy `path` 语义：字面量精确匹配，或收尾 `*` 的前缀匹配；斜杠敏感、大小写不敏感。
+ * 超出这个范围由 `unsupportedPathPattern` 负责判红，这里遇到只按不匹配处理。
  */
 export function caddyPathMatches(pattern, path) {
-    const source = pattern
-        .split('*')
-        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('.*')
-    return new RegExp(`^${source}$`, 'i').test(path)
+    const wanted = pattern.toLowerCase()
+    const actual = path.toLowerCase()
+    if (!wanted.includes('*')) return wanted === actual
+    if (wanted.endsWith('*') && !wanted.slice(0, -1).includes('*')) {
+        return actual.startsWith(wanted.slice(0, -1))
+    }
+    return false
 }
 
 /** 某条路径是否被这份规则放行：命中每一条 `not path` 白名单，且不命中任何拦截模式。 */
@@ -236,6 +263,7 @@ export const STRUCTURE_CHECKS = Object.freeze({
     nginxProbes: 'nginx.conf：免访问日志的 location 覆盖全部探针',
     whitelist: 'deploy/README.md：白名单放行 /sign 与全部探针',
     statBlocked: 'deploy/README.md：白名单挡住 /stat',
+    caddyPatterns: 'deploy/README.md：Caddy 路径写法在可核对范围内',
 })
 
 /**
@@ -269,6 +297,22 @@ export function reverseProxyStructureProblems({ nginxConf, readme }) {
     }
     gates.forEach(gate => {
         const label = gates.length > 1 ? `第 ${gate.fence} 段示例第 ${gate.site} 个 site：` : ''
+        if (gate.unsupported.length > 0) {
+            // 能力边界写进返回码：超出可核对范围的写法一律判红，不能按字面量静默放过。
+            problems.push({
+                check: STRUCTURE_CHECKS.caddyPatterns,
+                detail: `${label}超出可核对范围：${gate.unsupported.join(' ')}`,
+            })
+            problems.push({
+                check: STRUCTURE_CHECKS.whitelist,
+                detail: `${label}路径写法超出可核对范围，没法核对白名单`,
+            })
+            problems.push({
+                check: STRUCTURE_CHECKS.statBlocked,
+                detail: `${label}路径写法超出可核对范围，无法核对 /stat 是否被挡住`,
+            })
+            return
+        }
         if (gate.allowlists === null) {
             problems.push({
                 check: STRUCTURE_CHECKS.whitelist,
