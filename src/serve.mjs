@@ -144,7 +144,7 @@ export function startServe({ config, env = process.env, ...options } = {}) {
                 pool: started.pool,
                 markClosing,
                 drainDelayMs,
-                locations: [config.bdmsModule, config.clientDir].filter(Boolean),
+                locations: [config.bdmsModule, config.clientDir],
             }),
     }
 }
