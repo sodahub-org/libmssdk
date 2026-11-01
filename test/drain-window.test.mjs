@@ -14,8 +14,12 @@ import { test } from 'node:test'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = name => fs.readFileSync(path.join(root, name), 'utf8')
 
-/** 默认等待预算；与 src/dispatcher.mjs 的 DEFAULT_WAIT_BUDGET_MS 同一数字。 */
-const WAIT_BUDGET_MS = 5000
+/** 等待预算从源码读，别在测试里抄一份会漂移的数字。 */
+function waitBudgetMs() {
+    const match = /^const DEFAULT_WAIT_BUDGET_MS = (\d+)/m.exec(read('src/dispatcher.mjs'))
+    assert.ok(match, 'src/dispatcher.mjs 里读不到 DEFAULT_WAIT_BUDGET_MS')
+    return Number(match[1])
+}
 
 /** 只认 HEALTHCHECK 那一行：注释里出现的 --interval= 不算配置。 */
 function healthcheckBudgetMs() {
@@ -62,8 +66,8 @@ test('compose 的排空窗口大于健康检查的「间隔 + 超时」', () => 
 
 test('排空窗口 + 等待预算小于 stop_grace_period', () => {
     assert.ok(
-        composeDrainMs() + WAIT_BUDGET_MS < stopGraceMs(),
-        `排空 ${composeDrainMs()}ms + 等待预算 ${WAIT_BUDGET_MS}ms 必须小于停止宽限 ${stopGraceMs()}ms`,
+        composeDrainMs() + waitBudgetMs() < stopGraceMs(),
+        `排空 ${composeDrainMs()}ms + 等待预算 ${waitBudgetMs()}ms 必须小于停止宽限 ${stopGraceMs()}ms`,
     )
 })
 
