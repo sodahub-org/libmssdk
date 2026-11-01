@@ -61,6 +61,8 @@ Wine（Wine 只把 Ctrl+C 语义带进 Windows 进程），所以容器里也能
 - **硬杀不在承诺里**：`kill -9`、`docker rm -f`、超过宽限期的停止，都是「进程直接消失」，观察到的
   是连接被拒/重置。计划任务 `schtasks /end` 同样拿不到信号（`TerminateProcess`），要优雅停止请换
   nssm 或 Windows 服务，见 [`../docs/DEPLOY-WINDOWS.md`](../docs/DEPLOY-WINDOWS.md)。
+- **启动中途被停**：从拉起 wine 到 Node 装好信号处理器之间有一个短窗口。此刻还没有开始监听、也没有
+  在飞请求，落空的停止信号不影响任何已服务的请求，只是容器可能要等满宽限期才被硬杀。
 
 ## 客户端怎么用
 
