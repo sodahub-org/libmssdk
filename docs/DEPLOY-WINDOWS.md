@@ -108,9 +108,12 @@ Windows 裸机用仓库里那份 [`deploy/reverse-proxy/Caddyfile`](../deploy/re
 cd C:\libmssdk\deploy\reverse-proxy
 $env:SIGNER_HOSTNAME   = "signer.example.com"      # 对外域名
 $env:LIBMSSDK_UPSTREAM = "127.0.0.1:8899"          # 上游地址不给默认值
-caddy validate --config .\Caddyfile               # 先验一遍再上
 caddy run --config .\Caddyfile
 ```
+
+这份文件的语法已由 CI 用 `caddy:2.11.7-alpine` 验过（见 `.github/workflows/ci.yml`），你上线要验的是
+域名解析与证书可达。改过文件、或你本机的 Caddy 不是这个版本时，先跑一次
+`caddy validate --config .\Caddyfile` 再启动。
 
 常驻就把这条 `caddy run` 交给 Windows 服务或计划任务 —— 与上面第 3 节里 nssm / schtasks 跑
 `serve` 的两种办法相同（Caddy 没有 `service install` 这个子命令）。

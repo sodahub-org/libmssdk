@@ -35,7 +35,7 @@ src/probe.mjs        track_v2 真机自检与整曲 / 试听判定；src 下唯�
 src/endpoints.mjs    签名之外的 HTTP 面：/livez、/readyz（/healthz 别名）、/stat、旧诊断端点的回执、404
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
 test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例）
-tools/               手动脚本（打真机，不进 npm test，不随包发布）
+tools/               验证与对照脚本：entitlement-matrix 打真机；reverse-proxy-check 供 CI 校验反代配置（纯函数有单测）
 verify/wine-multi/   手动验证：Docker + Wine 下多进程（不进 npm test，也不进 CI）
 docs/CONTRACT.md     服务契约
 docs/UPGRADING.md    升级说明：默认多进程、错误契约与端点收拢的行为变化

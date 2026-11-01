@@ -34,3 +34,19 @@ jobs:
           node-version: '24'
       # 原生模块必须由用户从自己的汽水客户端提供，因此 CI 只跑 mock 离线用例。
       - run: npm test
+
+  reverse-proxy:
+    name: 'deploy / reverse proxy configs'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      # 镜像 tag 固定在这里；改版本时同步 deploy/README.md 与 docs/DEPLOY-WINDOWS.md。
+      # 两个镜像都不含 bdms.node，也不碰真实凭据：Caddy 只验语法，nginx 用临时自签证书跑 -t。
+      - name: validate Caddyfile and nginx.conf
+        env:
+          CADDY_IMAGE: caddy:2.11.7-alpine
+          NGINX_IMAGE: nginx:1.30.6-alpine
+        run: node tools/reverse-proxy-check.mjs
