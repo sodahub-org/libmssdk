@@ -40,7 +40,7 @@ function signRequest(overrides = {}) {
     })
 }
 
-test('抓到的是播放器真实发出的那一份设备身份，形状字段一起留下', () => {
+test('抓到的是 URL 里那份设备身份与形状字段，其余按键名丢掉', () => {
     const record = captureRecord({
         url: TRACK_V2_URL,
         method: 'POST',
