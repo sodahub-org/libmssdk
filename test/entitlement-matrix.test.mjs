@@ -18,7 +18,9 @@ const {
     BASELINE,
     armReadings,
     buildIdentity,
+    buildPcMeRequest,
     buildPcTrackV2Request,
+    captureIdentity,
     encodeSortedParams,
     extractScalars,
     maskTrackId,
@@ -83,7 +85,7 @@ test('时间戳身份与客户端回退一致：iid = device_id + 1，fp = devic
 })
 
 test('每一条 arm 只改它声明过的字段', () => {
-    for (const arm of ARMS.filter(item => !item.request.seo)) {
+    for (const arm of ARMS.filter(item => !item.offBaseline)) {
         const { touched } = diffAgainstBaseline(arm)
         assert.deepEqual(
             touched.slice().sort(),
@@ -161,6 +163,83 @@ test('captured 身份必须显式给设备号，缺了就报错而不是悄悄�
     })
 })
 
+test('免基线的 arm 只有那两条打别端点的，加一条就要在这里说明为什么', () => {
+    assert.deepEqual(
+        ARMS.filter(item => item.offBaseline).map(item => item.name),
+        ['seo-web', 'account-me'],
+        '这两条整条请求都与基线不同，逐字段不变量对它们不适用',
+    )
+})
+
+test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，iid/fp 缺了拿 device_id 顶上', () => {
+    const line = (item, identity) => JSON.stringify({ path: item, identity })
+    const text = [
+        '{"broken":',
+        '',
+        line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }),
+        line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '' }),
+        line('/luna/pc/me', { deviceId: '' }),
+    ].join('\n')
+    assert.deepEqual(captureIdentity(text), { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
+    assert.throws(() => captureIdentity(''), /device_id/)
+    assert.throws(() => captureIdentity('{"at":"2026-11-03T00:00:00.000Z","path":"/x"}'), /device_id/)
+})
+
+test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {
+    const identity = buildIdentity('ts', { now: FIXED_NOW })
+    const spec = buildPcMeRequest({ identity, app: APP_PROFILES.luna330, cookie: 'sessionid_ss=fixed' })
+    const names = spec.headers.map(([name]) => name)
+    assert.ok(!names.includes('content-type'), 'GET 没有请求体，不该带 content-type')
+    assert.ok(!names.includes('x-ss-stub'), '没有 body 就没有 MD5 桩，带了就和客户端不一样')
+    assert.equal(spec.body, '')
+    assert.equal(new URL(spec.url).pathname, '/luna/pc/me')
+    assert.equal(spec.params.device_id, String(FIXED_NOW))
+    const url = new URL(spec.url)
+    assert.equal(decodeURIComponent(url.search.replace(/^\?/, '').split('&')[0]), `ac=wifi`)
+    assert.deepEqual(names, [
+        'user-agent',
+        'x-luna-background-type',
+        'x-luna-is-background-req',
+        'x-luna-is-local-user',
+        'cookie',
+    ])
+    assert.equal(
+        buildPcMeRequest({ identity, app: APP_PROFILES.luna330 }).headers.some(([name]) => name === 'cookie'),
+        false,
+        '不带 cookie 时就不要发这个头',
+    )
+})
+
+const matrixCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'entitlement-matrix.mjs')
+/** 跑一次矩阵命令行。这两条都在参数校验阶段就退出，所以不起网络、不碰真模块。 */
+function runMatrix(...args) {
+    return spawnSync(process.execPath, [matrixCli, ...args], {
+        encoding: 'utf8',
+        env: {
+            ...process.env,
+            LIBMSSDK_COOKIE: 'sessionid_ss=test',
+            LIBMSSDK_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-')),
+        },
+    })
+}
+
+test('抓包件读不到、或里面没有身份：都在碰凭据之前停下，且不说出本机路径', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-capture-'))
+    const missing = path.join(dir, 'nope.jsonl')
+    const noIdentity = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(noIdentity, '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/me","identity":{"deviceId":""}}\n')
+    const argv = ['--track', '123', '--arm', 'captured', '--from-capture']
+
+    const unreadable = runMatrix(...argv, missing)
+    assert.notEqual(unreadable.status, 0)
+    assert.match(unreadable.stderr, /读不到/)
+    assert.ok(!unreadable.stderr.includes(missing), `报错里漏出了抓包件路径：${unreadable.stderr}`)
+
+    const empty = runMatrix(...argv, noIdentity)
+    assert.notEqual(empty.status, 0)
+    assert.match(empty.stderr, /没有带 device_id/)
+})
+
 test('报错信息里的路径整段隐掉，带空格的用户名/目录也算 (#10 日志要能贴进票里)', () => {
     const leaks = [
         'bdms.node 不存在：D:\\Users\\Jean Dupont\\vendor\\soda-music\\bdms.node',
@@ -206,17 +285,8 @@ test('读数不带曲名与完整曲目号，所以日志可以直接贴进票�
     assert.equal(maskTrackId('123'), '123')
 })
 
-test('CLI 直接跑 captured 而不给 --device 时，报错要说清缺什么（不起网络）', () => {
-    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'entitlement-matrix.mjs')
-    const result = spawnSync(process.execPath, [cli, '--track', '123', '--arm', 'captured'], {
-        encoding: 'utf8',
-        env: {
-            ...process.env,
-            LIBMSSDK_COOKIE: 'sessionid_ss=test',
-            LIBMSSDK_DEVICE_ID: '7000000000000001',
-            LIBMSSDK_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-')),
-        },
-    })
+test('CLI 直接跑 captured 而不给身份时，报错要说清缺什么（不起网络）', () => {
+    const result = runMatrix('--track', '123', '--arm', 'captured')
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /--device/)
 })

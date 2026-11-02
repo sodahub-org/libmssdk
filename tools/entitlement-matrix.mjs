@@ -12,7 +12,8 @@
 //   node tools/entitlement-matrix.mjs --track <id> --arm good-ts   # 只跑一条
 //   node tools/entitlement-matrix.mjs --track <id> --repeat 2      # 跑全部（重复关键条）
 //   node tools/entitlement-matrix.mjs --track <id> --arm captured \
-//        --device <抓包 device_id> --iid <install_id> --fp <fp>     # 票里原本要的那一条
+//        --from-capture <抓包件>                                   # 票里原本要的那一条
+//   node tools/entitlement-matrix.mjs --arm account-me             # 账号自己的会员标记
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -25,6 +26,7 @@ import { randomDeviceId } from '../src/identity.mjs'
 import { summarizeTrackV2Response } from '../src/probe.mjs'
 
 const PC_TRACK_V2 = 'https://api.qishui.com/luna/pc/track_v2'
+const PC_ME = 'https://api.qishui.com/luna/pc/me'
 const SEO_TRACK = 'https://beta-luna.douyin.com/luna/h5/seo_track'
 const WEB_UA =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
@@ -82,15 +84,9 @@ export function encodeSortedParams(params) {
         .join('&')
 }
 
-/**
- * 公共查询参数；顺序与取值都照抄客户端，只有 identity / app 两处按 arm 替换。
- *
- * 这份构造与 `src/probe.mjs` 的 `buildTrackV2Request` **故意不合并**：那边是本服务对外
- * 的形状（插桩序、带 x-tt-trace-id），这边要逐字节复刻调用方客户端的形状（字典序、
- * 空格转 `+`）。两者各自被自己的测试守着，合成一份就同时丢掉两个被测对象。
- */
-export function buildPcTrackV2Request({ trackId, identity, app, localUser = '1', cookie = '' }) {
-    const params = {
+/** 公共查询参数；顺序与取值都照抄客户端，只有 identity / app 两处按 arm 替换。 */
+export function buildPcCommonParams(identity, app) {
+    return {
         ac: 'wifi',
         aid: '386088',
         app_name: 'luna_pc',
@@ -113,6 +109,15 @@ export function buildPcTrackV2Request({ trackId, identity, app, localUser = '1',
         version_code: app.version_code,
         version_name: app.version_name,
     }
+}
+
+/**
+ * 这份构造与 `src/probe.mjs` 的 `buildTrackV2Request` **故意不合并**：那边是本服务对外
+ * 的形状（插桩序、带 x-tt-trace-id），这边要逐字节复刻调用方客户端的形状（字典序、
+ * 空格转 `+`）。两者各自被自己的测试守着，合成一份就同时丢掉两个被测对象。
+ */
+export function buildPcTrackV2Request({ trackId, identity, app, localUser = '1', cookie = '' }) {
+    const params = buildPcCommonParams(identity, app)
     const body = JSON.stringify({
         track_id: String(trackId),
         media_type: 'track',
@@ -130,6 +135,23 @@ export function buildPcTrackV2Request({ trackId, identity, app, localUser = '1',
     ]
     if (cookie) headers.push(['cookie', cookie])
     return { url: `${PC_TRACK_V2}?${encodeSortedParams(params)}`, params, body, headers }
+}
+
+/**
+ * `GET /luna/pc/me`：公共参数与 `track_v2` 同一份，但没有请求体，所以客户端这里
+ * 既不发 `content-type` 也不发 `x-ss-stub`（照 libresoda `pc_request_options` 的形状）。
+ * 这条只用来读账号自身的会员标记，不判任何曲目 —— 曲目授权是另一条 arm 的事。
+ */
+export function buildPcMeRequest({ identity, app, cookie = '' }) {
+    const params = buildPcCommonParams(identity, app)
+    const headers = [
+        ['user-agent', app.user_agent],
+        ['x-luna-background-type', 'foreground'],
+        ['x-luna-is-background-req', '0'],
+        ['x-luna-is-local-user', '1'],
+    ]
+    if (cookie) headers.push(['cookie', cookie])
+    return { url: `${PC_ME}?${encodeSortedParams(params)}`, params, body: '', headers }
 }
 
 /**
@@ -194,8 +216,8 @@ export const ARMS = [
     },
     {
         name: 'captured',
-        expect: '票里原本要求的那一条：抓包来的真实设备身份（需要 --device/--iid/--fp）',
-        changes: '身份=外部传入的那一份（其余与 good-ts 相同）',
+        expect: '票里原本要求的那一条：抓包来的真实设备身份（--from-capture 或 --device/--iid/--fp）',
+        changes: '身份=抓包里那份真实设备号（其余与 good-ts 相同）',
         touches: ['query.device_id', 'query.iid', 'query.fp'],
         request: { identity: 'captured', app: APP_PROFILES.luna330, localUser: '1', useCookie: true },
     },
@@ -225,7 +247,18 @@ export const ARMS = [
         expect: '免签名基线：曲目本身多长、试听多长、是否会员曲',
         changes: '不走签名，GET h5/seo_track',
         touches: ['(整条请求都不同：免签名的网页接口)'],
+        offBaseline: true,
         request: { seo: true },
+    },
+    {
+        name: 'account-me',
+        // 「试听级到底是账号没权益还是曲目没授权」这条推断需要一个账号侧读数才能收口：
+        // /luna/pc/me 直接回本账号的会员标记，不参与曲目判定，也不出签名。
+        expect: '账号自身的会员标记（is_vip 的布尔读数；档位是字符串，读数一律不收），不判任何曲目',
+        changes: '不走签名，GET /luna/pc/me（带 Cookie，身份仍用时间戳）',
+        touches: ['(整条请求都不同：账号档位端点)'],
+        offBaseline: true,
+        request: { me: true, identity: 'ts', app: APP_PROFILES.luna330, useCookie: true },
     },
 ]
 
@@ -255,6 +288,36 @@ export function extractScalars(rawBody) {
     }
     walk(payload, [])
     return picked
+}
+
+function safeParse(text) {
+    try {
+        return JSON.parse(String(text || ''))
+    } catch {
+        return null
+    }
+}
+
+/**
+ * 抓包件（`tools/signer-tee.mjs` 产的 JSONL，0600，只在本机）里取最后一份带 device_id 的身份。
+ * 设备号走文件而不是命令行参数：argv 会进 shell 历史与进程列表，那是本机里唯一一处
+ * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错。
+ */
+export function captureIdentity(text) {
+    let latest = null
+    for (const line of String(text || '').split(/\r?\n/)) {
+        if (!line.trim()) continue
+        const record = safeParse(line)
+        const identity = record && record.identity
+        if (identity && String(identity.deviceId || '').trim()) latest = identity
+    }
+    if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
+    const trim = value => String(value || '').trim()
+    return {
+        deviceId: trim(latest.deviceId),
+        iid: trim(latest.iid) || trim(latest.deviceId),
+        fp: trim(latest.fp) || trim(latest.deviceId),
+    }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */
@@ -322,6 +385,28 @@ export async function runArm(arm, context) {
         return rowFrom(base, response, await response.text(), context)
     }
 
+    if (arm.request.me) {
+        const spec = buildPcMeRequest({
+            identity: buildIdentity(arm.request.identity, { now: Date.now() }),
+            app: arm.request.app,
+            cookie: arm.request.useCookie ? context.cookie : '',
+        })
+        const response = await fetch(spec.url, { headers: spec.headers, signal: AbortSignal.timeout(context.timeoutMs) })
+        const text = await response.text()
+        // 读数只收标量：`my_info.id`、昵称、头像地址都是个人标识，extractScalars 的
+        // 「字符串一律不收 + 键名黑名单」本来就把它们挡在外面。
+        const statusCode = Number((safeParse(text) || {}).status_code)
+        return {
+            ...base,
+            http: response.status,
+            bodyBytes: text.length,
+            ok: response.status === 200 && statusCode === 0,
+            track: null,
+            deviceId: maskDeviceId(spec.params.device_id),
+            ...extractScalars(text),
+        }
+    }
+
     const seeds = {
         service: context.service,
         captured: context.captured,
@@ -366,17 +451,37 @@ async function main() {
     }
     const arms = only ? ARMS.filter(item => item.name === only) : ARMS
     if (!arms.length) throw new Error(`未知 arm：${only}（可选：${ARMS.map(item => item.name).join(' / ')}）`)
-    // 先把参数验完，再碰任何凭据与网络：缺 --device 时要么跳过 captured（跑整份矩阵），
+    // 先把参数验完，再碰任何凭据与网络：缺身份时要么跳过 captured（跑整份矩阵），
     // 要么直接报错（明确点名了它），不存在「跑到一半才炸」那条路径。
+    const captureFile = argValue('from-capture')
+    let capturedFromFile = null
+    if (captureFile) {
+        let text = ''
+        try {
+            text = fs.readFileSync(captureFile, 'utf8')
+        } catch {
+            // 不把路径写进错误里：这份日志是要被人贴进票里的，而路径里就带着本机用户名。
+            throw new Error('--from-capture 指定的抓包件读不到（路径不打印）')
+        }
+        capturedFromFile = captureIdentity(text)
+    }
+    const capturedIdentity = {
+        deviceId: argValue('device') || (capturedFromFile || {}).deviceId || '',
+        iid: argValue('iid') || (capturedFromFile || {}).iid || '',
+        fp: argValue('fp') || (capturedFromFile || {}).fp || '',
+    }
     const wantsCaptured = arms.some(item => item.name === 'captured')
-    const missingDevice = wantsCaptured && !argValue('device')
-    if (missingDevice && only) throw new Error('captured 需要 --device <抓包 device_id>（可再给 --iid / --fp）')
+    const missingDevice = wantsCaptured && !capturedIdentity.deviceId
+    if (missingDevice && only) throw new Error('captured 需要 --from-capture <抓包件>，或直接给 --device <抓包 device_id>')
     const runnable = missingDevice && !only ? arms.filter(item => item.name !== 'captured') : arms
-    if (missingDevice && !only) process.stderr.write('跳过 captured：这条需要 --device <抓包 device_id>（其余 arm 照跑）\n')
-    if (argValue('device') && !argValue('iid')) {
+    if (missingDevice && !only) {
+        process.stderr.write('跳过 captured：这条需要 --from-capture <抓包件> 或 --device（其余 arm 照跑）\n')
+    }
+    if (capturedIdentity.deviceId && !argValue('iid') && !capturedFromFile) {
         process.stderr.write('注意：captured 没给 --iid / --fp，会拿 device_id 顶上——那不是一份完整的抓包身份\n')
     }
-    if (!trackId) throw new Error('需要 --track <track_id>（或 --list）')
+    // account-me 打的是账号自己的档位端点，与曲目无关，所以它不需要 --track。
+    if (!trackId && runnable.some(item => !item.request.me)) throw new Error('需要 --track <track_id>（或 --list）')
 
     const config = loadConfig()
     const explicitSource = argValue('cookie-from')
@@ -395,7 +500,7 @@ async function main() {
         cookie,
         timeoutMs: config.requestTimeoutMs,
         service: { deviceId: config.deviceId, iid: config.iid, fp: config.fp },
-        captured: { deviceId: argValue('device'), iid: argValue('iid'), fp: argValue('fp') },
+        captured: capturedIdentity,
         signer,
     }
 
@@ -421,6 +526,7 @@ async function main() {
         trackSeconds: row.trackDurationSeconds ?? null,
         streamSeconds: row.streamDurationSeconds ?? null,
         gears: (row.gears || []).map(gear => gear.quality || gear.gear).join(','),
+        isVip: row['my_info.is_vip'] ?? null,
     }))
     process.stdout.write(`${JSON.stringify({ verdict }, null, 2)}\n`)
     if (!rows.some(row => row.ok)) process.exitCode = 1
