@@ -11,7 +11,8 @@ cd deploy
 ./run.sh
 ```
 
-脚本会：检查 `LIBMSSDK_CLIENT_DIR` → 生成 `deploy/.env`（随机 token）→ 构建镜像 →
+脚本会：生成 `deploy/.env`（随机 token）→ 确认这份 `.env` 里脚本要用的每一行 bash 都读得进去 →
+检查 `LIBMSSDK_CLIENT_DIR` → 检查「要挂反向代理却把宿主明文口开着」这一组合（第 2 步）→ 构建镜像 →
 启动容器 → 等健康检查通过 → 打印客户端接入方式。首次构建要装 Wine，约 3–5 分钟。
 
 容器默认绑定 `0.0.0.0`，所以会按物理核的 75% 拉起多个 worker；启动日志的
@@ -92,6 +93,23 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    `run.sh` 首次生成的默认是 `0.0.0.0`，请按部署形态改。不收的后果：任何客户端都能绕过 443 直接打
    `http://<host>:8899/sign`，Bearer token 与请求里的 cookie 全走明文 —— 挂上反代之后人容易以为
    自己已经在 HTTPS 后面。这一条同时是下面第 3 步（按真实客户端限流）的前提。
+   **这一步不再靠人读注释完成了**：`run.sh` 在构建与起容器之前自己检查 —— `.env` 里填了
+   `SIGNER_HOSTNAME`，或打开了 `LIBMSSDK_TRUST_PROXY`（取值集合与服务里 `envFlag` 一致：`1`/`true`/
+   `yes`/`on`，不分大小写；两者都等于声明「前面挂了同机反代」），而 `LIBMSSDK_BIND` 不是回环
+   （`127/8` 的点分四段、`::1` 与它的方括号／全写形式、`localhost`）时直接退出，并点名触发的变量与改法。
+   判据落在部署脚本侧而不是服务里：容器内的进程永远看到 `0.0.0.0`，在服务里判会把推荐的 Docker
+   形态误判成违规。`.env` 里某一行如果 bash 压根读不进去，`run.sh` 也在起容器之前停下 —— 四种写法：
+   等号前有空白（`LIBMSSDK_BIND = 0.0.0.0`，加 `export` 前缀同理）、等号后有空白、YAML 式的
+   `LIBMSSDK_BIND: 0.0.0.0`（冒号那种 compose 认、bash 不认），以及形状没错但值里有空格却没加引号
+   （`LIBMSSDK_CLIENT_DIR=C:\Program Files\…` 就是这么被 bash 整行丢掉的）。脚本读不懂这份配置时不替
+   它担保 —— 带空格的值用双引号包住即可。这条管的是 `run.sh` 自己要用到的那几个变量，不只
+   `LIBMSSDK_BIND`，且只看同一个键最后一次声明的那一行。
+   逃生舱 `LIBMSSDK_ALLOW_PUBLIC_HTTP=1` 只适用于一种情形：**你故意同时保留对外的
+   明文入口，且它在内网防火墙后面**。设了它 `run.sh` 放行，但在 stderr 留一句提醒 —— token 等价于
+   签名能力，它与 cookie 走的都是明文。绕过 `run.sh` 直接敲 `docker compose -f ... -f ...` 的人
+   不受这条检查保护，第 2 步本身照旧要自己做。
+   （这条检查由 `npm test` 里的 [`../test/deploy-run-guard.test.mjs`](../test/deploy-run-guard.test.mjs)
+   跑真实 `run.sh` 盯着。）
 3. 反向代理会改掉 TCP 对端地址，所有客户端会被算成同一个桶。要让限流按真实客户端分桶，
    **同时**做两件事：
 
@@ -100,8 +118,9 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
      `X-Forwarded-For`（Caddy 与 nginx 的例子都会）。
 
    只开 `TRUST_PROXY` 而宿主端口对外可达时，调用方可以绕过反代直连端口、自带伪造的
-   `X-Forwarded-For` 自选分桶键，等于没有限流。两个都不开时只认 TCP 对端，所有客户端会共用反代
-   那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
+   `X-Forwarded-For` 自选分桶键，等于没有限流。这一条现在同样由 `run.sh` 拦住：`LIBMSSDK_TRUST_PROXY`
+   打开（`1`/`true`/`yes`/`on`）配上非回环的 `LIBMSSDK_BIND` 直接拒启动（放行条件与逃生舱见第 2 步）。
+   两个都不开时只认 TCP 对端，所有客户端会共用反代那一个桶（默认 0.5 次/秒、突发 12，阈值故意宽松）。
    其它 `LIBMSSDK_*` 调优变量不会自动进容器（compose 只透传上面列出的几项）；需要时在
    `docker-compose.yml` 的 `environment:` 里补同名项。
 4. 前面挂一个反向代理做 HTTPS。仓库里给的是能直接用的配置，不用自己拼：
@@ -120,6 +139,8 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
    CI 验的是**语法**；你上线要验的是域名解析与证书可达。改过文件，或你本机装的 Caddy / nginx 不是这两个
    版本时，仍要自己跑一次 `caddy validate` / `nginx -t`。本地复跑需要 Docker 与 openssl，命令见
    [`../tools/reverse-proxy-check.mjs`](../tools/reverse-proxy-check.mjs) 开头的说明。
+   本文件里标成 `caddyfile` 的代码块（第 8 步那段路径白名单）也在同一个作业里：脚本取出每一段、当
+   独立 Caddyfile 跑一遍 `caddy validate`，所以改那段同样要过这一关。
 
    域名能解析到这台机器时 Caddy 自己签、自己续，你不用碰证书文件。本仓库不自签证书那套教程
    （起一个本地 CA 再让每个客户端导入根证书）：客户端要么导入那个 CA、要么跳过校验（等于放弃
@@ -140,18 +161,49 @@ export QISHUI_SIGNER_TOKEN=<上面生成的 token>
 8. 端点收拢之后反代里没什么必须挡的了：`/probe`、`/track/stream`、`/config` 已经不在 HTTP 上，
    那三条路径只回一句「没有了 + 改用哪个命令」，不签名也不出网。`/sign` 之外只剩 `/livez`、
    `/readyz`（`/healthz` 是别名）三个探针，加上部署者用的 `GET /stat`。
+   这三条探针的清单以 `src/endpoints.mjs` 的 `PROBE_PATHS` 为准：`nginx.conf` 的免日志
+   location、下面白名单和 Caddyfile 注释里的 `log_skip` 示例都照它写，新增别名时同步这三处
+   （`npm test` 与 CI 的反代校验会核对）。
+   Caddy 默认不写访问日志，三条探针同样不进取数日志；若你自己加了 `log`，要按 Caddyfile
+   注释里的写法用命名 matcher 排除它们（`@probes path …` 加 `log_skip @probes`，`log_skip`
+   只收一个参数）。
    `/stat` 不鉴权、地址已脱敏，但**计数会暴露使用情况**（桶数、允许/拒绝、队列深度），公网部署
-   建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名与探针：
+   建议别让它经公网可达。想连这个一起收紧，就在反代里只放行签名、三个探针与三条已删端点的回执：
 
    ```caddyfile
    signer.example.com {
-       @deny not path /sign /livez /readyz /healthz
+       @deny not path /sign /livez /readyz /healthz /probe /probe/ /track/stream /track/stream/ /config /config/
        respond @deny 404
        reverse_proxy {
            to {$LIBMSSDK_UPSTREAM}
        }
    }
    ```
+
+   放这三条是为了保住回执，不是放行能力：它们只回一句固定的「没有了 + 改用哪个命令」，不签名、
+   不出网、也不看凭据，`/stat` 仍留在被挡的一侧。把它们挡在代理层就成了裸 404 —— 没有
+   `code: "endpoint_removed"`、没有 `replacement`，`/probe` 与 `/track/stream` 还会少掉
+   `Deprecation` / `Sunset` 两个头（`/config` 本就没有这一对，它不是弃用期而是当场删除），
+   正好毁掉 `../docs/UPGRADING.md` 里那段过渡。
+
+   三条回执各写了带尾斜杠与不带尾斜杠两种，是因为 Caddy 的 `path` 是整段精确匹配、大小写不敏感，
+   尾斜杠也算数（文档原话 `Slashes are significant`），所以 `/probe` 不覆盖 `/probe/`；而服务侧
+   把 `/probe/` 认成同一条路由（`../src/endpoints.mjs`）。手敲的 curl 很容易多带一个尾斜杠，漏掉
+   就又是一个裸 404。探针路径由编排器按固定值打，通常不带尾斜杠；你的探针若会带，照这个办法补
+   一条 `/livez/` 之类。`/sign` 不用补：服务侧只认 `/sign`，`/sign/` 本来就是 404。
+
+   nginx 那份示例（[`reverse-proxy/nginx.conf`](reverse-proxy/nginx.conf)）**不含路径白名单**：
+   它的 `location /` 把全部路径都转给上游，三条回执照样到得了服务、由服务自己回答，但 `/stat`
+   也因此经公网可达。随仓库的 `reverse-proxy/Caddyfile` 同样没有白名单 —— 默认两份都是全量转发，
+   上面那段是可选收紧。要跟上面这样收紧，得把兜底的 `location /` 换成 `return 404`，再给清单里
+   每条路径写一条精确匹配的 `location`（`= /probe` 与 `= /probe/` 各一条，其余同理）—— 只加
+   `location` 而不动那个兜底块等于什么也没挡。那几条 `proxy_set_header` 现在只写在 `location /`
+   里，新的 location 继承不到（nginx 只在某一层一条都没写时才整组继承上一层的），要提到 `server`
+   一级或逐条重写；少了 `X-Forwarded-For`，开了 `LIBMSSDK_TRUST_PROXY=1` 之后所有客户端会缩成
+   一个限流桶（见第 3 步与 `nginx.conf` 里的注释）。现成的 `= /livez` / `= /readyz` 也没带这几行，
+   但限流只覆盖 `/sign`，探针不进取数桶，所以现在这样没问题。
+   改完自己跑一次 `nginx -t`；仓库不随附这份收紧版，多出来的白名单同样得有人维护，而现成的这份
+   是 CI 按原样验过的。
 
    在宿主机上直接看诊断：`curl http://127.0.0.1:<宿主机端口>/stat`（端口见 `deploy/.env` 的
    `LIBMSSDK_PORT`，默认 8899）。

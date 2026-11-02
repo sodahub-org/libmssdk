@@ -40,6 +40,13 @@
 		max_size 1MB
 	}
 
+	# 访问日志：Caddy 默认一条都不写，所以三条探针（/livez、/readyz 与别名 /healthz）本来就不进
+	# 取数日志 —— 与 nginx 示例里那三个名字的 access_log off 是同一个行为。要在这里加 log，就得
+	# 同时跳过它们，否则高频探针会连日志一起打满。正确写法是命名 matcher（log_skip 只收一个参数）：
+	#   @probes path /livez /readyz /healthz
+	#   log_skip @probes
+	# 探针清单以 src/endpoints.mjs 的 PROBE_PATHS 为准。
+
 	# X-Forwarded-For 与 X-Forwarded-Proto 是 Caddy 默认就会加的，不用手写。
 	# 注意：签名服务默认只认 TCP 对端地址。要让它按 XFF 的最右一跳分桶，得设 LIBMSSDK_TRUST_PROXY=1，
 	# 而那时宿主端口必须只对这台反代开放（绑 127.0.0.1）—— 否则调用方绕过反代直连、自己伪造 XFF，

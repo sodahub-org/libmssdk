@@ -15,7 +15,9 @@ const LOCAL_NATIVE_DIR = path.join(PROJECT_ROOT, 'vendor', 'soda-music')
 
 const env = key => (process.env[key] || '').trim()
 
-const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
+// 导出给用例对照：deploy/run.sh 里的「TRUST_PROXY 打开了」必须与这里同一口径（见
+// test/deploy-run-guard.test.mjs），这张表改动时两边要一起动。
+export const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
 
 /** 非负整数环境变量：空串与写错（abc、-1）都回退默认，而不是把 NaN 带进收尾计时。 */
 const envInt = (key, fallback) => {
