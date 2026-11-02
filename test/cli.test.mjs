@@ -82,8 +82,9 @@ test(
                 LIBMSSDK_WARMUP_BUDGET_MS: '20000',
                 LIBMSSDK_RATE_LIMIT_MODE: 'off',
                 LIBMSSDK_RATE_LIMIT_MODE_FILE: '',
-                // 排空窗口给足，客户端才追得上「改口」那一下（轮询预算约 2 秒）
-                LIBMSSDK_DRAIN_DELAY_MS: '2000',
+                // 排空窗口给足，客户端才追得上「改口」那一下（轮询预算约 2 秒；
+                // 高负载 runner 上信号落地 + 首次 fetch 会吃掉一截，窗口留到 5 秒）
+                LIBMSSDK_DRAIN_DELAY_MS: '5000',
                 LIBMSSDK_TOKEN: '',
             },
             stdio: ['ignore', 'pipe', 'pipe'],

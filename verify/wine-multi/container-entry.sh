@@ -37,18 +37,14 @@ set -m
 # trap 没装」的空档把入口脚本直接带走。
 SERVE_PIDS=()
 stop_requested=0
-declare -A signaled=()
 forward_stop() {
     stop_requested=1
-    local pid sent=0
+    [ ${#SERVE_PIDS[@]} -gt 0 ] || return 0
+    echo "[verify] 收到停止信号：把 SIGINT 转给每个 serve（Wine 会映射为 CTRL_C_EVENT）" >&2
+    local pid
     for pid in "${SERVE_PIDS[@]}"; do
-        # 同一个 pid 只送一次 SIGINT：第二次会被 Node 当成「逃生口」直接退出，丢掉排空
-        [ -z "${signaled[$pid]:-}" ] || continue
-        signaled[$pid]=1
         kill -INT "$pid" 2>/dev/null || true
-        sent=1
     done
-    [ "$sent" = 0 ] || echo "[verify] 收到停止信号：把 SIGINT 转给 serve（Wine 会映射为 CTRL_C_EVENT）" >&2
 }
 trap forward_stop TERM INT
 

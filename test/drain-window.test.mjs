@@ -71,7 +71,20 @@ test('排空窗口 + 等待预算小于 stop_grace_period', () => {
     )
 })
 
-test('verify 入口的排空窗口与 compose 保持一致', () => {
+/** verify 自己的采样预算：driver 的轮询间隔 + 单次探测超时（从源码读，别抄）。 */
+function verifySampleBudgetMs() {
+    const driver = read('verify/wine-multi/driver-docker.mjs')
+    const interval = /intervalMs = (\d+)/.exec(driver)
+    const timeout = /probeTimeoutMs = (\d+)/.exec(driver)
+    assert.ok(interval && timeout, 'verify/wine-multi/driver-docker.mjs 里读不到 observeStop 的采样间隔/超时')
+    return Number(interval[1]) + Number(timeout[1])
+}
+
+test('verify 入口的窗口覆盖它自己的采样预算，并与 compose 同值', () => {
+    assert.ok(
+        verifyDrainMs() > verifySampleBudgetMs(),
+        `verify 窗口 ${verifyDrainMs()}ms 必须大于采样预算 ${verifySampleBudgetMs()}ms`,
+    )
     assert.equal(
         verifyDrainMs(),
         composeDrainMs(),

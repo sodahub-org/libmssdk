@@ -132,19 +132,25 @@ export function startServe({ config, env = process.env, ...options } = {}) {
         state.closing = true
     }
     const drainDelayMs = resolveDrainDelay(config)
+    // 收尾只跑一次：重复调 beginShutdown（例如信号处理器被触发两次）拿同一个 promise，
+    // 调用方不该看到两套 server.close / pool.stop。
+    let stopping = null
+    const beginShutdown = () => {
+        stopping ??= shutdownGracefully({
+            server: started.server,
+            pool: started.pool,
+            markClosing,
+            drainDelayMs,
+            locations: [config.bdmsModule, config.clientDir],
+        })
+        return stopping
+    }
     // 交回给信号处理用：SIGTERM 到达的第一件事就是说「我不再接流量了」，
     // 而不是等 server.close() 之后才改口 —— 那时排队的请求已经在往里挤了。
     return {
         ...started,
         markClosing,
         drainDelayMs,
-        beginShutdown: () =>
-            shutdownGracefully({
-                server: started.server,
-                pool: started.pool,
-                markClosing,
-                drainDelayMs,
-                locations: [config.bdmsModule, config.clientDir],
-            }),
+        beginShutdown,
     }
 }
