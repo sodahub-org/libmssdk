@@ -87,6 +87,8 @@ schtasks /create /tn libmssdk /sc onstart /ru SYSTEM /rl HIGHEST ^
   `TerminateProcess` 硬杀。进程拿不到信号，`/readyz` 不会改口，客户端看到的是连接被拒/重置。
   要优雅停止就换成 nssm 或真正的 Windows 服务；坚持用计划任务的话，`/end` 之后补一条
   `taskkill /T` 清掉孤儿进程（`/end` 只杀任务直接子进程）。
+- **容器形态**不在这里：入口拿不到 Windows 信号，改用 state 目录下的 `closing.flag` 触发收尾，
+  见 [`../deploy/README.md`](../deploy/README.md) 的「停止与滚动升级」。
 
 预热期间（首次 `bdms.init`，通常几秒）`GET /readyz` 返回 503，worker 就绪后才回 200；
 `GET /livez` 恒 200，只回答「进程还在不在」；`GET /healthz` 是 `/readyz` 的别名，留给已有的

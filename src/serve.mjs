@@ -17,7 +17,7 @@ import path from 'node:path'
 import { maskAddressKey } from './ratelimit.mjs'
 import { createEndpointsHandler } from './endpoints.mjs'
 import { startDispatcher } from './dispatcher.mjs'
-import { logError, logEvent, redactMachinePaths } from './log.mjs'
+import { logError, logEvent, logWarn, redactMachinePaths } from './log.mjs'
 
 /**
  * worker 读身份的两条路：环境变量钉死，或只读身份文件。
@@ -123,16 +123,18 @@ function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0, locat
  * Wine 11 + Windows Node 20 上到不了 Node（真机实测没有 event=shutdown，容器只能等宽限期被
  * SIGKILL）。文件轮询不经过 Wine 的信号语义，是本仓库已知能工作的形态（rate-limit.mode 同理）。
  *
- * 启动时已存在的标志按「上一次运行留下的」删掉并忽略：否则持久化 state 卷会让重启即收尾。
- * 触发后**不删**标志：多个 serve 共用同一份 state 时，谁先删谁就会让别的进程看不到它；
- * 清理留给下一次启动的入口脚本 / watcher。
- * 目录不可写时返回空清理函数 —— 这条通道没有，信号路径仍在。
+ * 启动时已存在的标志按「上一次运行留下的」忽略（记下基线，不删）：删掉会与其他进程的触发
+ * 抢——一个 serve 在收尾中途重启，不能把别的 serve 的触发抹掉。清理留给下一次启动的入口脚本。
+ * 触发后**不删**标志：多个 serve 共用同一份 state 时，谁先删谁就会让别的进程看不到它。
+ * 目录不可写时告警并返回空清理函数 —— 这条通道没有，信号路径仍在。
  */
-export function watchCloseFile({ file, onSignal, log = () => {}, intervalMs = 200 }) {
+export function watchCloseFile({ file, onSignal, intervalMs = 200 }) {
     if (!file) return () => {}
+    let baseline = null
     try {
-        fs.rmSync(file, { force: true })
-    } catch {
+        baseline = fs.existsSync(file) ? fs.statSync(file).mtimeMs : null
+    } catch (error) {
+        logWarn('close-file-unavailable', { reason: redactMachinePaths(String(error?.message || error)) })
         return () => {}
     }
     let fired = false
@@ -140,11 +142,12 @@ export function watchCloseFile({ file, onSignal, log = () => {}, intervalMs = 20
         if (fired) return
         try {
             if (!fs.existsSync(file)) return
+            // 启动时就在的那一份不触发；只有之后新出现的（mtime 变了）才算
+            if (baseline !== null && fs.statSync(file).mtimeMs === baseline) return
         } catch {
             return
         }
         fired = true
-        log('close-signal', { source: 'file' })
         onSignal()
     }, intervalMs)
     timer.unref?.()
@@ -190,8 +193,10 @@ export function startServe({ config, env = process.env, ...options } = {}) {
     const closeFile = config.identityFile ? path.join(path.dirname(config.identityFile), 'closing.flag') : ''
     const stopWatching = watchCloseFile({
         file: closeFile,
-        log,
         onSignal: () => {
+            // 与信号路径同一顺序：先改口，再记日志；source 让后续取证能分清是哪条路收的尾
+            markClosing()
+            log('shutdown', { source: 'file', drainDelayMs })
             beginShutdown().finally(() => onExit(0))
         },
     })

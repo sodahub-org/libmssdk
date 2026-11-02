@@ -62,9 +62,9 @@ test('stopPoolQuietly：两种失败形状都会落定、各记一笔，并按�
 })
 
 // 容器形态的主触发源：state 目录下的 closing.flag。容器里的 SIGINT 到不了 Node（Wine 11 +
-// Windows Node 20 实测），所以这条路径必须自己钉住：改口、排空、停监听、退出，且不依赖信号。
-// 另钉一条：上一次运行留下的标志不能把新进程直接收掉。
-test('关闭标志：写 closing.flag 触发收尾；启动时残留的标志被忽略', async () => {
+// Windows Node 20 实测），所以这条路径必须自己钉住：改口、在飞请求收完、停监听、退出，
+// 且不依赖信号。另钉两条：启动时残留的标志不算触发；文件与信号同时触发只跑一次收尾。
+test('关闭标志：写 closing.flag 触发收尾；残留标志忽略、在飞请求收完、只收尾一次', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-close-'))
     const identityFile = path.join(dir, 'identity.json')
     const flag = path.join(dir, 'closing.flag')
@@ -97,26 +97,48 @@ test('关闭标志：写 closing.flag 触发收尾；启动时残留的标志被
     })
     await new Promise(resolve => entry.server.listen(0, '127.0.0.1', resolve))
     const { port } = entry.server.address()
-    const readyz = () =>
+    const exchange = (path, options = {}) =>
         new Promise((resolve, reject) => {
             const request = http.request(
-                { host: '127.0.0.1', port, path: '/readyz', agent: false },
+                {
+                    host: '127.0.0.1',
+                    port,
+                    path,
+                    agent: false,
+                    method: options.method || 'GET',
+                    headers: options.headers,
+                },
                 response => {
-                    response.resume()
-                    response.on('end', () => resolve(response.statusCode))
+                    const chunks = []
+                    response.on('data', chunk => chunks.push(chunk))
+                    response.on('end', () =>
+                        resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString('utf8') }),
+                    )
                 },
             )
             request.on('error', reject)
-            request.end()
+            request.end(options.body)
         })
+    const readyz = () => exchange('/readyz').then(response => response.status)
     try {
         workers[0].reportReady()
-        // watcher 启动时会清掉上一次留下的标志：不触发收尾
+        // 启动时就在的标志按基线忽略：不触发收尾，也不删（删了会抢别人的触发）
         await new Promise(resolve => setTimeout(resolve, 400))
-        assert.equal(fs.existsSync(flag), false, '启动时应当清掉上一次留下的标志')
+        assert.equal(fs.existsSync(flag), true, '启动时不该删掉别人的标志')
         assert.equal(await readyz(), 200, '残留标志不该把新进程直接收掉')
 
-        fs.writeFileSync(flag, '')
+        // 真的在飞的一单：文件触发后它仍应算完
+        const pending = exchange('/sign', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url: 'https://api.qishui.com/x', method: 'POST', headers: { 'x-ss-stub': 'A' } }),
+        })
+        for (let attempt = 0; attempt < 100 && !workers[0].task(); attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 10))
+        }
+        assert.ok(workers[0].task(), '在飞请求应当已经派到 worker')
+
+        fs.writeFileSync(flag, 'stop')
         let status = 0
         for (let attempt = 0; attempt < 100; attempt += 1) {
             status = await readyz()
@@ -125,11 +147,20 @@ test('关闭标志：写 closing.flag 触发收尾；启动时残留的标志被
         }
         assert.equal(status, 503, '文件触发后 /readyz 应当立刻改口')
 
+        // 第二条触发源（信号路径）再调一次：必须复用同一个收尾，不能再给 worker 发一遍 shutdown
+        entry.beginShutdown()
+
+        workers[0].reportResult()
+        const signed = await pending
+        assert.equal(signed.status, 200, '在飞请求在排空窗口里算完，客户端拿到回包而不是连接重置')
+
         for (let attempt = 0; attempt < 100 && exitCode === null; attempt += 1) {
             await new Promise(resolve => setTimeout(resolve, 20))
         }
         assert.equal(exitCode, 0, '收尾序列走完后应按 onExit(0) 落定')
         assert.equal(fs.existsSync(flag), true, '标志不删：多进程共用 state 时不能由第一个看到的进程删掉')
+        const shutdowns = workers[0].sent.filter(message => message.type === 'shutdown').length
+        assert.equal(shutdowns, 1, '两个触发源只该跑一次收尾')
     } finally {
         entry.stopWatching()
         await new Promise(resolve => entry.server.close(resolve))
