@@ -1,5 +1,6 @@
 // 取证中转的离线用例：它站在「已登录播放器」与「签名服务」中间，
-// 唯一的职责是把播放器真实发出的设备身份记进一份 0600 的抓包件，其余一律原样转发。
+// 唯一的职责是把播放器真实发出的设备身份记进一份只在本机、落在仓库外的抓包件
+// （POSIX 上 0600，NTFS 不认这个位），其余一律原样转发。
 // 断言的都是外部可见的事实（转发出去的内容、落盘的那几行、回给调用方的状态码），
 // 以及一条边界：凭据既不落盘也不回显。监听一律 listen(0)，三条用法守卫跑子进程但都在
 // 起监听之前退出——不打网络，也不自选端口再绑定。
@@ -154,6 +155,10 @@ test('原样转发给上游签名器，抓包件里只多一行身份；回包�
     const text = fs.readFileSync(out, 'utf8')
     assert.ok(!text.includes('SECRET-COOKIE-VALUE'), 'cookie 值不得进抓包件')
     assert.ok(!text.includes('SECRET-TOKEN-VALUE'), '令牌不得进抓包件')
+    // Windows 的 NTFS 不认这个位（工具自己与文档都这么写），所以只在 POSIX 上钉权限。
+    if (process.platform !== 'win32') {
+        assert.equal(fs.statSync(out).mode & 0o777, 0o600, '抓包件写着完整真实设备号，必须 0600')
+    }
 
     // 上游没人听时报 502，且报文里不带本机/上游细节。
     const deadOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'dead.jsonl')

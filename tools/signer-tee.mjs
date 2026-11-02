@@ -7,7 +7,8 @@
 //
 // 凭据边界：Cookie 与 Authorization 的值一律不落盘（只记字段名与个数）；`x-helios` / `x-medusa`
 // 是逐请求签名，也不记。落盘的只有设备身份、公共参数里的形状字段、请求头名与 UA。
-// 抓包件默认 0600，并且拒绝写进仓库目录——真实设备号属于「不得入库」的那一类。
+// 抓包件在 POSIX 上是 0600（Windows 的 NTFS 不认这个位，那里靠的是账号所有权 + 放在仓库外），
+// 并且拒绝写进仓库目录——真实设备号属于「不得入库」的那一类。
 //
 //   node tools/signer-tee.mjs --upstream http://127.0.0.1:8899/sign --out <仓库外的路径>
 //   node tools/signer-tee.mjs --upstream https://signer.example/sign --port 18899 --out <路径>
@@ -184,13 +185,14 @@ async function main() {
     const out = argValue('out')
     if (!upstream) throw new Error('需要 --upstream <真正的签名服务 /sign 地址>')
     if (!/^https?:\/\//i.test(upstream)) throw new Error('--upstream 必须是 http(s) 绝对地址')
-    if (!out) throw new Error('需要 --out <抓包件路径>（仓库外，0600）')
+    if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
     // 这台中转会把请求原样转发出去，绑定收到谁那儿必须自己说得清：只许回环。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
     const target = assertOutsideRepo(out)
     const server = await start({ upstream, host, port, out: target })
     process.stderr.write(
-        `取证中转已启动：http://${host}:${port}/sign → 转发给上游签名器；抓包件=${path.basename(target)}（0600）\n`,
+        `取证中转已启动：http://${host}:${port}/sign → 转发给上游签名器；` +
+            `抓包件=${path.basename(target)}（POSIX 上 0600，Windows 靠账号所有权 + 仓库外）\n`,
     )
     process.stderr.write('用完：Ctrl+C 停掉，再把播放器的 signer_url 改回原来那份。\n')
     await new Promise(resolve => {
