@@ -139,6 +139,8 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                     }
                 } catch {
                     // 解析不了就单纯转发：这台中转的职责是记录能记录的东西，不是替签名服务做校验。
+                    // 要出声，但不复述内容——报文里可能带着 cookie 与令牌。
+                    log('event=skip 这条请求体解析不了，只转发不记录\n')
                 }
                 const upstreamResponse = await fetch(upstream, {
                     method: 'POST',

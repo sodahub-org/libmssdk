@@ -4,6 +4,7 @@
 // 以及一条边界：凭据既不落盘也不回显。全部走 listen(0)，不打网络。
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -103,25 +104,16 @@ async function listen(handler) {
     const server = http.createServer(handler)
     openServers.push(server)
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-    return { server, port: server.address().port }
+    return { server, url: `http://127.0.0.1:${server.address().port}/sign` }
 }
-/** 一个确定没人听的端口：先占住再放开，比写死端口号可靠。 */
-async function closedPort() {
-    const server = http.createServer()
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-    const port = server.address().port
-    await new Promise(resolve => server.close(resolve))
-    return port
-}
-/** 起一台中转，指向上面那个假上游。 */
-async function startTee({ upstreamPort, out, log = () => {} }) {
-    const tee = await start({
-        upstream: `http://127.0.0.1:${upstreamPort}/sign`,
-        host: '127.0.0.1',
-        port: 0,
-        out,
-        log,
-    })
+/**
+ * 「上游没人听」用一个保留端口（<1024）表达：undici 直接判 bad port，
+ * 既不依赖某个端口当时有没有人听，也不用先占住再放开那种两步写法。
+ */
+const DEAD_UPSTREAM = 'http://127.0.0.1:1/sign'
+/** 起一台中转，上游由调用方给。 */
+async function startTee({ upstream, out, log = () => {} }) {
+    const tee = await start({ upstream, host: '127.0.0.1', port: 0, out, log })
     openServers.push(tee)
     return tee
 }
@@ -142,7 +134,7 @@ test('原样转发给上游签名器，抓包件里只多一行身份；回包�
         })
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'capture.jsonl')
-    const tee = await startTee({ upstreamPort: upstream.port, out, log: line => logged.push(line) })
+    const tee = await startTee({ upstream: upstream.url, out, log: line => logged.push(line) })
     const port = tee.address().port
     const response = await fetch(`http://127.0.0.1:${port}/sign`, {
         method: 'POST',
@@ -164,7 +156,7 @@ test('原样转发给上游签名器，抓包件里只多一行身份；回包�
 
     // 上游没人听时报 502，且报文里不带本机/上游细节。
     const deadOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'dead.jsonl')
-    const deadTee = await startTee({ upstreamPort: await closedPort(), out: deadOut, log: line => logged.push(line) })
+    const deadTee = await startTee({ upstream: DEAD_UPSTREAM, out: deadOut, log: line => logged.push(line) })
     const dead = await fetch(`http://127.0.0.1:${deadTee.address().port}/sign`, { method: 'POST', body: signRequest() })
     assert.equal(dead.status, 502)
     const deadText = await dead.text()
@@ -181,7 +173,7 @@ test('非 POST 不记录也不转发，坏 JSON 只转发不记录', async () =>
         request.on('end', () => response.end('{"ok":true}'))
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'capture.jsonl')
-    const tee = await startTee({ upstreamPort: upstream.port, out })
+    const tee = await startTee({ upstream: upstream.url, out })
     const base = `http://127.0.0.1:${tee.address().port}/sign`
 
     const wrongMethod = await fetch(base, { method: 'GET' })
@@ -200,7 +192,7 @@ test('没有 device_id 的请求转发但不进抓包件', async () => {
         request.on('end', () => response.end('{"ok":true}'))
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'capture.jsonl')
-    const tee = await startTee({ upstreamPort: upstream.port, out })
+    const tee = await startTee({ upstream: upstream.url, out })
     const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
         method: 'POST',
         body: JSON.stringify({ ...JSON.parse(signRequest()), url: 'https://api.qishui.com/luna/pc/me?iid=1' }),
@@ -209,10 +201,26 @@ test('没有 device_id 的请求转发但不进抓包件', async () => {
     assert.equal(fs.existsSync(out), false)
 })
 
-test('绑定只认回环：非回环地址直接拒绝启动', async () => {
-    const { isLoopbackBind } = await import('../src/dispatch.mjs')
-    assert.equal(isLoopbackBind('127.0.0.1'), true)
-    assert.equal(isLoopbackBind('::1'), true)
-    assert.equal(isLoopbackBind('0.0.0.0'), false)
-    assert.equal(isLoopbackBind('10.0.0.5'), false)
+const teeCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'signer-tee.mjs')
+const repoRoot = path.resolve(path.dirname(teeCli), '..')
+function runTee(...args) {
+    return spawnSync(process.execPath, [teeCli, ...args], { encoding: 'utf8' })
+}
+
+test('三道用法守卫都在起监听之前退出，报错也不带本机路径', () => {
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'capture.jsonl')
+
+    // 它会原样转发出去，所以只许绑回环；这条得由启动路径守住，不看纯函数里的真值表。
+    const publicBind = runTee('--upstream', DEAD_UPSTREAM, '--out', outside, '--listen', '10.0.0.5')
+    assert.notEqual(publicBind.status, 0)
+    assert.match(publicBind.stderr, /回环/)
+
+    const insideRepo = runTee('--upstream', DEAD_UPSTREAM, '--out', path.join(repoRoot, 'capture.jsonl'))
+    assert.notEqual(insideRepo.status, 0)
+    assert.match(insideRepo.stderr, /不入库/)
+    assert.ok(!insideRepo.stderr.includes(repoRoot), `报错漏出了仓库路径：${insideRepo.stderr}`)
+
+    const noUpstream = runTee('--out', outside)
+    assert.notEqual(noUpstream.status, 0)
+    assert.match(noUpstream.stderr, /--upstream/)
 })
