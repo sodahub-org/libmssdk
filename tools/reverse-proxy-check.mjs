@@ -5,10 +5,10 @@
 //   且报错要指到具体行（不是一句 exit code）。
 // - deploy/README.md 里标记为 caddyfile 的代码块（那段路径白名单示例）一起验。
 // - 结构对照：nginx 的免日志 location 必须覆盖 src/endpoints.mjs 的 PROBE_PATHS
-//   （/healthz 是 /readyz 的别名），README 白名单必须放行 /sign 与全部探针、挡住 /stat。
-//   漏一项 nginx -t 不会报（语法是对的），所以单列这道检查。nginx 与 README 白名单只查
-//   「覆盖」（额外收紧比如顺手关掉 /stat 不算错）；Caddyfile 注释里的 `@probes path …`
-//   是清单抄本，要求与 PROBE_PATHS 逐项相等。
+//   （/healthz 是 /readyz 的别名，尾斜杠形态服务端也当同一条路由，两者都要算覆盖），
+//   README 白名单必须放行 /sign 与全部探针、挡住 /stat。漏一项 nginx -t 不会报（语法是对的），
+//   所以单列这道检查。nginx 与 README 白名单只查「覆盖」（额外收紧比如顺手关掉 /stat 不算错）；
+//   Caddyfile 注释里的 `@probes path …` 是清单抄本，要求与 PROBE_PATHS 逐项相等。
 // - Caddy 路径写法只在可核对范围内判：不含引号的字面量与收尾 `*` 前缀匹配。`?`、字符类、
 //   占位符、`%` 转义、`//`、非收尾 `*` 与引号包住的 token 一律报「超出可核对范围」，绝不按
 //   字面量静默放过。`respond` 的状态码只读引号外的裸数字；path token 里出现引号则直接判红
@@ -77,15 +77,16 @@ export function extractCaddyfileBlocks(markdown, source = 'Markdown') {
 }
 
 /**
- * 从 nginx 配置里取出「关了访问日志的 location」覆盖的路径集合。
+ * 拆出「关了访问日志的 location」，每条带上它的匹配方式：
+ * `{ kind: 'exact' | 'prefix' | 'regex', spec, paths, trailingSlash }`。
  *
  * 认仓库会用到的写法：精确匹配 `location = /livez`、普通前缀 `location /x`、前缀优先
  * `location ^~ /x`，以及正则 `location ~ ^/(livez|readyz|healthz)/?$`（`~*` 同理）。
  * 只收 body 里带 `access_log off` 的。正则不是 `^/(a|b...)/?$` 这一种可拆的写法时，原样
- * 收进集合（而不是忽略），这样对照会以「少了」暴露出来，而不是静默通过。
+ * 当成一条路径（而不是忽略），这样对照会以「少了」暴露出来，而不是静默通过。
  */
-export function nginxNoLogPaths(conf) {
-    const paths = new Set()
+function nginxNoLogLocations(conf) {
+    const locations = []
     // 先剥掉 # 注释：注释里抄的那条 location 不是生效配置，不能拿来充数。
     const effective = conf.replace(/#.*$/gm, '')
     const locationPattern = /location\s+(=\s*|~\*?\s*|\^~\s*)?([^\s{]+)\s*\{([^}]*)\}/g
@@ -97,18 +98,47 @@ export function nginxNoLogPaths(conf) {
             // 认 `^/(a|b|c)$` 与尾斜杠可选的 `^/(a|b|c)/?$` 两种写法。
             const prefix = '^/('
             const suffix = [')$', ')/?$'].find(candidate => spec.startsWith(prefix) && spec.endsWith(candidate))
-            if (suffix) {
-                for (const name of spec.slice(prefix.length, -suffix.length).split('|')) {
-                    paths.add(`/${name.trim()}`)
-                }
-            } else {
-                paths.add(spec)
+            if (!suffix) {
+                locations.push({ kind: 'regex', spec, paths: [spec], trailingSlash: false })
+                continue
             }
+            locations.push({
+                kind: 'regex',
+                spec,
+                paths: spec.slice(prefix.length, -suffix.length).split('|').map(name => `/${name.trim()}`),
+                // `/?$` 收的正是服务端也当成同一条路由的尾斜杠形态。
+                trailingSlash: suffix === ')/?$',
+            })
             continue
         }
-        if (spec.startsWith('/')) paths.add(spec)
+        if (spec.startsWith('/')) {
+            locations.push({ kind: kind === '=' ? 'exact' : 'prefix', spec, paths: [spec], trailingSlash: false })
+        }
     }
+    return locations
+}
+
+/** 从 nginx 配置里取出「关了访问日志的 location」覆盖的路径名集合。 */
+export function nginxNoLogPaths(conf) {
+    const paths = new Set()
+    for (const location of nginxNoLogLocations(conf)) for (const path of location.paths) paths.add(path)
     return paths
+}
+
+/**
+ * 某条请求路径是否落进「免访问日志」的 location。
+ *
+ * 按 nginx 自己的匹配方式算，不拿字面量查表：前缀 location 是前缀匹配，正则 `/?$` 多收一条
+ * 尾斜杠形态。尾斜杠这条必须有——服务端把 `/readyz/` 当同一条路由（src/endpoints.mjs），
+ * 只写 `$` 的正则会让它落进 `location /` 照进日志，而 nginx -t 一声不响。#22 就是这类漏项。
+ */
+export function nginxNoLogCovers(conf, requestPath) {
+    return nginxNoLogLocations(conf).some(location => {
+        if (location.kind === 'exact') return requestPath === location.spec
+        if (location.kind === 'prefix') return requestPath.startsWith(location.spec)
+        return location.paths.some(path =>
+            requestPath === path || (location.trailingSlash && requestPath === `${path}/`))
+    })
 }
 
 /** 剥掉 Caddy 的行注释：`#` 在行首或空白之后都算（示例里没有把 # 写进路径的情况）。 */
@@ -289,6 +319,15 @@ export function reverseProxyStructureProblems({ nginxConf, readme, caddyfile }) 
         problems.push({
             check: STRUCTURE_CHECKS.nginxProbes,
             detail: `少了：${missingInNginx.join(' ')}`,
+        })
+    }
+    // 尾斜杠形态也属同一条探针：服务端归一化后它就是 /readyz（src/endpoints.mjs），代理却只
+    // 写 `$` 时它落进 `location /` 照进日志 —— nginx -t 不会报，正是 #22 要堵的那类漏项。
+    const slashGaps = PROBE_PATHS.filter(path => !nginxNoLogCovers(nginxConf, `${path}/`))
+    if (slashGaps.length > 0) {
+        problems.push({
+            check: STRUCTURE_CHECKS.nginxProbes,
+            detail: `尾斜杠形态照进日志（服务端把它们当同一条路由）：${slashGaps.map(path => `${path}/`).join(' ')}`,
         })
     }
 

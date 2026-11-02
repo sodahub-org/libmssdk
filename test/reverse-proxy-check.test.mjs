@@ -8,6 +8,7 @@ import {
     caddyPathMatches,
     extractCaddyfileBlocks,
     extractCaddyPathRules,
+    nginxNoLogCovers,
     nginxNoLogPaths,
     pathAllowed,
     reverseProxyStructureProblems,
@@ -113,11 +114,47 @@ test('nginx 精确 location：多个名字都收，没关日志的不收', () =>
 
 test('nginx 注释掉的 location 不算数：不许拿注释充免日志清单', () => {
     const conf = [
-        '# location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }',
+        '# location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }',
         'location / { proxy_pass http://libmssdk; }',
     ].join('\n')
 
     assert.deepEqual([...nginxNoLogPaths(conf)], [])
+})
+
+test('nginx 尾斜杠形态也是同一条探针：`/?$` 与前缀 location 都算覆盖', () => {
+    const withSlash = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
+    const exactOnly = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const prefix = 'location /livez { access_log off; proxy_pass http://libmssdk; }'
+
+    assert.equal(nginxNoLogCovers(withSlash, '/readyz/'), true, '`/?$` 收了尾斜杠形态')
+    assert.equal(nginxNoLogCovers(exactOnly, '/readyz/'), false, '`$` 只认精确路径，`/readyz/` 会落进 location /')
+    assert.equal(nginxNoLogCovers(exactOnly, '/readyz'), true)
+    assert.equal(nginxNoLogCovers(prefix, '/livez/'), true, '前缀 location 是前缀匹配')
+    assert.equal(nginxNoLogCovers('location = /livez { access_log off; }', '/livez/'), false, '精确 location 只认一个名字')
+})
+
+test('探针 location 只写 `$`：尾斜杠形态照进日志，结构对照要报出来', () => {
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const readme = [
+        '```caddyfile',
+        'example.com {',
+        '    @deny not path /sign /livez /readyz /healthz',
+        '    respond @deny 404',
+        '}',
+        '```',
+    ].join('\n')
+
+    const problems = reverseProxyStructureProblems({ nginxConf, readme, caddyfile: CADDYFILE_DOC })
+    assert.deepEqual(problems.map(p => p.check), ['nginx.conf：免访问日志的 location 覆盖全部探针'])
+    assert.match(problems[0].detail, /尾斜杠形态/)
+    assert.match(problems[0].detail, /\/readyz\//)
+
+    const fixed = reverseProxyStructureProblems({
+        nginxConf: nginxConf.replace('healthz)$', 'healthz)/?$'),
+        readme,
+        caddyfile: CADDYFILE_DOC,
+    })
+    assert.deepEqual(fixed, [], '改成 /?$ 之后不再报')
 })
 
 test('README 路径规则：只认 respond 引用的 matcher，未被引用的不算', () => {
@@ -193,7 +230,7 @@ test('README 路径规则按代码块隔离：后一段白名单补不了前一�
     assert.equal(pathAllowed(first, '/healthz'), false)
     assert.equal(pathAllowed(second, '/healthz'), true)
 
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /第 1 段/)
@@ -218,7 +255,7 @@ test('README 路径规则按 site block 隔离：同一段里的第二个 site �
     assert.equal(pathAllowed(strict, '/healthz'), false)
     assert.equal(pathAllowed(loose, '/healthz'), true)
 
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /第 1 段示例第 1 个 site/)
@@ -272,14 +309,14 @@ test('README 路径规则：行首注释里的花括号不参与 site block 切�
     assert.equal(pathAllowed(strict, '/healthz'), false)
     assert.equal(pathAllowed(loose, '/healthz'), true)
 
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const problems = reverseProxyStructureProblems({ nginxConf, readme: markdown, caddyfile: CADDYFILE_DOC })
     assert.deepEqual(problems.map(p => p.check), ['deploy/README.md：白名单放行 /sign 与全部探针'])
     assert.match(problems[0].detail, /\/healthz/)
 })
 
 test('结构对照：多段示例的问题都要报出来，不能只留第一条', () => {
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const readme = [
         '```caddyfile',
         'first.example.com {',
@@ -309,7 +346,7 @@ test('Caddy path 通配：/stat* 放行 /stat 要判红，/live* 覆盖 /livez �
     assert.equal(caddyPathMatches('/foo/*', '/foo'), false, '斜杠敏感：/foo/* 不匹配 /foo')
     assert.equal(caddyPathMatches('/Foo', '/foo'), true, '大小写不敏感')
 
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const markdown = allowlist => [
         '```caddyfile',
         'example.com {',
@@ -333,7 +370,7 @@ test('Caddy path 通配：/stat* 放行 /stat 要判红，/live* 覆盖 /livez �
 })
 
 test('Caddy 路径语法超出建模范围时判红，不能当字面量放过', () => {
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const markdown = allowlist => [
         '```caddyfile',
         'example.com {',
@@ -369,7 +406,7 @@ test('Caddy 路径语法超出建模范围时判红，不能当字面量放过',
 })
 
 test('Caddyfile 注释里的 log_skip 示例也跟 PROBE_PATHS 对齐', () => {
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const readme = [
         '```caddyfile',
         'example.com {',
@@ -413,7 +450,7 @@ test('仓库里的反代示例与 PROBE_PATHS 一致：新增别名漏改一处�
 
 test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名单挡住 /stat 才算', () => {
     const nginxConf = [
-        'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }',
+        'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }',
         'location = /stat { access_log off; proxy_pass http://libmssdk; }',
     ].join('\n')
     const readme = [
@@ -439,7 +476,7 @@ test('结构对照只查覆盖：nginx 多关一条日志不算问题，白名�
 })
 
 test('结构对照看的是 respond 引用的白名单：@probes 补不出漏掉的别名', () => {
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const readme = [
         '```caddyfile',
         'example.com {',
@@ -457,7 +494,7 @@ test('结构对照看的是 respond 引用的白名单：@probes 补不出漏掉
 })
 
 test('结构对照：白名单用一个未被 respond 引用的 matcher 时明显报错', () => {
-    const nginxConf = 'location ~ ^/(livez|readyz|healthz)$ { access_log off; proxy_pass http://libmssdk; }'
+    const nginxConf = 'location ~ ^/(livez|readyz|healthz)/?$ { access_log off; proxy_pass http://libmssdk; }'
     const readme = [
         '```caddyfile',
         'example.com {',
