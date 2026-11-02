@@ -18,7 +18,7 @@ const { assertOutsideRepo, captureRecord, formatCapture, start } = await import(
 
 const SECRET_COOKIE = 'sessionid_ss=SECRET-COOKIE-VALUE'
 const SECRET_TOKEN = 'Bearer SECRET-TOKEN-VALUE'
-/** 播放器真实发出去的那一份设备身份（本机就是每请求一个毫秒时间戳）。 */
+/** 夹具：真机在这条链路上发的是每请求一个毫秒时间戳，这里用一个固定值好比对。 */
 const CAPTURED_ID = { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }
 const TRACK_V2_URL =
     'https://api.qishui.com/luna/pc/track_v2?ac=wifi&aid=386088&device_id=1789435000000&fp=1789435000000' +

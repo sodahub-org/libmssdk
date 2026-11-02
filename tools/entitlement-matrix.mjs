@@ -266,6 +266,9 @@ export const ARMS = [
  */
 export const isOffBaseline = arm => Boolean(arm.request.seo || arm.request.me)
 
+/** 档位那条与曲目无关，不需要 `--track`；其余各条都要拿一首曲子去判。 */
+export const needsTrack = arm => !arm.request.me
+
 /**
  * 只保留判定用的标量。字符串一律不收（`status_msg` 这类里可能夹着地址、标识或提示文案），
  * 数字与布尔按键名白名单收；键名命中黑名单的直接跳过。
@@ -303,7 +306,7 @@ function safeParse(text) {
 }
 
 /**
- * 抓包件（`tools/signer-tee.mjs` 产的 JSONL，0600，只在本机）里取最后一份带 device_id 的身份。
+ * 抓包件（`tools/signer-tee.mjs` 产的 JSONL，POSIX 上 0600，只在本机）里取最后一份带 device_id 的身份。
  * 设备号走文件而不是命令行参数：argv 会进 shell 历史与进程列表，那是本机里唯一一处
  * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错。
  */
@@ -487,7 +490,7 @@ async function main() {
         process.stderr.write('注意：captured 没给 --iid / --fp，会拿 device_id 顶上——那不是一份完整的抓包身份\n')
     }
     // account-me 打的是账号自己的档位端点，与曲目无关，所以它不需要 --track。
-    if (!trackId && runnable.some(item => !item.request.me)) throw new Error('需要 --track <track_id>（或 --list）')
+    if (!trackId && runnable.some(needsTrack)) throw new Error('需要 --track <track_id>（或 --list）')
 
     const config = loadConfig()
     const explicitSource = argValue('cookie-from')

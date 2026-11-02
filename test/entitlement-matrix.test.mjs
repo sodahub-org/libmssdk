@@ -25,6 +25,7 @@ const {
     extractScalars,
     isOffBaseline,
     maskTrackId,
+    needsTrack,
     queryEscape,
     runArm,
     safeMessage,
@@ -169,6 +170,11 @@ test('免基线的 arm 只有那两条打别端点的，加一条就要在这里
         ARMS.filter(isOffBaseline).map(item => item.name),
         ['seo-web', 'account-me'],
         '这两条整条请求都与基线不同，逐字段不变量对它们不适用',
+    )
+    assert.deepEqual(
+        ARMS.filter(item => !needsTrack(item)).map(item => item.name),
+        ['account-me'],
+        '只有档位那条与曲目无关，可以不给 --track；其余都得有一首曲子去判',
     )
 })
 
