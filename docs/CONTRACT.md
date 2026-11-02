@@ -196,7 +196,8 @@ SIGINT 已发出，Node 侧没有 `event=shutdown`，最后被 SIGKILL）。按�
 2. **`x-ss-stub` = body 的 MD5（大写）**，是签名输入的一部分，也要随请求发出去。
 3. **设备号要自洽**：URL 里的 `device_id`（以及 `iid` / `fp`）要和
    `bdms.init({ deviceId })` 用的是同一份——这样签名器不必每个请求重新 `init()`。
-   这是**本服务内部的约定，不是上游的强制要求**：对照实验里两种设备号形状、
+   这是**本服务内部的约定，不是上游的强制要求**：对照实验里各种设备号形状（时间戳、随机 16 位、
+   服务落盘那份、URL 与签名器不一致的那份，以及从已登录播放器网线上抓来的真实身份）
    乃至不带 Cookie，同一首曲目的整曲读数完全一致（详见
    [`INVESTIGATION-DEVICE-ENTITLEMENT.md`](INVESTIGATION-DEVICE-ENTITLEMENT.md)）。
 

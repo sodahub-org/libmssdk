@@ -36,7 +36,7 @@ src/probe.mjs        track_v2 真机自检与整曲 / 试听判定；src 下唯�
 src/endpoints.mjs    签名之外的 HTTP 面：/livez、/readyz（/healthz 别名）、/stat、旧诊断端点的回执、404
 src/index.mjs        CLI：serve / bridge / selftest / probe / config
 test/                使用 mock-bdms 的离线测试（含多进程争抢身份文件与真 fork worker 的用例；deploy-run-guard 用 bash 跑真实的 deploy/run.sh，靠一个 docker 桩，不装 docker 也能跑）
-tools/               验证与对照脚本（不随包发布）：entitlement-matrix 打真机、不进 npm test；reverse-proxy-check 供 CI 校验反代配置、纯函数进 npm test
+tools/               验证与对照脚本（不随包发布）：entitlement-matrix 打真机、不进 npm test；signer-tee 是 #10 取证中转（只绑回环）；reverse-proxy-check 供 CI 校验反代配置、纯函数进 npm test
 verify/wine-multi/   手动验证：Docker + Wine 下多进程（不进 npm test，也不进 CI）
 docs/CONTRACT.md     服务契约
 docs/UPGRADING.md    升级说明：默认多进程、错误契约与端点收拢的行为变化
@@ -71,7 +71,10 @@ deploy/README.md     Docker 部署
     `node src/index.mjs selftest` 和真机 `probe` 命令。
 11. **出网只此一处，HTTP 层不留入口**：`src/` 里向官方接口发请求的代码只有 `src/probe.mjs`
     （`fetchTrackV2` / `probeTrack`），入口只有命令行 `probe`，`verify/` 下的手动脚本也经它。
-    （`tools/entitlement-matrix.mjs` 是 #10 的对照实验，故意自己构造请求，不与本服务共用。）
+    （`tools/entitlement-matrix.mjs` 是 #10 的对照实验，故意自己构造请求，不与本服务共用。
+    `tools/signer-tee.mjs` 也是 #10 的取证工具：它只绑回环、把调用方的签名请求原样转发给
+    *操作者自己指定*的签名器（不是官方接口），为的是记下本机播放器真实发出的设备号，
+    这两样都不许长进服务里。）
     不许变成 HTTP 端点的是「替调用方打上游」这类能力 —— 那等于任何人借这台机器去打官方接口，
     被封的是这台服务器，`/sign` 的正常用户跟着一起失败。只报服务自身状态的诊断端点
     （`GET /stat` 就是这一类：只报队列、worker 与限流计数，地址一律脱敏）不在此列：它不出网，也不替谁做事。
