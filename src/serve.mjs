@@ -123,16 +123,17 @@ function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0, locat
  * Wine 11 + Windows Node 20 上到不了 Node（真机实测没有 event=shutdown，容器只能等宽限期被
  * SIGKILL）。文件轮询不经过 Wine 的信号语义，是本仓库已知能工作的形态（rate-limit.mode 同理）。
  *
- * 启动时已存在的标志按「上一次运行留下的」忽略（记下基线，不删）：删掉会与其他进程的触发
- * 抢——一个 serve 在收尾中途重启，不能把别的 serve 的触发抹掉。清理留给下一次启动的入口脚本。
+ * 触发源带 run token：入口每轮生成随机值，写进 closing.flag；服务只认与本轮 token 一致的内容。
+ * 这样「启动途中写的标志」与「上一轮的残留」都不需要靠时间戳区分 —— 旧内容天然不匹配。
+ * 没给 token（直接 `node src/index.mjs serve` 的本机用法）时退化为「启动时已有的按基线忽略」。
  * 触发后**不删**标志：多个 serve 共用同一份 state 时，谁先删谁就会让别的进程看不到它。
- * 目录不可写时告警并返回空清理函数 —— 这条通道没有，信号路径仍在。
+ * 目录不可写 / 读不出来时告警并返回空清理函数 —— 这条通道没有，信号路径仍在。
  */
-export function watchCloseFile({ file, onSignal, intervalMs = 200 }) {
+export function watchCloseFile({ file, token = '', onSignal, intervalMs = 200 }) {
     if (!file) return () => {}
     let baseline = null
     try {
-        baseline = fs.existsSync(file) ? fs.statSync(file).mtimeMs : null
+        if (!token && fs.existsSync(file)) baseline = fs.statSync(file).mtimeMs
     } catch (error) {
         logWarn('close-file-unavailable', { reason: redactMachinePaths(String(error?.message || error)) })
         return () => {}
@@ -142,8 +143,12 @@ export function watchCloseFile({ file, onSignal, intervalMs = 200 }) {
         if (fired) return
         try {
             if (!fs.existsSync(file)) return
-            // 启动时就在的那一份不触发；只有之后新出现的（mtime 变了）才算
-            if (baseline !== null && fs.statSync(file).mtimeMs === baseline) return
+            if (token) {
+                if (fs.readFileSync(file, 'utf8').trim() !== token) return
+            } else if (baseline !== null && fs.statSync(file).mtimeMs === baseline) {
+                // 没有 token 的形态只能靠基线：启动时就在的那一份不触发
+                return
+            }
         } catch {
             return
         }
@@ -193,6 +198,7 @@ export function startServe({ config, env = process.env, ...options } = {}) {
     const closeFile = config.identityFile ? path.join(path.dirname(config.identityFile), 'closing.flag') : ''
     const stopWatching = watchCloseFile({
         file: closeFile,
+        token: config.closeToken,
         onSignal: () => {
             // 与信号路径同一顺序：先改口，再记日志；source 让后续取证能分清是哪条路收的尾
             markClosing()

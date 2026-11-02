@@ -123,8 +123,10 @@ worker 数按绑定地址推导，环境变量始终优先：
 **为什么容器不用 SIGINT。** 入口脚本把 `docker stop` 的 `SIGTERM` 转成 `SIGINT` 交给 Wine，但
 Wine 11 + Windows Node 20 的真机实测里，Node 侧没有 `event=shutdown`、`/readyz` 没改口，容器最后被
 SIGKILL（`verify/wine-multi` 判据 7 首轮记录为 `refused-only`）。所以容器形态的权威触发源是
-`closing.flag`（启动时清残留、触发后不删），SIGINT 只作为别的 Wine 版本上的补充。tini / dumb-init
-解决的是 PID 1 转发与僵尸回收，不改变 Wine 内部这一跳。
+`closing.flag`：入口每轮生成随机 token 写进去，服务只认本轮的值（上一轮的残留、启动途中写下的标志
+都不会混淆）；触发后不删，多个 serve 共用 state 时都能看到。SIGINT 只作为别的 Wine 版本上的补充。
+成功收尾会记 `event=shutdown`（`source: file`；信号路径是 `source: signal`）——看不到它才说明触发没
+送到。tini / dumb-init 解决的是 PID 1 转发与僵尸回收，不改变 Wine 内部这一跳。
 
 **收尾前留一个排空窗口。** 改口与停监听如果发生在同一刻，探针根本读不到那个 503。
 `LIBMSSDK_DRAIN_DELAY_MS`（默认 0，即旧行为）让 `markClosing()` 之后先保持监听；容器 compose 已设

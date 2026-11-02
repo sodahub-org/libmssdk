@@ -34,7 +34,10 @@ set -m
 # 真机证据（#23）：Wine 11 + Windows Node 20 下，入口转发的 SIGINT 到不了 Node（没有
 # event=shutdown，最后被 SIGKILL）。容器形态的权威触发源是 state 目录下的 closing.flag；
 # SIGINT 只作为别的 Wine 版本上能走信号快路的补充。两个 serve 共用 /app/data，
-# 一个标志会让两边都收尾；标志触发后不删，清理放在下一次启动。
+# 一个标志会让两边都收尾；标志内容是本轮随机 token，旧标志天然不匹配，触发后不删。
+close_token=$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+[ -n "$close_token" ] || close_token="run-$$-$(date +%s)"
+export LIBMSSDK_CLOSE_TOKEN="$close_token"
 rm -f /app/data/closing.flag 2>/dev/null || true
 
 SERVE_PIDS=()
@@ -50,7 +53,7 @@ forward_stop() {
         exit 1
     fi
     echo "[verify] 收到停止信号：写 /app/data/closing.flag 触发收尾" >&2
-    : >/app/data/closing.flag 2>/dev/null || true
+    printf '%s' "$close_token" >/app/data/closing.flag 2>/dev/null || true
     for pid in "${SERVE_PIDS[@]}"; do
         kill -INT "$pid" 2>/dev/null || true
     done

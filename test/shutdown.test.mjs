@@ -69,7 +69,7 @@ test('关闭标志：写 closing.flag 触发收尾；残留标志忽略、在飞
     const identityFile = path.join(dir, 'identity.json')
     const flag = path.join(dir, 'closing.flag')
     fs.writeFileSync(identityFile, '{"device_id":"7000000000000001"}')
-    fs.writeFileSync(flag, 'stale')
+    fs.writeFileSync(flag, 'old-token')
 
     const workers = []
     let exitCode = null
@@ -82,6 +82,7 @@ test('关闭标志：写 closing.flag 触发收尾；残留标志忽略、在飞
             maxBodyBytes: 256 * 1024,
             identityPersisted: true,
             identityFile,
+            closeToken: 'run-token-1',
             drainDelayMs: 300,
         },
         env: { LIBMSSDK_WORKERS: '1' },
@@ -122,10 +123,10 @@ test('关闭标志：写 closing.flag 触发收尾；残留标志忽略、在飞
     const readyz = () => exchange('/readyz').then(response => response.status)
     try {
         workers[0].reportReady()
-        // 启动时就在的标志按基线忽略：不触发收尾，也不删（删了会抢别人的触发）
+        // 上一轮的旧 token 不是本轮的值：按残留忽略，也不删（删了会抢别人的触发）
         await new Promise(resolve => setTimeout(resolve, 400))
         assert.equal(fs.existsSync(flag), true, '启动时不该删掉别人的标志')
-        assert.equal(await readyz(), 200, '残留标志不该把新进程直接收掉')
+        assert.equal(await readyz(), 200, '旧 token 的标志不该把新进程直接收掉')
 
         // 真的在飞的一单：文件触发后它仍应算完
         const pending = exchange('/sign', {
@@ -138,7 +139,7 @@ test('关闭标志：写 closing.flag 触发收尾；残留标志忽略、在飞
         }
         assert.ok(workers[0].task(), '在飞请求应当已经派到 worker')
 
-        fs.writeFileSync(flag, 'stop')
+        fs.writeFileSync(flag, 'run-token-1')
         let status = 0
         for (let attempt = 0; attempt < 100; attempt += 1) {
             status = await readyz()
@@ -161,6 +162,57 @@ test('关闭标志：写 closing.flag 触发收尾；残留标志忽略、在飞
         assert.equal(fs.existsSync(flag), true, '标志不删：多进程共用 state 时不能由第一个看到的进程删掉')
         const shutdowns = workers[0].sent.filter(message => message.type === 'shutdown').length
         assert.equal(shutdowns, 1, '两个触发源只该跑一次收尾')
+    } finally {
+        entry.stopWatching()
+        await new Promise(resolve => entry.server.close(resolve))
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+// 复核里点出的窗口：入口在 wine spawn 之后、Node 走到 startServe 之前写下本轮 token 的标志。
+// 它和「上一轮的残留」长得一样，但必须生效 —— 不能等满 stop_grace_period 被 SIGKILL。
+test('关闭标志：启动途中写下的本轮 token 仍然生效', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-close-early-'))
+    const identityFile = path.join(dir, 'identity.json')
+    const flag = path.join(dir, 'closing.flag')
+    fs.writeFileSync(identityFile, '{"device_id":"7000000000000001"}')
+    // 模拟入口脚本在 Node 启动期间写下的标志
+    fs.writeFileSync(flag, 'run-token-2')
+
+    const workers = []
+    let exitCode = null
+    const entry = startServe({
+        config: {
+            version: 'test',
+            host: '127.0.0.1',
+            token: '',
+            deviceId: '7000000000000001',
+            maxBodyBytes: 256 * 1024,
+            identityPersisted: true,
+            identityFile,
+            closeToken: 'run-token-2',
+            drainDelayMs: 0,
+        },
+        env: { LIBMSSDK_WORKERS: '1' },
+        log: () => {},
+        onExit: code => {
+            exitCode = code
+        },
+        spawn: index => {
+            const worker = new FakeWorker(index)
+            workers.push(worker)
+            return worker
+        },
+    })
+    await new Promise(resolve => entry.server.listen(0, '127.0.0.1', resolve))
+    try {
+        workers[0].reportReady()
+        for (let attempt = 0; attempt < 150 && exitCode === null; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 20))
+        }
+        assert.equal(exitCode, 0, '启动途中写下的本轮标志必须触发收尾，而不是被当成残留')
+        const shutdowns = workers[0].sent.filter(message => message.type === 'shutdown').length
+        assert.equal(shutdowns, 1, '收尾只跑一次')
     } finally {
         entry.stopWatching()
         await new Promise(resolve => entry.server.close(resolve))

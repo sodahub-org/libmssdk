@@ -154,9 +154,12 @@ SIGINT 已发出，Node 侧没有 `event=shutdown`，最后被 SIGKILL）。按�
 大于探针的「间隔 + 超时」（镜像 `HEALTHCHECK` 5 秒 + 2 秒、compose 窗口 8 秒），否则采样可能整个
 落在窗口之外。
 
-- **文件触发源**：路径是 state 目录下的 `closing.flag`（默认 `data/closing.flag`）。服务启动时会清掉
-  上一次留下的标志；触发后不删，多个 serve 共用同一份 state 时都能看到它。能写 state 目录的人可以
-  触发收尾——与改写 `rate-limit.mode` 是同一类本地权限，不是公网能力。
+- **文件触发源**：路径是 state 目录下的 `closing.flag`。入口每轮生成一个随机 token 写进标志，服务只认
+  与本轮 token 一致的内容——上一轮的残留、启动途中写下的标志都不需要靠时间戳区分；触发后不删，多个
+  serve 共用同一份 state 时都能看到它。没给 token 的本机用法按「启动时已有的忽略」。能写 state 目录的
+  人可以触发收尾——与改写 `rate-limit.mode` 是同一类本地权限，不是公网能力。
+- **日志口径**：文件触发成功会记 `event=shutdown`（`source: file`），信号路径是 `source: signal`。
+  看不到这条才说明触发没送到；别再拿「没有 shutdown 事件」当失败判据。
 - **排空窗口**：`markClosing()` 之后先保持监听，让探针真的读到 503，再停监听、收在飞与排队请求。
   由 `LIBMSSDK_DRAIN_DELAY_MS` 控制，默认 `0`（信号一到就停监听，与旧行为一致）；容器 compose
   显式设为 8 秒，并配 `stop_grace_period: 30s`。窗口只推迟「停监听」，不推迟「改口」。

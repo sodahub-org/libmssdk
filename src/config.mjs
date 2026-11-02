@@ -141,6 +141,8 @@ export function loadConfig() {
         // 收尾时的排空窗口：markClosing() 之后先保持监听，让 /readyz 的 503 真的被读到，
         // 再停监听。0 = 原先的行为（信号一到就停监听）。
         drainDelayMs: envInt('LIBMSSDK_DRAIN_DELAY_MS', 0),
+        // 容器入口每轮生成、写进 closing.flag 的 token。服务只认本轮的值，旧标志自然被忽略。
+        closeToken: env('LIBMSSDK_CLOSE_TOKEN'),
     }
 }
 

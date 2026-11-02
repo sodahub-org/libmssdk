@@ -30,7 +30,11 @@ set -m
 # 以 & 拉起并继承 SIG_IGN 的场景不恢复，别把它当成无条件事实。
 state_dir="${LIBMSSDK_STATE_DIR:-/app/data}"
 close_file="${state_dir}/closing.flag"
-# 上一次运行留下的标志不能把这次启动直接收掉（Node 侧 watcher 启动时也会清一次）
+# 每轮一个随机 token：写进 closing.flag 的内容，服务只认本轮的值。这样「启动途中写下的标志」
+# 与「上一轮的残留」不需要靠时间戳区分 —— 旧内容天然不匹配。
+close_token=$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+[ -n "$close_token" ] || close_token="run-$$-$(date +%s)"
+export LIBMSSDK_CLOSE_TOKEN="$close_token"
 rm -f "$close_file" 2>/dev/null || true
 
 child=''
@@ -45,7 +49,7 @@ forward_stop() {
         exit 1
     fi
     mkdir -p "$state_dir" 2>/dev/null || true
-    if : >"$close_file" 2>/dev/null; then
+    if printf '%s' "$close_token" >"$close_file" 2>/dev/null; then
         echo "[deploy] 收到停止信号：写 ${close_file} 触发收尾" >&2
     else
         echo "[deploy] 收到停止信号：state 目录不可写，只能退回 SIGINT" >&2
