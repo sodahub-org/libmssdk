@@ -50,13 +50,20 @@ set -a
 . ./.env || :
 set +a
 
+# 脚本会读的 .env 键，就这一份清单：1.05 按它剥 CR，1.1 按它判「这一行读不进去」。
+# 两份判据必须对着同一批键走 —— 少一个键，那个键就回到「脚本看不见、compose 照用」那一型。
+# docker-compose.yml 与 docker-compose.proxy.yml 插值的键都必须在这张表里。
+env_keys=(
+    LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME
+    LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP
+)
+
 # 1.05) CRLF 的 .env：把值里的 CR 统一剥掉一次
 #       Linux 的 bash 读 CRLF 文件会把 \r 留在值里（Git Bash 在 read 之前就吃掉了，所以这一型只能在
 #       Linux 上测出来）。留着它，后面三处都会出事：判据把「只剩一个 CR」当成有值而误拦一份本就安全的
 #       配置；报错文案里那个 CR 会把日志行切断；值还会带着 CR 进 compose 的插值与 curl 的地址。
 #       所以在这里一次剥干净，而不是每个判据前各剥一次 —— 每多一处就少一处会漏。
-for cr_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
-    LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
+for cr_key in "${env_keys[@]}"; do
     [ -n "${!cr_key:-}" ] || continue
     printf -v "$cr_key" '%s' "${!cr_key//$'\r'/}"
 done
@@ -72,7 +79,6 @@ unset cr_key
 #      仓库的 .env.example 原本也这么写）：bash 把整行丢掉，脚本于是只会说「你还没填」。
 #      只看这个键在文件里最后一次声明的那一行：两边都是后写的盖掉先写的，先一行有值、后一行写成 `KEY=`
 #      的配置，bash 与 compose 都会按「没填」走缺省，那不该被拦。
-#      只管脚本自己会读的那几个变量。
 env_last_declaration() {
     # $1 = 变量名；返回它在 .env 里最后一次声明的那一行（没有就返回空）。
     local key=$1
@@ -108,8 +114,7 @@ env_unreadable_separator() {
     return 1
 }
 
-for unread_key in LIBMSSDK_TOKEN LIBMSSDK_BIND LIBMSSDK_PORT LIBMSSDK_TRUST_PROXY SIGNER_HOSTNAME \
-    LIBMSSDK_CLIENT_DIR LIBMSSDK_DATA_PATH LIBMSSDK_WINE_PATH LIBMSSDK_SKIP_BUILD LIBMSSDK_ALLOW_PUBLIC_HTTP; do
+for unread_key in "${env_keys[@]}"; do
     last_declaration=$(env_last_declaration "$unread_key" || true)
     [ -n "$last_declaration" ] || continue
     env_declaration_is_empty "$last_declaration" && continue

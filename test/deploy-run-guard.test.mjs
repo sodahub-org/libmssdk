@@ -390,8 +390,8 @@ test('CRLF 的 .env 读出的 \\r 按「没填」算，不是违规', { skip: sk
     const loopbackCr = runDeployScript(deployEnv({ hostname: 'signer.example.com' }), { LIBMSSDK_BIND: '127.0.0.1\r' })
     assert.equal(loopbackCr.status, REACHED_COMPOSE, `127.0.0.1 带 CR 不该被拦：${loopbackCr.stderr}`)
 
-    // 报错文案不能把 CR 打进日志（CI 上见过一行在句中被切断、下一行只剩一个「。」）
-    // 注：Git Bash 压根不会产生 CR，这条断言只在 linux 作业上有牙齿
+    // 报错文案不能把 CR 打进日志（CI 上见过一行在句中被切断、下一行只剩一个「。」）。
+    // CR 是从环境变量注入的，所以这一条在 Windows 与 linux 上都真的走到 —— 第一轮它只在 linux 有牙齿。
     assert.doesNotMatch(stillBad.stderr, /\r/, `报错里不该有裸 CR：${JSON.stringify(stillBad.stderr)}`)
     assert.doesNotMatch(stillBad.stderr, /现在是\s+。\r?\n/, `报错要打印归一化后的值：${stillBad.stderr}`)
 })
