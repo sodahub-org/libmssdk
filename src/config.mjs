@@ -15,7 +15,9 @@ const LOCAL_NATIVE_DIR = path.join(PROJECT_ROOT, 'vendor', 'soda-music')
 
 const env = key => (process.env[key] || '').trim()
 
-const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
+// 导出给用例对照：deploy/run.sh 里的「TRUST_PROXY 打开了」必须与这里同一口径（见
+// test/deploy-run-guard.test.mjs），这张表改动时两边要一起动。
+export const envFlag = key => ['1', 'true', 'yes', 'on'].includes(env(key).toLowerCase())
 
 /** 用户提供的原生模块信息（文件缺失时为 ''，便于回退到客户端目录或显式环境变量）。 */
 export function bundledNative() {
