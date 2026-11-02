@@ -253,7 +253,7 @@ export const ARMS = [
         name: 'account-me',
         // 「试听级到底是账号没权益还是曲目没授权」这条推断需要一个账号侧读数才能收口：
         // /luna/pc/me 直接回本账号的会员标记，不参与曲目判定，也不出签名。
-        expect: '账号自身的会员标记（is_vip 的布尔读数；档位是字符串，读数一律不收），不判任何曲目',
+        expect: '账号自身的会员标记 is_vip，加上回包认不认这份登录态（hasUser）；两个布尔值，不判任何曲目',
         changes: '不走签名，GET /luna/pc/me（带 Cookie，身份仍用时间戳）',
         touches: ['(整条请求都不同：账号档位端点)'],
         request: { me: true, identity: 'ts', app: APP_PROFILES.luna330, useCookie: true },
@@ -397,15 +397,17 @@ export async function runArm(arm, context) {
         })
         const response = await fetch(spec.url, { headers: spec.headers, signal: AbortSignal.timeout(context.timeoutMs) })
         const text = await response.text()
+        const payload = safeParse(text) || {}
         // 读数只收标量：`my_info.id`、昵称、头像地址都是个人标识，extractScalars 的
-        // 「字符串一律不收 + 键名黑名单」本来就把它们挡在外面。
-        const statusCode = Number((safeParse(text) || {}).status_code)
+        // 「字符串一律不收 + 键名黑名单」本来就把它们挡在外面。但「有没有解析出用户 id」
+        // 这个布尔值是另一回事：匿名回包与登录回包就靠它区分，而它不带出任何标识符。
         return {
             ...base,
             http: response.status,
             bodyBytes: text.length,
-            ok: response.status === 200 && statusCode === 0,
+            ok: response.status === 200 && Number(payload.status_code) === 0,
             track: null,
+            hasUser: Boolean(String(payload?.my_info?.id || '').trim()),
             deviceId: maskDeviceId(spec.params.device_id),
             ...extractScalars(text),
         }
@@ -531,6 +533,7 @@ async function main() {
         streamSeconds: row.streamDurationSeconds ?? null,
         gears: (row.gears || []).map(gear => gear.quality || gear.gear).join(','),
         isVip: row['my_info.is_vip'] ?? null,
+        hasUser: row.hasUser ?? null,
     }))
     process.stdout.write(`${JSON.stringify({ verdict }, null, 2)}\n`)
     if (!rows.some(row => row.ok)) process.exitCode = 1

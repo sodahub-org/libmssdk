@@ -224,6 +224,37 @@ function runMatrix(...args) {
     })
 }
 
+test('档位那条的读数：hasUser 与 status_code 各管一件事，个人标识一律不进读数', async () => {
+    // 两份固定回包：登录回包与匿名回包的形状（stub，不打网络）。
+    const loggedIn = JSON.stringify({
+        status_code: 0,
+        status_info: { status_msg: '某句可能夹着地址的提示文案' },
+        my_info: { id: '7000000000000', nickname: '私人昵称', larger_avatar_url: { uri: 'https://example/a.jpg' }, is_vip: false },
+    })
+    const anonymous = '{"status_code":1000016,"status_info":{},"my_info":{}}'
+    const bodies = [loggedIn, anonymous]
+    const original = globalThis.fetch
+    globalThis.fetch = async () => new Response(bodies.shift())
+    try {
+        const arm = ARMS.find(item => item.name === 'account-me')
+        const context = { trackId: '', cookie: 'sessionid_ss=SECRET-COOKIE', timeoutMs: 5000, service: {}, captured: {} }
+        const withCookie = await runArm(arm, context)
+        const withoutCookie = await runArm(arm, { ...context, cookie: '' })
+        assert.equal(withCookie.ok, true)
+        assert.equal(withCookie.hasUser, true, '带 Cookie 的回包认得出这是登录态')
+        assert.equal(withCookie['my_info.is_vip'], false)
+        assert.equal(withoutCookie.ok, false, '匿名回包 status_code 非 0，不能算成同一条读数')
+        assert.equal(withoutCookie.hasUser, false, '匿名回包没有用户 id——这正是归因的依据')
+        const text = JSON.stringify([withCookie, withoutCookie])
+        assert.ok(!text.includes('7000000000000'), '用户 id 不得进读数')
+        assert.ok(!text.includes('私人昵称'), '昵称不得进读数')
+        assert.ok(!text.includes('SECRET-COOKIE'), 'cookie 不得进读数')
+        assert.ok(!text.includes('example'), `头像地址不得进读数：${text}`)
+    } finally {
+        globalThis.fetch = original
+    }
+})
+
 test('抓包件读不到、或里面没有身份：都在碰凭据之前停下，且不说出本机路径', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-capture-'))
     const missing = path.join(dir, 'nope.jsonl')
