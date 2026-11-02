@@ -56,7 +56,7 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…;
 | 输出线索 | 含义 |
 | --- | --- |
 | `accepted: false` + `空响应` | 签名没被接受：`device_id` 与签名器不一致，或 `headers` 与实际发送的不一致 |
-| `streamDurationSeconds ≈ 30` | 只拿到试听：先换一首已知能整曲的曲子复测——实测同一份设备号在别的曲目能拿到整曲，所以别先怀疑设备号。Cookie 有无、真实登录设备这两条在试听级曲目上还没测（见 [`INVESTIGATION-DEVICE-ENTITLEMENT.md`](INVESTIGATION-DEVICE-ENTITLEMENT.md) 第七节） |
+| `streamDurationSeconds ≈ 30` | 只拿到试听：先换一首已知能整曲的曲子复测——实测同一份设备号在别的曲目能拿到整曲，所以别先怀疑设备号。Cookie 有无与真机实际发的那份身份都已在试听级曲目上测过，读数与其余形状逐字相同；缺的是「已知会员账号在同一批曲目上」的对照（见 [`INVESTIGATION-DEVICE-ENTITLEMENT.md`](INVESTIGATION-DEVICE-ENTITLEMENT.md) 第七节） |
 | 500 `SIGNER_UNAVAILABLE` / `未找到 bdms.node` | `LIBMSSDK_CLIENT_DIR` 指到了错误目录（应指向含 `resources` 的版本目录） |
 
 ## 3. 常驻服务

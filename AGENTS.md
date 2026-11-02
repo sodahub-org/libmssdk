@@ -61,9 +61,10 @@ deploy/README.md     Docker 部署
    是否成功必须用 `node src/index.mjs probe` 的 `fullTrack` 判定。
 7. **不记录凭据**：日志只允许请求形状、签名长度、脱敏设备号与脱敏 IP。
    Cookie、`X-Helios`、`X-Medusa` 一律不落盘。设备号在日志里同样只留首尾，
-   唯一允许写完整值的地方是 #10 取证工具那份落在仓库外的抓包件
-   （`tools/signer-tee.mjs`；POSIX 上 0600，Windows 的 NTFS 不认这个位，靠的是账号所有权 + 位置），
-   它不进日志、不进提交、用完删掉；
+   唯一允许写完整**真实抓来的**设备号的地方是 #10 取证工具那份落在仓库外的抓包件
+   （`tools/signer-tee.mjs`；POSIX 上 0600，Windows 的 NTFS 不认这个位，靠的是账号所有权 + 位置）。
+   本服务自己那份设备号按约定 5 存在 `identity.json` 里，不在这条的范围内。
+   抓包件不进日志、不进提交、用完删掉；
    也别放在会被网盘同步或备份的目录里（OneDrive、漫游配置这类）。
 8. **零运行时依赖**：服务只用 Node 内置模块；测试也使用 mock。
 9. **鉴权默认可用**：设置 `LIBMSSDK_TOKEN` 后，所有 POST 的**能力**路由（签名，以及任何会动数据或出网的入口）都需要 Bearer Token。
