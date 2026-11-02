@@ -31,17 +31,26 @@ wine /opt/node-win/node.exe src/index.mjs config >/logs/identity-preflight.out 2
 # 与 deploy/entrypoint.sh 一样开 job control，让 wine 拿到默认处置。
 set -m
 
-# docker stop 发给 PID 1 的是 SIGTERM，而 Wine 只把 SIGINT 映射成 CTRL_C_EVENT。
-# 与 deploy/entrypoint.sh 同一套转发：不转这一手，容器就是「进程直接消失」，
-# 判据 7 观察到的形态会永远是连接被拒。trap 先于 spawn 安装，避免「子进程已起、
-# trap 没装」的空档把入口脚本直接带走。
+# 真机证据（#23）：Wine 11 + Windows Node 20 下，入口转发的 SIGINT 到不了 Node（没有
+# event=shutdown，最后被 SIGKILL）。容器形态的权威触发源是 state 目录下的 closing.flag；
+# SIGINT 只作为别的 Wine 版本上能走信号快路的补充。两个 serve 共用 /app/data，
+# 一个标志会让两边都收尾；标志触发后不删，清理放在下一次启动。
+rm -f /app/data/closing.flag 2>/dev/null || true
+
 SERVE_PIDS=()
 stop_requested=0
 forward_stop() {
-    stop_requested=1
+    stop_requested=$((stop_requested + 1))
     [ ${#SERVE_PIDS[@]} -gt 0 ] || return 0
-    echo "[verify] 收到停止信号：把 SIGINT 转给每个 serve（Wine 会映射为 CTRL_C_EVENT）" >&2
-    local pid
+    if [ "$stop_requested" -gt 1 ]; then
+        echo "[verify] 第二次停止信号：跳过收尾，立即退出" >&2
+        for pid in "${SERVE_PIDS[@]}"; do
+            kill -9 "$pid" 2>/dev/null || true
+        done
+        exit 1
+    fi
+    echo "[verify] 收到停止信号：写 /app/data/closing.flag 触发收尾" >&2
+    : >/app/data/closing.flag 2>/dev/null || true
     for pid in "${SERVE_PIDS[@]}"; do
         kill -INT "$pid" 2>/dev/null || true
     done
@@ -57,9 +66,8 @@ for port in $PORTS; do
     echo "[verify] serve pid=$pid port=$port" >&2
 done
 
-# 停止信号抢在 serve 就绪之前：没有在飞请求可收，直接结束；此刻补发 SIGINT 会被
-# 还没装好处理器的 Wine 忽略，只会让容器等满宽限期。
-if [ "$stop_requested" = 1 ]; then
+# 停止信号抢在 serve 就绪之前：没有在飞请求可收，直接结束。
+if [ "$stop_requested" -gt 0 ]; then
     echo "[verify] 停止信号早于 serve 就绪：没有在飞请求可收，直接结束" >&2
     for pid in "${SERVE_PIDS[@]}"; do
         kill -9 "$pid" 2>/dev/null || true

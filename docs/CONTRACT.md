@@ -138,12 +138,14 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 
 ### 收尾在哪些形态生效
 
-「开始收尾 → `/readyz` 当场改口」依赖进程能收到信号。按部署形态分开说：
+「开始收尾 → `/readyz` 当场改口」在容器里靠的是一个**文件触发源**，不是信号：Wine 不把入口脚本
+转发的 `SIGINT` 交给 Node（Wine 11 + Windows Node 20 的 `docker stop` 实测：入口收到 SIGTERM、
+SIGINT 已发出，Node 侧没有 `event=shutdown`，最后被 SIGKILL）。按部署形态分开说：
 
 | 形态 | 收尾触发 | 停止期间看到的 |
 | --- | --- | --- |
 | 前台 `Ctrl+C`、Linux/macOS 的 `SIGTERM` | 进程直接收到 `SIGINT` / `SIGTERM` | 先 503（需窗口 > 0），再连接被拒 |
-| Docker（`docker stop` / compose） | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine | 先 503（需窗口 > 0），再连接被拒 |
+| Docker（`docker stop` / compose） | `deploy/entrypoint.sh` 写 state 目录下的 `closing.flag`；Node 轮询到后走收尾（SIGINT 只作补充） | 先 503（需窗口 > 0），再连接被拒 |
 | nssm 停止 | 默认先发 Ctrl+C，Node 收到 `SIGINT`；升级到终止进程时同下一行 | 先 503（需窗口 > 0），再连接被拒 |
 | `schtasks /end`、`taskkill /F`、超过宽限的 `SIGKILL` | 拿不到信号（`TerminateProcess`） | 从连接被拒/重置开始 |
 
@@ -152,14 +154,16 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 大于探针的「间隔 + 超时」（镜像 `HEALTHCHECK` 5 秒 + 2 秒、compose 窗口 8 秒），否则采样可能整个
 落在窗口之外。
 
-- Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM`；容器里的转发就是补这一跳。
+- **文件触发源**：路径是 state 目录下的 `closing.flag`（默认 `data/closing.flag`）。服务启动时会清掉
+  上一次留下的标志；触发后不删，多个 serve 共用同一份 state 时都能看到它。能写 state 目录的人可以
+  触发收尾——与改写 `rate-limit.mode` 是同一类本地权限，不是公网能力。
 - **排空窗口**：`markClosing()` 之后先保持监听，让探针真的读到 503，再停监听、收在飞与排队请求。
   由 `LIBMSSDK_DRAIN_DELAY_MS` 控制，默认 `0`（信号一到就停监听，与旧行为一致）；容器 compose
   显式设为 8 秒，并配 `stop_grace_period: 30s`。窗口只推迟「停监听」，不推迟「改口」。
 - 窗口与宽限期要覆盖编排器的摘流延迟；排空窗口 + 在飞请求的收尾时间必须小于 `stop_grace_period`，
   否则进程会被硬杀。
-- 容器形态的那一行要在你实际使用的 Wine 版本上复验一次：`verify/wine-multi` 会记录 `docker stop`
-  期间 `/readyz` 的形态（Wine 9.x 曾有 Ctrl+C 转发的回归）。
+- 容器形态靠 `verify/wine-multi` 的判据 7 记录 `docker stop` 期间 `/readyz` 的形态；换 Wine 版本后
+  重跑一次，别把这次实测当成永恒事实。
 - **不生效的形态要把承诺说小**：`schtasks /end` 走 `TerminateProcess`，无法拦截；要优雅停止就换成
   nssm 或真正的 Windows 服务，而不是等计划任务发信号。
 

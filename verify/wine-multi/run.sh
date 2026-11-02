@@ -186,6 +186,7 @@ docker create --name "$CONTAINER" \
     -e LIBMSSDK_STATE_DIR=/app/data \
     -e VERIFY_SERVE_PORTS="$SERVE_PORTS" \
     -e LIBMSSDK_TOKEN="$VERIFY_TOKEN" \
+    -e LIBMSSDK_WARMUP_BUDGET_MS="${LIBMSSDK_WARMUP_BUDGET_MS:-30000}" \
     "${PORT_ARGS[@]}" \
     -v "$VOL_DATA:/app/data" \
     -v "$VOL_WINE:/wine" \

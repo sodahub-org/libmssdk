@@ -24,6 +24,10 @@ bash verify/wine-multi/run.sh --mode mock
 `LIBMSSDK_VERIFY_TOKEN` 覆盖）。它不是凭据：不进镜像、不进结果文件，也不要拿去连真实部署。
 彩排模式绑回环、不设 token，行为不变。
 
+全新 Wine prefix 首次启动时，`bdms.init` 可能超过默认的 30 秒预热预算；预算用完 worker 会保持
+未就绪且不重试，判据 1 会以「进程没起来」失败。慢盘/新卷上把 `LIBMSSDK_WARMUP_BUDGET_MS` 调大
+（例如 `180000`）再跑，`run.sh` 会把它透传进容器。
+
 ## 测什么
 
 | 判据 | 外部可见事实 | 挂了会归成哪种形态 |
@@ -80,9 +84,10 @@ bash verify/wine-multi/run.sh --mode mock
 的 serve 进程的 `/readyz`，把观察到的形态序列记进结果的 `observations.stopObservation`。判据 4 已经杀掉
 一个进程，它的端口注定是连接被拒，所以不参与这一条：把死掉的端口也算进去，证据会永远翻成 `mixed`。
 
-- 期望 `saw-503`：entrypoint 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 先改口 `/readyz`、排空窗口里
-  仍在监听，窗口结束才停监听、收在飞请求；之后才变成连接被拒。
-- `refused-only` 说明信号没送到 Node（或排空窗口为 0）：容器形态退化成「进程直接消失」。
+- 期望 `saw-503`：`container-entry.sh` 收到 `SIGTERM` 后写 `/app/data/closing.flag`，每个 serve 轮询到它
+  先改口 `/readyz`、排空窗口里仍在监听，窗口结束才停监听、收在飞请求；之后才变成连接被拒。
+- `refused-only` 说明触发没生效（标志没写成功、state 目录不对或排空窗口为 0）：容器形态退化成
+  「进程直接消失」。第一轮真机取证就是这一形态：入口转发的 `SIGINT` 到不了 Node，所以改成了文件触发。
 - `mixed` 表示两个进程观察不一致，按结果里的 `sequences` 人工核对。
 - `ERROR` 表示观察阶段自己出错（例如容器已经不在、`docker exec` 失败）；只记这一条，不影响 1–6 的结论。
 

@@ -48,10 +48,16 @@ LIBMSSDK_CLIENT_DIR="/path/to/Soda Music/3.7.0"
 
 ## 停止与滚动升级
 
-`docker stop` / `docker compose down` 先发 `SIGTERM`；`deploy/entrypoint.sh` 把它转成 `SIGINT` 交给
-Wine（Wine 只把 Ctrl+C 语义带进 Windows 进程），所以容器里也能走完整收尾：`/readyz` 先回 503，
+`docker stop` / `docker compose down` 先发 `SIGTERM`；`deploy/entrypoint.sh` **在 state 目录写
+`closing.flag`**（`/app/data/closing.flag`），Node 侧轮询到它就走完整收尾：`/readyz` 先回 503，
 排空窗口结束后才停监听，最后收 worker。
 
+为什么不是把 `SIGTERM` 转成 `SIGINT`：真机实测（Wine 11 + Windows Node 20）入口确实收到了
+`SIGTERM`、也发出了 `SIGINT`，但 Node 侧没有 `event=shutdown`，`/readyz` 没改口，容器最后被
+SIGKILL。文件不经过 Wine 的信号语义，是可靠的那条路；`SIGINT` 只是留给别的 Wine 版本。
+
+- **触发文件**：`closing.flag` 启动时会被清掉（持久化 state 卷不能把重启直接收掉），触发后不删
+  （多个 serve 共用同一份 state 时，谁先删谁就吞掉别的进程的触发）。
 - **排空窗口**：`deploy/docker-compose.yml` 把 `LIBMSSDK_DRAIN_DELAY_MS` 默认设成 8 秒（`deploy/.env`
   可覆盖，设 0 = 信号一到就停监听）；直接用 `docker run` 跑镜像时用的是代码默认值 0，探针可能只看到
   连接被拒。窗口只推迟「停监听」，不推迟「改口」——它的作用就是让探针真的读到 503。
@@ -67,8 +73,8 @@ Wine（Wine 只把 Ctrl+C 语义带进 Windows 进程），所以容器里也能
 - **硬杀不在承诺里**：`kill -9`、`docker rm -f`、超过宽限期的停止，都是「进程直接消失」，观察到的
   是连接被拒/重置。计划任务 `schtasks /end` 同样拿不到信号（`TerminateProcess`），要优雅停止请换
   nssm 或 Windows 服务，见 [`../docs/DEPLOY-WINDOWS.md`](../docs/DEPLOY-WINDOWS.md)。
-- **启动中途被停**：从拉起 wine 到 Node 装好信号处理器之间有一个短窗口。此刻还没有开始监听、也没有
-  在飞请求，落空的停止信号不影响任何已服务的请求，只是容器可能要等满宽限期才被硬杀。
+- **启动中途被停**：从拉起 wine 到 Node 开始轮询 `closing.flag` 之间有一个短窗口。此刻还没有开始监听、
+  也没有在飞请求，入口会直接结束，不会挂到宽限期。
 
 ## 客户端怎么用
 

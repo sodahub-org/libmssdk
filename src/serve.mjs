@@ -12,10 +12,12 @@
 // 按需留一个排空窗口让编排器读到 503，再停监听、等在飞与排队的请求收完，最后收 worker ——
 // 反过来会把排队中的请求直接掐掉。
 
+import fs from 'node:fs'
+import path from 'node:path'
 import { maskAddressKey } from './ratelimit.mjs'
 import { createEndpointsHandler } from './endpoints.mjs'
 import { startDispatcher } from './dispatcher.mjs'
-import { logError, redactMachinePaths } from './log.mjs'
+import { logError, logEvent, redactMachinePaths } from './log.mjs'
 
 /**
  * worker 读身份的两条路：环境变量钉死，或只读身份文件。
@@ -114,12 +116,50 @@ function shutdownGracefully({ server, pool, markClosing, drainDelayMs = 0, locat
     return stopListening()
 }
 
+/**
+ * 与信号无关的收尾触发源：state 目录下的 `closing.flag`（#23）。
+ *
+ * 为什么需要它：容器里 `docker stop` 的 SIGTERM 到得了入口脚本，但入口转成的 SIGINT 在
+ * Wine 11 + Windows Node 20 上到不了 Node（真机实测没有 event=shutdown，容器只能等宽限期被
+ * SIGKILL）。文件轮询不经过 Wine 的信号语义，是本仓库已知能工作的形态（rate-limit.mode 同理）。
+ *
+ * 启动时已存在的标志按「上一次运行留下的」删掉并忽略：否则持久化 state 卷会让重启即收尾。
+ * 触发后**不删**标志：多个 serve 共用同一份 state 时，谁先删谁就会让别的进程看不到它；
+ * 清理留给下一次启动的入口脚本 / watcher。
+ * 目录不可写时返回空清理函数 —— 这条通道没有，信号路径仍在。
+ */
+export function watchCloseFile({ file, onSignal, log = () => {}, intervalMs = 200 }) {
+    if (!file) return () => {}
+    try {
+        fs.rmSync(file, { force: true })
+    } catch {
+        return () => {}
+    }
+    let fired = false
+    const timer = setInterval(() => {
+        if (fired) return
+        try {
+            if (!fs.existsSync(file)) return
+        } catch {
+            return
+        }
+        fired = true
+        log('close-signal', { source: 'file' })
+        onSignal()
+    }, intervalMs)
+    timer.unref?.()
+    return () => clearInterval(timer)
+}
+
 export function startServe({ config, env = process.env, ...options } = {}) {
     // 令牌检查在 startDispatcher 的最前面（fork 之前）：这里只做默认服务的装配。
+    // onExit 只给文件触发路径用：测试要观察「收尾序列走完」，不能真的退出测试进程。
+    const { onExit = code => process.exit(code), ...dispatcherOptions } = options
+    const log = dispatcherOptions.log || logEvent
     const state = { closing: false }
     const started = startDispatcher({
         config,
-        ...options,
+        ...dispatcherOptions,
         env: workerEnvFor(config, env),
         createFallback: ({ pool, limiter, diagnostics }) =>
             createEndpointsHandler({
@@ -145,12 +185,25 @@ export function startServe({ config, env = process.env, ...options } = {}) {
         })
         return stopping
     }
+    // 容器形态的主触发源：入口脚本在 state 目录写 closing.flag，这里轮询它走同一套收尾序列。
+    // 信号路径保留：前台 Ctrl+C、nssm 与原生 Linux 都靠它；两条路都幂等地落到 beginShutdown。
+    const closeFile = config.identityFile ? path.join(path.dirname(config.identityFile), 'closing.flag') : ''
+    const stopWatching = watchCloseFile({
+        file: closeFile,
+        log,
+        onSignal: () => {
+            beginShutdown().finally(() => onExit(0))
+        },
+    })
+    started.server.on('close', stopWatching)
     // 交回给信号处理用：SIGTERM 到达的第一件事就是说「我不再接流量了」，
     // 而不是等 server.close() 之后才改口 —— 那时排队的请求已经在往里挤了。
     return {
         ...started,
         markClosing,
         drainDelayMs,
+        closeFile,
+        stopWatching,
         beginShutdown,
     }
 }

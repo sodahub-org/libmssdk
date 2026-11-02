@@ -108,26 +108,28 @@ worker 数按绑定地址推导，环境变量始终优先：
 **队列饱满不进就绪判定。** 过载时把自己从上游摘掉，剩下的实例只会更忙，这是标准的死亡螺旋。
 过载的信号走普通请求路径的 503 `BUSY`。
 
-**「不在收尾过程中」这一条要求信号真的送到进程。** `SIGTERM` / `SIGINT` 到达的第一件事就是让
+**「不在收尾过程中」这一条在容器里靠文件触发，不靠信号。** `SIGTERM` / `SIGINT` 到达的第一件事就是让
 `/readyz` 改口（`src/index.mjs` 的 shutdown），之后停监听、等在飞与排队的请求收完、最后收 worker。
 按部署形态分开说：
 
 | 形态 | 停止时发生什么 | 探针看到的 |
 | --- | --- | --- |
 | 前台 Ctrl+C、Linux/macOS 的 `SIGTERM`、nssm 停止 | 进程收到 `SIGINT` / `SIGTERM`，走完整收尾 | 先 503（需窗口 > 0），再连接被拒 |
-| `docker stop` / compose | `deploy/entrypoint.sh` 把 `SIGTERM` 转成 `SIGINT` 交给 Wine，Node 走完整收尾 | 先 503（需窗口 > 0），再连接被拒 |
+| `docker stop` / compose | `deploy/entrypoint.sh` 写 state 目录下的 `closing.flag`，Node 轮询到后走完整收尾 | 先 503（需窗口 > 0），再连接被拒 |
 | `schtasks /end`、`taskkill /F`、超过 `stop_grace_period` 的 `SIGKILL` | 拿不到信号，`TerminateProcess` 硬杀 | 从连接被拒/重置开始 |
 
 表中「先 503」要排空窗口大于 0 才观察得到；默认 0 时改口与停监听几乎同时，探针仍可能只看到连接被拒。
 
-Wine 只把 `SIGINT` 映射成 Windows 的 `CTRL_C_EVENT`，不映射 `SIGTERM` —— 这就是容器入口必须转一手
-的原因。tini / dumb-init 解决的是 PID 1 转发与僵尸回收，不改变 Wine 内部这一跳。
+**为什么容器不用 SIGINT。** 入口脚本把 `docker stop` 的 `SIGTERM` 转成 `SIGINT` 交给 Wine，但
+Wine 11 + Windows Node 20 的真机实测里，Node 侧没有 `event=shutdown`、`/readyz` 没改口，容器最后被
+SIGKILL（`verify/wine-multi` 判据 7 首轮记录为 `refused-only`）。所以容器形态的权威触发源是
+`closing.flag`（启动时清残留、触发后不删），SIGINT 只作为别的 Wine 版本上的补充。tini / dumb-init
+解决的是 PID 1 转发与僵尸回收，不改变 Wine 内部这一跳。
 
 **收尾前留一个排空窗口。** 改口与停监听如果发生在同一刻，探针根本读不到那个 503。
 `LIBMSSDK_DRAIN_DELAY_MS`（默认 0，即旧行为）让 `markClosing()` 之后先保持监听；容器 compose 已设
 8 秒并配 `stop_grace_period: 30s`。排空窗口 + 在飞请求的收尾时间要小于编排器的停止宽限期，否则进程
-会被硬杀。容器形态的「先 503」还要在你实际使用的 Wine 版本上用 `verify/wine-multi` 复验一次
-（Wine 9.x 曾有 Ctrl+C 转发的回归）。
+会被硬杀。容器形态的「先 503」由 `verify/wine-multi` 判据 7 记录；换 Wine 版本后重跑一次。
 
 **计划任务那一半仍然不优雅。** `schtasks /end` 先发 `WM_CLOSE`（控制台程序收不到），再按
 `AllowHardTerminate` 用 `TerminateProcess`；官方文档明确它立即终止、不执行任何终止处理块。要优雅停止
