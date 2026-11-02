@@ -35,8 +35,8 @@ libresoda / 第三方客户端
 `libresoda` 系客户端——官方 PC 客户端这台机器上没装）也全都还是 30–60 秒单档。抓包给出的事实
 比这条读数更靠前：真机在网线上发的本来就是每请求一个毫秒时间戳，和上面那个「随机时间戳」同形，
 所以这个账号压根没有一份稳定的「登录设备号」可供匹配。而试听级回包带的
-`label_info.only_vip_playable=true` 与账号 `/luna/pc/me` 回的 `is_vip=false` 互相对上：
-决定权在曲目授权层，不在设备身份层。
+`label_info.only_vip_playable=true` 与账号 `/luna/pc/me` 回的 `is_vip=false` 互相对上（这是相关，
+不是因果证明——缺一份已知会员账号在同一批曲目上的对照）：决定权在曲目授权层，不在设备身份层。
 还剩什么没测（Cookie 缺哪个字段、已知会员账号的对照、一台会发固定设备号的官方客户端、
 当初 7 首里其余 5 首）写在报告的第七节，那几条是本结论的边界。判据、抓包步骤与复现见
 [`docs/INVESTIGATION-DEVICE-ENTITLEMENT.md`](docs/INVESTIGATION-DEVICE-ENTITLEMENT.md)。
