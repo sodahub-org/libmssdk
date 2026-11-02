@@ -29,6 +29,9 @@ SCENARIO=ok
 KEEP=0
 SKIP_BUILD=0
 NODE_BIN=${NODE_BIN:-node}
+# 非机密：容器里固定绑 0.0.0.0（宿主端口映射需要），而鉴权规则要求非回环绑定必须有 token。
+# 只在本验证里使用，不进镜像、不进结果文件。
+VERIFY_TOKEN=${LIBMSSDK_VERIFY_TOKEN:-verify-token-not-a-secret}
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
@@ -182,6 +185,8 @@ echo "[verify] 创建容器 $CONTAINER（${#SERVE_PORT_ARRAY[@]} 个 serve，映
 docker create --name "$CONTAINER" \
     -e LIBMSSDK_STATE_DIR=/app/data \
     -e VERIFY_SERVE_PORTS="$SERVE_PORTS" \
+    -e LIBMSSDK_TOKEN="$VERIFY_TOKEN" \
+    -e LIBMSSDK_WARMUP_BUDGET_MS="${LIBMSSDK_WARMUP_BUDGET_MS:-30000}" \
     "${PORT_ARGS[@]}" \
     -v "$VOL_DATA:/app/data" \
     -v "$VOL_WINE:/wine" \
@@ -198,7 +203,11 @@ STAGE=$(mktemp -d)
 cleanup() {
     rm -rf "$STAGE"
     if [[ "$KEEP" == 1 ]]; then
-        echo "[verify] --keep：保留容器，自行清理用 docker rm -f $CONTAINER（两个卷里的 Wine prefix 与身份始终保留）"
+        if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" == "true" ]]; then
+            echo "[verify] --keep：保留运行中的容器 $CONTAINER（两个卷里的 Wine prefix 与身份始终保留）"
+        else
+            echo "[verify] --keep：容器 $CONTAINER 已停止（判据 7 会执行 docker stop）；要再用就 docker start $CONTAINER（两个卷始终保留）"
+        fi
         return
     fi
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
@@ -220,4 +229,6 @@ if [[ -z "$TRACK" ]]; then
     echo '[verify] 没给 --track：不打真实上游，判据 2 与判据 3 的上游部分不会执行，结论最多是「部分完成」。' >&2
 fi
 
-"$NODE_BIN" "$SCRIPT_DIR/harness.mjs" "${HARNESS_ARGS[@]}"
+# 容器内固定绑 0.0.0.0（宿主端口映射需要），而鉴权规则要求非回环绑定必须有 token。
+# 这个值不是凭据：只在本验证里用，harness 把它加进每个 /sign 的 Authorization 头。
+LIBMSSDK_VERIFY_TOKEN="$VERIFY_TOKEN" "$NODE_BIN" "$SCRIPT_DIR/harness.mjs" "${HARNESS_ARGS[@]}"

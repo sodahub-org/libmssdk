@@ -19,6 +19,15 @@ bash verify/wine-multi/run.sh --mode mock
 `3` 前置条件或用法不满足（缺 docker、缺原生模块、选项写错——验证根本没开始）。
 结果 JSON 落在 `results/`（被 `.gitignore` 挡住）。
 
+容器里的进程固定绑 `0.0.0.0`（宿主端口映射需要），而「非回环绑定必须有 token」是服务自己的硬规则，
+所以 `run.sh` 给容器和 harness 一个固定的非机密串 `verify-token-not-a-secret`（可用
+`LIBMSSDK_VERIFY_TOKEN` 覆盖）。它不是凭据：不进镜像、不进结果文件，也不要拿去连真实部署。
+彩排模式绑回环、不设 token，行为不变。
+
+全新 Wine prefix 首次启动时，`bdms.init` 可能超过默认的 30 秒预热预算；预算用完 worker 会保持
+未就绪且不重试，判据 1 会以「进程没起来」失败。慢盘/新卷上把 `LIBMSSDK_WARMUP_BUDGET_MS` 调大
+（例如 `180000`）再跑，`run.sh` 会把它透传进容器。
+
 ## 测什么
 
 | 判据 | 外部可见事实 | 挂了会归成哪种形态 |
@@ -68,6 +77,23 @@ bash verify/wine-multi/run.sh --mode mock
 
 判据各自只管自己那件事，但**整体结论不粉饰**：只要记过一条失败（哪怕是判据 4 有意不计入自身状态的那种），
 结论就是「失败」/ exit `1`。
+
+## 停止期间的观察（#23）
+
+真环境跑完判据 1–6 之后，harness 会执行一次 `docker stop --time 30`，同时每 250ms 问一次**停止前仍活着**
+的 serve 进程的 `/readyz`，把观察到的形态序列记进结果的 `observations.stopObservation`。判据 4 已经杀掉
+一个进程，它的端口注定是连接被拒，所以不参与这一条：把死掉的端口也算进去，证据会永远翻成 `mixed`。
+
+- 期望 `saw-503`：`container-entry.sh` 收到 `SIGTERM` 后写 `/app/data/closing.flag`，每个 serve 轮询到它
+  先改口 `/readyz`、排空窗口里仍在监听，窗口结束才停监听、收在飞请求；之后才变成连接被拒。
+- `refused-only` 说明触发没生效（标志没写成功、state 目录不对或排空窗口为 0）：容器形态退化成
+  「进程直接消失」。第一轮真机取证就是这一形态：入口转发的 `SIGINT` 到不了 Node，所以改成了文件触发。
+- `mixed` 表示两个进程观察不一致，按结果里的 `sequences` 人工核对。
+- `ERROR` 表示观察阶段自己出错（例如容器已经不在、`docker exec` 失败）；只记这一条，不影响 1–6 的结论。
+
+这一条只是**记录**，不参与通过/失败的门禁：Wine 的 Ctrl+C 转发在 9.x 有过回归（见 #23 的调研），
+把版本差异折成一个 FAIL 会掩盖真正要看的东西。彩排模式没有容器可停，这一条记 `SKIPPED`。
+注意 `--keep` 保留的容器这时是**已停止**状态，要重新跑就 `docker start` 或先 `docker rm -f`。
 
 ## 前置条件
 

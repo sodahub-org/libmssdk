@@ -6,7 +6,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fetchOwnIdentity, fetchReady, probeReady, tailLines, waitForReady } from './endpoints.mjs'
+import { fetchOwnIdentity, fetchReady, probeReady, probeStatus, tailLines, waitForReady } from './endpoints.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -150,6 +150,58 @@ export function createDockerDriver({ container, containerPorts, hostPorts }) {
 
         async readIdentityFile() {
             return inContainer(`cat ${IDENTITY_FILE} 2>/dev/null || true`)
+        },
+
+        /**
+         * #23 的补充验证：`docker stop` 期间 /readyz 到底回了什么。
+         *
+         * 修好之后应当先看到可读的 503（entrypoint 把 SIGTERM 转成 SIGINT、Node 改口、排空窗口
+         * 内仍在监听），最后才变成连接被拒；没修好时从头就是 refused。这里只记录真的观察到过的
+         * 形态序列，不靠 sleep 猜，也不把 Wine 版本差异藏起来。
+         */
+        async observeStop({
+            graceSeconds = 30,
+            intervalMs = 250,
+            probeTimeoutMs = 800,
+            indexes = publicPorts.map((_, index) => index),
+        } = {}) {
+            // 判据 4 已经杀过一个进程，它的端口注定是 refused。只观察停之前还活着的那些，
+            // 否则「每个端口都出现 503」永远不成立，证据会稳定地翻成 mixed。
+            const watched = indexes.filter(index => Number.isInteger(index) && index >= 0 && index < publicPorts.length)
+            const sequences = watched.map(() => [])
+            const note = (slot, kind) => {
+                const list = sequences[slot]
+                if (list.at(-1) !== kind) list.push(kind)
+            }
+            let stopError = null
+            const stopping = docker(['stop', '--time', String(graceSeconds), container]).catch(error => {
+                stopError = String(error?.message || error)
+            })
+            // inspect 偶发失败不能当成「容器已经停了」：否则会提前结束采样、伪造出一个 refused。
+            // 连续几次读不到才算停（容器被移除时 inspect 会真的报错）。
+            let inspectErrors = 0
+            const deadline = Date.now() + (graceSeconds + 15) * 1000
+            for (;;) {
+                let running = true
+                try {
+                    running = (await docker(['inspect', '--format', '{{.State.Running}}', container])).trim() === 'true'
+                    inspectErrors = 0
+                } catch {
+                    inspectErrors += 1
+                }
+                for (const [slot, index] of watched.entries()) {
+                    const result = await probeStatus(publicPorts[index], probeTimeoutMs)
+                    note(slot, result.kind === 'http' ? `http-${result.status}` : result.kind)
+                }
+                if (!running || inspectErrors >= 3 || Date.now() > deadline) break
+                await new Promise(resolve => setTimeout(resolve, intervalMs))
+            }
+            await stopping
+            return {
+                container,
+                stopError,
+                sequences: watched.map((index, slot) => ({ port: publicPorts[index], sequence: sequences[slot] })),
+            }
         },
 
         teardown() {},

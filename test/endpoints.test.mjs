@@ -17,7 +17,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 
 const { createEndpointsHandler, DEPRECATED_AT, DEPRECATION_HTTP_VALUE, SUNSET_HTTP_DATE } = await import('../src/endpoints.mjs')
 const { createDispatcher } = await import('../src/dispatcher.mjs')
-const { startServe } = await import('../src/serve.mjs')
+const { resolveDrainDelay, startServe } = await import('../src/serve.mjs')
 const { fakePool, signedBody } = await import('./helpers/fake-pool.mjs')
 const { FakeWorker } = await import('./helpers/fake-worker.mjs')
 const { rawExchange } = await import('./helpers/raw-request.mjs')
@@ -353,4 +353,76 @@ test('默认装配：worker 报告就绪才 200，开始收尾就 503', async ()
     const live = await fetch(`${baseUrl}/livez`, { signal: AbortSignal.timeout(5000) })
     assert.equal(live.status, 200, '轻量端点不看关闭状态：进程还在就是还在')
     await entry.pool.stop()
+})
+
+// 收尾的第二半：改口之后、停监听之前留一个排空窗口 —— 编排器的探针要真的读得到 503，
+// 而不是撞上连接被拒。窗口里监听仍在，在飞请求照常算完、按 200 交回。
+test('收尾：排空窗口内 /readyz 立刻 503，在飞请求仍能收完，窗口结束才停监听', async () => {
+    const workers = []
+    const entry = startServe({
+        config: { ...config, identityPersisted: true, drainDelayMs: 500 },
+        env: { LIBMSSDK_WORKERS: '1' },
+        log: () => {},
+        spawn: index => {
+            const worker = new FakeWorker(index)
+            workers.push(worker)
+            return worker
+        },
+    })
+    servers.push(entry.server)
+    await new Promise(resolve => entry.server.listen(0, '127.0.0.1', resolve))
+    const { port } = entry.server.address()
+    workers[0].reportReady()
+
+    // 不用 fetch：它默认的 keep-alive 连接会让 server.close() 一直等；这里每条连接用完就关。
+    const exchange = (path, options = {}) =>
+        new Promise((resolve, reject) => {
+            const request = http.request(
+                {
+                    host: '127.0.0.1',
+                    port,
+                    path,
+                    agent: false,
+                    method: options.method || 'GET',
+                    headers: options.headers,
+                },
+                response => {
+                    const chunks = []
+                    response.on('data', chunk => chunks.push(chunk))
+                    response.on('end', () =>
+                        resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString('utf8') }),
+                    )
+                },
+            )
+            request.on('error', reject)
+            request.end(options.body)
+        })
+
+    // 真的在飞的一单：假 worker 不回包之前，它会一直挂在槽位里
+    const pending = exchange('/sign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${config.token}` },
+        body: JSON.stringify(signPayload()),
+    })
+    await until(() => workers[0].task(), '请求被派到 worker')
+
+    const closed = entry.beginShutdown()
+    assert.equal((await exchange('/readyz')).status, 503, '改口是同步的：窗口里先读到 503')
+    assert.equal((await exchange('/livez')).status, 200, '窗口里监听还在：轻量端点照常答')
+
+    workers[0].reportResult()
+    const signed = await pending
+    assert.equal(signed.status, 200, '在飞请求在窗口里算完，客户端拿到的是回包而不是连接重置')
+
+    await closed
+    // 窗口结束、在飞连接收完之后才停监听：再连是连不上，而不是又一个 503
+    await assert.rejects(exchange('/readyz'))
+})
+
+test('排空窗口参数：非法值回退 0，默认就是原先「信号一到就停监听」的行为', () => {
+    assert.equal(resolveDrainDelay({}), 0)
+    assert.equal(resolveDrainDelay({ drainDelayMs: 0 }), 0)
+    assert.equal(resolveDrainDelay({ drainDelayMs: -5 }), 0)
+    assert.equal(resolveDrainDelay({ drainDelayMs: 'abc' }), 0)
+    assert.equal(resolveDrainDelay({ drainDelayMs: '250' }), 250)
 })
