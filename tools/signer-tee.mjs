@@ -125,22 +125,28 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
         readBody(request)
             .then(async text => {
                 if (text === null) return reply(413, { ok: false, error: '请求体超出上限' })
+                let record = null
                 try {
                     const signRequest = normalizeSignRequest(JSON.parse(text || '{}'))
-                    const record = captureRecord({
+                    record = captureRecord({
                         url: signRequest.url,
                         headers: signRequest.headers,
                         method: signRequest.method,
                         tsMs: signRequest.ts_ms,
                     })
-                    if (record) {
-                        appendRecord(out, record)
-                        log(`${formatCapture(record)}\n`)
-                    }
                 } catch {
                     // 解析不了就单纯转发：这台中转的职责是记录能记录的东西，不是替签名服务做校验。
                     // 要出声，但不复述内容——报文里可能带着 cookie 与令牌。
                     log('event=skip 这条请求体解析不了，只转发不记录\n')
+                }
+                // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
+                if (record) {
+                    try {
+                        appendRecord(out, record)
+                        log(`${formatCapture(record)}\n`)
+                    } catch {
+                        log('event=error 抓包件写不进去，这条只转发没记录\n')
+                    }
                 }
                 const upstreamResponse = await fetch(upstream, {
                     method: 'POST',

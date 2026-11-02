@@ -247,7 +247,6 @@ export const ARMS = [
         expect: '免签名基线：曲目本身多长、试听多长、是否会员曲',
         changes: '不走签名，GET h5/seo_track',
         touches: ['(整条请求都不同：免签名的网页接口)'],
-        offBaseline: true,
         request: { seo: true },
     },
     {
@@ -257,10 +256,15 @@ export const ARMS = [
         expect: '账号自身的会员标记（is_vip 的布尔读数；档位是字符串，读数一律不收），不判任何曲目',
         changes: '不走签名，GET /luna/pc/me（带 Cookie，身份仍用时间戳）',
         touches: ['(整条请求都不同：账号档位端点)'],
-        offBaseline: true,
         request: { me: true, identity: 'ts', app: APP_PROFILES.luna330, useCookie: true },
     },
 ]
+
+/**
+ * 这两条打的不是 `track_v2`，整条请求都与基线不同，所以「一次只动声明过的那几个字段」
+ * 这条不变量对它们不适用。判据只有一个来源：看这条 arm 自己走的是哪条请求路径。
+ */
+export const isOffBaseline = arm => Boolean(arm.request.seo || arm.request.me)
 
 /**
  * 只保留判定用的标量。字符串一律不收（`status_msg` 这类里可能夹着地址、标识或提示文案），

@@ -1,7 +1,8 @@
 // 取证中转的离线用例：它站在「已登录播放器」与「签名服务」中间，
 // 唯一的职责是把播放器真实发出的设备身份记进一份 0600 的抓包件，其余一律原样转发。
 // 断言的都是外部可见的事实（转发出去的内容、落盘的那几行、回给调用方的状态码），
-// 以及一条边界：凭据既不落盘也不回显。全部走 listen(0)，不打网络。
+// 以及一条边界：凭据既不落盘也不回显。监听一律 listen(0)，三条用法守卫跑子进程但都在
+// 起监听之前退出——不打网络，也不自选端口再绑定。
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -165,15 +166,16 @@ test('原样转发给上游签名器，抓包件里只多一行身份；回包�
     assert.ok(!logged.join('').includes('1789435000000'), '终端那一行不带完整设备号')
 })
 
-test('非 POST 不记录也不转发，坏 JSON 只转发不记录', async () => {
+test('非 POST 不记录也不转发，坏 JSON 只转发不记录但要说出声', async () => {
     let hits = 0
+    const logged = []
     const upstream = await listen((request, response) => {
         hits += 1
         request.resume()
         request.on('end', () => response.end('{"ok":true}'))
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'capture.jsonl')
-    const tee = await startTee({ upstream: upstream.url, out })
+    const tee = await startTee({ upstream: upstream.url, out, log: line => logged.push(line) })
     const base = `http://127.0.0.1:${tee.address().port}/sign`
 
     const wrongMethod = await fetch(base, { method: 'GET' })
@@ -184,6 +186,8 @@ test('非 POST 不记录也不转发，坏 JSON 只转发不记录', async () =>
     assert.equal(garbage.status, 200, '解析不了照样转发：记录是顺带的事')
     assert.equal(hits, 1)
     assert.equal(fs.existsSync(out), false, '坏 JSON 里没有身份，抓包件不该被创建')
+    assert.match(logged.join(''), /event=skip/, '漏记一条要出声，否则「抓到了几条」根本对不上账')
+    assert.ok(!logged.join('').includes('not json'), '出声也不复述报文内容')
 })
 
 test('没有 device_id 的请求转发但不进抓包件', async () => {
@@ -199,6 +203,21 @@ test('没有 device_id 的请求转发但不进抓包件', async () => {
     })
     assert.equal(response.status, 200)
     assert.equal(fs.existsSync(out), false)
+})
+
+test('抓包件写不进去时单独出声：这条只转发没记录，取证不会假装抓到了', async () => {
+    const upstream = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => response.end('{"ok":true}'))
+    })
+    const logged = []
+    // 把抓包件指到一个目录上：openSync 必失败，失败原因与「解析不了」是两回事。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-dir-'))
+    const tee = await startTee({ upstream: upstream.url, out: directory, log: line => logged.push(line) })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, { method: 'POST', body: signRequest() })
+    assert.equal(response.status, 200, '落盘失败也不能把调用方晾着：转发照做')
+    assert.match(logged.join(''), /event=error/, '写不进去要单独报，不能混成「解析不了」')
+    assert.ok(!logged.join('').includes('event=skip'), '这条报文是好 JSON，不该报解析失败')
 })
 
 const teeCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'signer-tee.mjs')

@@ -23,6 +23,7 @@ const {
     captureIdentity,
     encodeSortedParams,
     extractScalars,
+    isOffBaseline,
     maskTrackId,
     queryEscape,
     runArm,
@@ -85,7 +86,7 @@ test('时间戳身份与客户端回退一致：iid = device_id + 1，fp = devic
 })
 
 test('每一条 arm 只改它声明过的字段', () => {
-    for (const arm of ARMS.filter(item => !item.offBaseline)) {
+    for (const arm of ARMS.filter(item => !isOffBaseline(item))) {
         const { touched } = diffAgainstBaseline(arm)
         assert.deepEqual(
             touched.slice().sort(),
@@ -165,7 +166,7 @@ test('captured 身份必须显式给设备号，缺了就报错而不是悄悄�
 
 test('免基线的 arm 只有那两条打别端点的，加一条就要在这里说明为什么', () => {
     assert.deepEqual(
-        ARMS.filter(item => item.offBaseline).map(item => item.name),
+        ARMS.filter(isOffBaseline).map(item => item.name),
         ['seo-web', 'account-me'],
         '这两条整条请求都与基线不同，逐字段不变量对它们不适用',
     )
