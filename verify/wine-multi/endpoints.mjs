@@ -53,9 +53,13 @@ export async function probeStatus(port, probeTimeoutMs = 800) {
  */
 export async function fetchOwnIdentity(port, timeoutMs) {
     try {
+        const verifyToken = String(process.env.LIBMSSDK_VERIFY_TOKEN || '').trim()
         const response = await fetch(`http://127.0.0.1:${port}/sign`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+                'content-type': 'application/json',
+                ...(verifyToken ? { authorization: `Bearer ${verifyToken}` } : {}),
+            },
             body: JSON.stringify({
                 url: 'https://api.qishui.com/luna/pc/track_v2?aid=386088',
                 method: 'POST',

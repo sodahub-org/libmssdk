@@ -19,6 +19,11 @@ bash verify/wine-multi/run.sh --mode mock
 `3` 前置条件或用法不满足（缺 docker、缺原生模块、选项写错——验证根本没开始）。
 结果 JSON 落在 `results/`（被 `.gitignore` 挡住）。
 
+容器里的进程固定绑 `0.0.0.0`（宿主端口映射需要），而「非回环绑定必须有 token」是服务自己的硬规则，
+所以 `run.sh` 给容器和 harness 一个固定的非机密串 `verify-token-not-a-secret`（可用
+`LIBMSSDK_VERIFY_TOKEN` 覆盖）。它不是凭据：不进镜像、不进结果文件，也不要拿去连真实部署。
+彩排模式绑回环、不设 token，行为不变。
+
 ## 测什么
 
 | 判据 | 外部可见事实 | 挂了会归成哪种形态 |

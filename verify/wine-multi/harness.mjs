@@ -219,9 +219,14 @@ async function signOn(portIndex, { url, method = 'POST', body = '', headers, dev
     const started = Date.now()
     report.tally.signAttempts += 1
     try {
+        const verifyToken = String(process.env.LIBMSSDK_VERIFY_TOKEN || '').trim()
         const response = await fetch(`http://127.0.0.1:${driver.hostPorts[portIndex]}/sign`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+                'content-type': 'application/json',
+                // 容器里绑 0.0.0.0 → 必须有 token；彩排绑回环、没有 token，这里自然不带
+                ...(verifyToken ? { authorization: `Bearer ${verifyToken}` } : {}),
+            },
             body: JSON.stringify({ url, method, body, headers, device_id: deviceId }),
             signal: AbortSignal.timeout(signTimeoutMs),
         })
