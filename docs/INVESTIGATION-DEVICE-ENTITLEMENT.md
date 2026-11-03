@@ -315,8 +315,9 @@ node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --arm no-si
   `verify/wine-multi/bdms-layers.mjs`。
   测到的是：同镜像、同 prefix 卷、同脚本，只把二进制从 drvfs 换进容器自己的文件系统，三层就走完了
   （1.5 秒 / 3.2 秒各一次）；整个仓库连同二进制 `docker cp` 进容器时，本工具也跑完了一条 arm
-  （`--arm good-ts`，曲目号当场编的，cookie 走的是容器里的 `/dev/null` 即匿名——本机 Windows Node
-  上这个路径不成立，要指一个真的空文件），签名链路走完、上游回 `HTTP 200` 非空回包。
+  （`--arm good-ts`，曲目号当场编的，`--cookie-from` 指一个空文件＝匿名；本次给的是容器里
+  的 `/dev/null`（Wine 映射成真 null 设备；本机 Windows Node 上这个路径不成立，照抄建议建一个
+  空文件），签名链路走完、上游回 `HTTP 200` 非空回包。
   **这只是通路验证，不是权益读数**：合成曲目号 + 匿名 cookie 下 `fullTrack` 本来就该是 false。
   本报告的权益读数仍出自本机 Windows 原生 Node（与容器里是同一个 `bdms.node`）；换到容器里重跑
   同样的 arm 属于复现，不构成新的对照——要新增对照还是本节前面那几条。

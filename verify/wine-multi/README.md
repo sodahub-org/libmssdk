@@ -129,9 +129,10 @@ bash verify/wine-multi/run.sh --mode mock
    **这条坑不只咬 `serve`**（#30）。`-v <Windows 目录>:/app` 把整个仓库挂进容器、再让工具进程
    自己 `require` 原生模块，就是这么撞上的。这次的卡点就落在二进制的挂载位置上：同一个镜像、
    同一个 prefix 卷、同一个脚本，只把 `bdms.node` 从 drvfs 挂载换进容器自己的文件系统，三层就
-   走完了——`加载 → init → 签名` 1.5 秒（TTY）与 3.2 秒（重定向到文件），各一次。脚本留在 drvfs
-   上不影响：仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs 挂载里读，
-   只有两个二进制走 `docker cp`。
+   走完了——`加载 → init → 签名` 1.5 秒（TTY）与 3.2 秒（重定向到文件），各一次。**入口 shell 脚本**
+   留在 drvfs 上不影响：仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs 挂载里读，
+   只有两个二进制走 `docker cp`。「`.mjs` 源码放 drvfs、只有二进制在容器内」这一格本次没单独测
+   （本次跑的两种形状：源码与二进制都在容器内，以及工作目录在 drvfs 但脚本与二进制都在容器内）。
    票面还留着一个怀疑（覆盖 entrypoint 之后 prefix 初始化程度与 `serve` 路径不同）。这一格只排掉一半：
    票面自己就记着「手工补 `wineboot -u` 无效」，与本次「只换二进制位置就通」相互一致，所以初始化程度
    不是那次挂住的原因；但**全新没初始化过的 prefix** 这一格本次没测——用过的两个卷都先跑过一次
@@ -160,8 +161,9 @@ bash verify/wine-multi/run.sh --mode mock
    对照实验工具（`tools/entitlement-matrix.mjs`）在容器里跑的形状，本次实测走通的是这一种：
 
    ```bash
-   # 1) 起一台带 prefix 卷、带 TTY 的空转容器。--entrypoint bash 不能省：
-   #    镜像入口是 deploy/entrypoint.sh，它会直接去 serve，容器里就没有 /appc 这一说了
+   # 1) 起一台带 prefix 卷、带 TTY 的空转容器。--entrypoint bash 不能省：不覆盖入口的话，
+   #    镜像入口 deploy/entrypoint.sh 会先把 `-c` 当成 src/index.mjs 的子命令（实测：先白等
+   #    30–40 秒的 prefix 初始化，然后 unknown_command 退 2），步骤 3 的 docker exec 落空
    docker run -d --name matrix -t -v <wine卷>:/wine \
        --entrypoint bash -e WINEPREFIX=/wine -e WINEDEBUG=-all \
        libmssdk:local -c 'sleep infinity'
@@ -179,7 +181,8 @@ bash verify/wine-multi/run.sh --mode mock
    位置可以挑，两条硬条件跑不掉：**不能是 drvfs 挂载里的路径**，且 `metasecml.dll` 得和 `bdms.node`
    同目录（Wine 按加载模块所在目录找依赖）。另外 `docker cp` 单个文件不会替目标建父目录，
    `run.sh` 因此走一个 `mktemp -d` 临时目录、两个文件都拷进去、再整目录 `docker cp "$STAGE/."`。
-   上面那条 `--cookie-from` 指一个空文件＝匿名对照，本次就是这么跑的。**不给这个参数不会失败**：
+   上面那条 `--cookie-from` 指一个空文件＝匿名对照（本次用的是容器里的 `/dev/null`，
+   Wine 把它映射成真 null 设备；照抄的话建一个空文件更稳，本机 Windows Node 上 `/dev/null` 不成立）。**不给这个参数不会失败**：
    实测它会先打一行「没读到 cookie（默认源：环境变量 `LIBMSSDK_COOKIE` 或本机播放器配置）」和一行
    警告，然后照样匿名把这条 arm 跑完并出网——忘了指 cookie 的后果是静悄悄少一类对照，不是报错停下。
 
