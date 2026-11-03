@@ -162,8 +162,9 @@ bash verify/wine-multi/run.sh --mode mock
 
    ```bash
    # 1) 起一台带 prefix 卷、带 TTY 的空转容器。--entrypoint bash 不能省：不覆盖入口的话，
-   #    镜像入口 deploy/entrypoint.sh 会先把 `-c` 当成 src/index.mjs 的子命令（实测：先白等
-   #    30–40 秒的 prefix 初始化，然后 unknown_command 退 2），步骤 3 的 docker exec 落空
+   #    镜像入口 deploy/entrypoint.sh 会先把 `-c` 当成 src/index.mjs 的子命令，回 unknown_command
+   #    退 2（卷上还没有 `system.reg` 的话，先白等 30–40 秒的 prefix 初始化再退），
+   #    步骤 3 的 docker exec 落空
    docker run -d --name matrix -t -v <wine卷>:/wine \
        --entrypoint bash -e WINEPREFIX=/wine -e WINEDEBUG=-all \
        libmssdk:local -c 'sleep infinity'
