@@ -178,18 +178,26 @@ test('免基线的 arm 只有那两条打别端点的，加一条就要在这里
     )
 })
 
-test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，iid/fp 缺了拿 device_id 顶上', () => {
-    const line = (item, identity) => JSON.stringify({ path: item, identity })
-    const text = [
+test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那份不齐就报错，不拿 device_id 顶', () => {
+    const line = (item, identity) => JSON.stringify({ at: '2026-11-03T00:00:00.000Z', path: item, identity })
+    const good = [
         '{"broken":',
         '',
         line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }),
-        line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '' }),
+        line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
         line('/luna/pc/me', { deviceId: '' }),
     ].join('\n')
-    assert.deepEqual(captureIdentity(text), { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
+    assert.deepEqual(captureIdentity(good), { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
     assert.throws(() => captureIdentity(''), /device_id/)
     assert.throws(() => captureIdentity('{"at":"2026-11-03T00:00:00.000Z","path":"/x"}'), /device_id/)
+    // 三个号缺一个就是那份不齐：报错，不顶替，也不回落到更早那一条
+    const noFp = line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '' })
+    const noIid = line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '', fp: '1789435000000' })
+    const neither = line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '', fp: '' })
+    assert.throws(() => captureIdentity(noFp), /不齐/)
+    assert.throws(() => captureIdentity(noIid), /不齐/)
+    assert.throws(() => captureIdentity(neither), /不齐/)
+    assert.throws(() => captureIdentity([line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }), noFp].join('\n')), /不齐/)
 })
 
 test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {

@@ -308,7 +308,8 @@ function safeParse(text) {
 /**
  * 抓包件（`tools/signer-tee.mjs` 产的 JSONL，POSIX 上 0600，只在本机）里取最后一份带 device_id 的身份。
  * 设备号走文件而不是命令行参数：argv 会进 shell 历史与进程列表，那是本机里唯一一处
- * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错。
+ * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错；
+ * 那份带 device_id 的记录本身必须三个号齐全，缺一个也报错——不回落到更早那一条。
  */
 export function captureIdentity(text) {
     let latest = null
@@ -320,11 +321,16 @@ export function captureIdentity(text) {
     }
     if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
     const trim = value => String(value || '').trim()
-    return {
-        deviceId: trim(latest.deviceId),
-        iid: trim(latest.iid) || trim(latest.deviceId),
-        fp: trim(latest.fp) || trim(latest.deviceId),
+    const deviceId = trim(latest.deviceId)
+    const iid = trim(latest.iid)
+    const fp = trim(latest.fp)
+    // 不拿 device_id 顶空缺：真机本来就满足 fp = device_id，顶完之后单看读数与真的逐字节相同，
+    // 那份身份就不再是「文件里的原值」了。齐不齐由 #32 那道门口拦，这里只负责不再自己编。
+    if (!iid || !fp) {
+        const missing = [!iid && 'iid', !fp && 'fp'].filter(Boolean).join(' / ')
+        throw new Error(`抓包件里最后那条身份不齐（缺 ${missing}）——不顶替，也不回落到更早那一条`)
     }
+    return { deviceId, iid, fp }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */
