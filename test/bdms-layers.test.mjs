@@ -87,7 +87,7 @@ const PATH_SHAPES = [
 
 function assertNoPath(text, where) {
     assert.ok(!/[\\/]/.test(text), `${where}里出现了路径分隔符：${text}`)
-    assert.ok(!/Jean|Dupont|Program Files|soda music|Users|home|srv|share/i.test(text), `${where}里出现了本机目录或用户名：${text}`)
+    assert.ok(!/Jean|Dupont|Program Files|soda music|Users|home|srv|share|wine/i.test(text), `${where}里出现了本机目录或用户名：${text}`)
 }
 
 test('三层各自出声：load / init / sign 一行不差', () => {
@@ -179,13 +179,14 @@ test('README 的坑 1 与文件表都指着这支探针（少一处就红灯）'
     assert.match(readme, /想知道自己那次卡在哪一层就跑 `bdms-layers\.mjs`/)
 })
 
+// 探针故意不 import 服务那套判据（要能一个 docker cp 单独拷进容器），代价是两处各写一遍。
+// 这条钉的是**导出名这一对**：那边多认一个、少认一个、或改了名，这条红灯，提醒回来看探针那一处。
+// 布尔算子不在这里钉——「导出不符合预期」那条行为用例已经钉住了分支方向（算子翻转会走错分支，
+// 读数当场变）。文本只认名字，不认 `#module` 这类私有字段名与引号写法，免得改个变量名就红。
 test('加载判据不许两处各自漂：探针与服务认的是同一对导出名', () => {
-    // 探针故意不 import 服务那套判据（要能一个 docker cp 单独拷进容器），所以这里用文本钉住同一对名字：
-    // src/bdms.mjs 改了导出口径，这条当场红灯，提醒回来看探针那一处。
-    const signer = fs.readFileSync(path.join(repoRoot, 'src/bdms.mjs'), 'utf8')
-    assert.match(signer, /typeof this\.#module\?\.init !== 'function'/)
-    assert.match(signer, /typeof this\.#module\?\.generateHttpSignatureHeaders !== 'function'/)
-    const text = fs.readFileSync(probe, 'utf8')
-    assert.match(text, /typeof module\?\.init === 'function'/)
-    assert.match(text, /typeof module\?\.generateHttpSignatureHeaders === 'function'/)
+    const names = text => [...text.matchAll(/typeof\s+[\w.#]+\?\.(\w+)\s*(?:===|!==)\s*'function'/g)].map(m => m[1])
+    const signer = names(fs.readFileSync(path.join(repoRoot, 'src/bdms.mjs'), 'utf8'))
+    const own = names(fs.readFileSync(probe, 'utf8'))
+    assert.deepEqual([...new Set(signer)].sort(), ['generateHttpSignatureHeaders', 'init'])
+    assert.deepEqual([...new Set(own)].sort(), ['generateHttpSignatureHeaders', 'init'])
 })
