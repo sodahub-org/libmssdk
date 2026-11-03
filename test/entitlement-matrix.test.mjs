@@ -207,6 +207,17 @@ test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那
     assert.throws(() => captureIdentity([line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }), noFp].join('\n')), /不齐/)
 })
 
+test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
+    // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
+    const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
+    assert.match(onlyTwo.stderr, /没给 --fp/, `缺 fp 却没出声：${onlyTwo.stderr}`)
+    assert.match(onlyTwo.stderr, /顶上/)
+    const onlyOne = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099')
+    assert.match(onlyOne.stderr, /没给 --iid \/ --fp/, '两个都缺时仍要说，且说清缺的是哪两个')
+    const allThree = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101')
+    assert.ok(!/顶上/.test(allThree.stderr), `三个号都给全了还被提醒：${allThree.stderr}`)
+})
+
 test('件尾那个换行不算一行：lineCount 是记录数，不是切出来的段数', () => {
     const row = '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
     assert.deepEqual(captureIdentity(`${row}\n`), {

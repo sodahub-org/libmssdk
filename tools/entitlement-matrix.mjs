@@ -506,8 +506,12 @@ async function main() {
     if (missingDevice && !only) {
         process.stderr.write('跳过 captured：这条需要 --from-capture <抓包件> 或 --device（其余 arm 照跑）\n')
     }
-    if (capturedIdentity.deviceId && !argValue('iid') && !capturedFromFile) {
-        process.stderr.write('注意：captured 没给 --iid / --fp，会拿 device_id 顶上——那不是一份完整的抓包身份\n')
+    if (capturedIdentity.deviceId && !capturedFromFile) {
+        // 「哪个字段是顶上来的」只有本仓库说得出：上游对身份齐不齐没有信号（真跑实测缺 --fp 照样 200/ok）。
+        const missing = ['iid', 'fp'].filter(name => !argValue(name)).map(name => `--${name}`)
+        if (missing.length) {
+            process.stderr.write(`注意：captured 没给 ${missing.join(' / ')}，会拿 device_id 顶上——那不是一份完整的抓包身份\n`)
+        }
     }
     // account-me 打的是账号自己的档位端点，与曲目无关，所以它不需要 --track。
     if (!trackId && runnable.some(needsTrack)) throw new Error('需要 --track <track_id>（或 --list）')
