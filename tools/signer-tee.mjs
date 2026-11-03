@@ -132,6 +132,25 @@ export function assertOutsideRepo(target) {
     return resolved
 }
 
+/**
+ * 上游地址的判据：必须 http(s)，而且非回环就只能走 https。
+ * 绑定收在回环保护不了出站那一跳——转发出去的是整份 SignRequest（`headers.cookie` 的值在里面）
+ * 外加原样转发的令牌。文件头给的远端用法本来就是 `https://signer.example/sign`，这里把这句话管住。
+ */
+export function assertUpstreamUrl(upstream) {
+    let parsed
+    try {
+        parsed = new URL(String(upstream))
+    } catch {
+        throw new Error('--upstream 必须是 http(s) 绝对地址')
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('--upstream 必须是 http(s) 绝对地址')
+    if (parsed.protocol === 'http:' && !isLoopbackBind(parsed.hostname)) {
+        throw new Error('--upstream 是非回环地址时只能走 https：转发出去那份请求体里带着 cookie')
+    }
+    return parsed.toString()
+}
+
 function appendRecord(file, record) {
     const handle = fs.openSync(file, 'a', 0o600)
     try {
@@ -214,6 +233,9 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                 }
                 const upstreamResponse = await fetch(upstream, {
                     method: 'POST',
+                    // 不跟跳转：这台中转的职责是转发给指定上游，不是替它追重定向——
+                    // 默认跟随会把带着 cookie 的那份请求体重发到跳转目的地。
+                    redirect: 'error',
                     headers: {
                         'content-type': request.headers['content-type'] || 'application/json',
                         ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}),
@@ -247,7 +269,7 @@ async function main() {
     const upstream = argValue('upstream')
     const out = argValue('out')
     if (!upstream) throw new Error('需要 --upstream <真正的签名服务 /sign 地址>')
-    if (!/^https?:\/\//i.test(upstream)) throw new Error('--upstream 必须是 http(s) 绝对地址')
+    assertUpstreamUrl(upstream)
     if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
     // 这台中转会把请求原样转发出去，绑定收到谁那儿必须自己说得清：只许回环。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')

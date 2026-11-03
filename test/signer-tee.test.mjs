@@ -14,7 +14,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, test } from 'node:test'
 
-const { assertOutsideRepo, captureRecord, formatCapture, start } = await import('../tools/signer-tee.mjs')
+const { assertOutsideRepo, assertUpstreamUrl, captureRecord, formatCapture, start } = await import('../tools/signer-tee.mjs')
 
 const SECRET_COOKIE = 'sessionid_ss=SECRET-COOKIE-VALUE'
 const SECRET_TOKEN = 'Bearer SECRET-TOKEN-VALUE'
@@ -393,6 +393,50 @@ test('落盘失败要带错误码；终端写不出不能报成「抓包件写�
     })
     assert.equal(fs.existsSync(out), true, '这条其实落盘了')
     assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1)
+})
+
+test('上游是非回环地址时不许走明文 http：入站拦得住，出站那一跳也得管', () => {
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-up-')), 'capture.jsonl')
+    const remote = runTee('--upstream', 'http://10.1.2.3/sign', '--out', outside, '--port', '0')
+    assert.notEqual(remote.status, 0)
+    assert.match(remote.stderr, /https/, `明文 http 的远端上游照起了：${remote.stderr}`)
+
+    // 「不误杀本机明文上游」判据在同一个纯函数上测：起真服务会一直等信号，不适合拿子进程跑这条
+    assert.doesNotThrow(() => assertUpstreamUrl('http://127.0.0.1:8899/sign'), '本机签名器就是明文 http，别拦它')
+    assert.doesNotThrow(() => assertUpstreamUrl('http://localhost:8899/sign'))
+    assert.doesNotThrow(() => assertUpstreamUrl('https://signer.example/sign'), '远端走 https 是文档里给的用法')
+    assert.throws(() => assertUpstreamUrl('http://10.1.2.3/sign'), /https/)
+    assert.throws(() => assertUpstreamUrl('ftp://127.0.0.1/sign'), /http/)
+})
+
+test('上游回跳转时不跟着跑：带 cookie 的请求体不能被重发到别处', async () => {
+    const hit = []
+    const dest = http.createServer((request, response) => {
+        request.resume()
+        request.on('end', () => {
+            hit.push(request.url)
+            response.writeHead(200, { 'content-type': 'application/json' })
+            response.end('{}')
+        })
+    })
+    await new Promise(resolve => dest.listen(0, '127.0.0.1', resolve))
+    const redirecting = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => {
+            response.writeHead(307, { location: `http://127.0.0.1:${dest.address().port}/stolen` })
+            response.end()
+        })
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-redirect-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: redirecting.url, out, log: () => {} })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 502, '跳转不该被默默跟下去，要响')
+    assert.equal(hit.length, 0, `请求体被重发到了跳转目的地：${JSON.stringify(hit)}`)
+    await new Promise(resolve => dest.close(resolve))
 })
 
 test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
