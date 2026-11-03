@@ -45,29 +45,36 @@ function argValue(name, fallback = '') {
 }
 
 /**
- * 从一条签名请求里取出记录。没有 `device_id` 就不算一份身份（返回 null），
- * 免得把无关请求记进抓包件里，回头被当成抓到的那一份。
+ * 从一条签名请求里取出身份与形状。返回 `{record, reason}`，三种出口：
+ * 三个号齐全 → 有 record；不是业务请求（没有 `device_id`）或 URL 解析不了 → 两边都空，安静；
+ * 是业务请求但 `iid` / `fp` 缺一个 → record 为空、reason 给出缺字段，由调用方出声。
+ * 「身份不齐」要单独出声：那种请求确实带着设备号，只是不完整——把它当无关流量咽下去，
+ * 取证白跑就看不见原因了。
  */
 export function captureRecord({ url, headers = {}, method = 'POST', tsMs }) {
     let parsed
     try {
         parsed = new URL(String(url))
     } catch {
-        return null
+        return { record: null, reason: null }
     }
     const query = parsed.searchParams
     const deviceId = String(query.get('device_id') || '').trim()
-    if (!deviceId) return null
+    if (!deviceId) return { record: null, reason: null }
+    const iid = String(query.get('iid') || '').trim()
+    const fp = String(query.get('fp') || '').trim()
+    if (!iid || !fp) return { record: null, reason: '缺 iid / fp' }
     const cookie = String(headers.cookie || headers.Cookie || '')
-    return {
+    const record = {
         at: new Date(Number(tsMs) || Date.now()).toISOString(),
         method: String(method).toUpperCase(),
         path: parsed.pathname,
-        identity: { deviceId, iid: String(query.get('iid') || '').trim(), fp: String(query.get('fp') || '').trim() },
+        identity: { deviceId, iid, fp },
         shape: Object.fromEntries(SHAPE_PARAMS.map(key => [key, String(query.get(key) || '')])),
         headerNames: [...new Set(Object.keys(headers).map(name => String(name).toLowerCase()))].sort(),
         cookieFields: cookie ? cookie.split(';').filter(item => item.trim()).length : 0,
     }
+    return { record, reason: null }
 }
 
 /** 打到终端的那一行：设备号只留首尾，曲名与完整曲目号根本不进这里。 */
@@ -76,32 +83,87 @@ export function formatCapture(record) {
     return (
         `event=tee ${record.method} ${record.path}｜device=${maskDeviceId(deviceId)}(${deviceId.length}位)｜` +
         `iid=${maskDeviceId(iid)}(${iid.length}位)｜fp=${maskDeviceId(fp)}(${fp.length}位)｜` +
-        `版本=${record.shape.version_name || '?'}｜UA头=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
+        `版本=${record.shape.version_name || '?'}｜头名=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
     )
 }
 
-/** 抓包件写进仓库目录就等于把真实设备号往提交里送，直接拒。 */
+/** 仓库根的真实路径：链接绕过来的判断要跟真实路径比，不能跟拼出来的字面路径比。 */
+const REAL_REPO_ROOT = (() => {
+    try {
+        return fs.realpathSync(REPO_ROOT)
+    } catch {
+        return REPO_ROOT
+    }
+})()
+
+/** 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。 */
+function resolveRealPath(resolved) {
+    const tail = []
+    let cursor = resolved
+    for (;;) {
+        try {
+            return path.join(fs.realpathSync(cursor), ...tail.reverse())
+        } catch {
+            const parent = path.dirname(cursor)
+            if (parent === cursor) return resolved
+            tail.push(path.basename(cursor))
+            cursor = parent
+        }
+    }
+}
+
+function insideRepo(candidate, root) {
+    const relative = path.relative(root, candidate)
+    // 「出去了」只有两种形态：以 `..<分隔符>` 开头，或跨盘时给出绝对路径。
+    // 只看了 `..` 前缀就会把仓库里名为 `..cache` 的目录判成外面，护栏恰好在这一格落空。
+    return !relative || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+
+/**
+ * 抓包件写进仓库目录就等于把真实设备号往提交里送，直接拒。
+ * 字面路径和解析后的真实路径都要判：仓库外放一个指进仓库的链接（Windows 上 `mklink /J` 不用特权），
+ * 只看字面会放行，而 `openSync` 会跟随链接把内容写进仓库里。
+ */
 export function assertOutsideRepo(target) {
     const resolved = path.resolve(target)
-    const relative = path.relative(REPO_ROOT, resolved)
-    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    if (insideRepo(resolved, REPO_ROOT) || insideRepo(resolveRealPath(resolved), REAL_REPO_ROOT)) {
         throw new Error('--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
     }
     return resolved
 }
 
+/**
+ * 上游地址的判据：必须 http(s)，而且非回环就只能走 https。
+ * 绑定收在回环保护不了出站那一跳——转发出去的是整份 SignRequest（`headers.cookie` 的值在里面）
+ * 外加原样转发的令牌。文件头给的远端用法本来就是 `https://signer.example/sign`，这里把这句话管住。
+ */
+export function assertUpstreamUrl(upstream) {
+    let parsed
+    try {
+        parsed = new URL(String(upstream))
+    } catch {
+        throw new Error('--upstream 必须是 http(s) 绝对地址')
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('--upstream 必须是 http(s) 绝对地址')
+    if (parsed.protocol === 'http:' && !isLoopbackBind(parsed.hostname)) {
+        throw new Error('--upstream 是非回环地址时只能走 https：转发出去那份请求体里带着 cookie')
+    }
+    return parsed.toString()
+}
+
 function appendRecord(file, record) {
     const handle = fs.openSync(file, 'a', 0o600)
     try {
+        // 先把权限定下来再写：`openSync` 的 mode 会被既有 umask 削掉，而复用一份权限更宽的既有文件时，
+        // 第一条（写着完整设备号的）记录不该以旧权限落地哪怕一小会儿。
+        try {
+            fs.fchmodSync(handle, 0o600)
+        } catch {
+            // Windows 上 NTFS 权限不认这个位；文件在仓库外、由本机账号所有，够用。
+        }
         fs.writeSync(handle, `${JSON.stringify(record)}\n`)
     } finally {
         fs.closeSync(handle)
-    }
-    // openSync 的 mode 会被既有 umask 削掉，已存在的文件也不受它影响，所以补一次显式 chmod。
-    try {
-        fs.chmodSync(file, 0o600)
-    } catch {
-        // Windows 上 NTFS 权限不认这个位；文件在仓库外、由本机账号所有，够用。
     }
 }
 
@@ -117,40 +179,78 @@ async function readBody(request) {
 }
 
 export function start({ upstream, host, port, out, log = text => process.stdout.write(text) }) {
+    // 判据放在入口本身，不放调用方身上：这台中转会把请求原样转发，绑到非回环就等于对外提供服务。
+    if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
     const server = http.createServer((request, response) => {
         const reply = (status, payload) => {
             response.writeHead(status, { 'content-type': 'application/json' })
             response.end(JSON.stringify(payload))
         }
-        if (request.method !== 'POST') return reply(404, { ok: false, error: '只转发 POST /sign' })
+        // 只从请求行取路径，Host 不参与：这台中转认的就只有 /sign 这一个入口。
+        const requestPath = String(request.url || '').split('?')[0]
+        // 三道拒绝都要出声：操作者只看得见终端，悄悄回 4xx 等于「护栏有，但没人知道它挡了什么」。
+        if (request.method !== 'POST' || requestPath !== '/sign') {
+            log('event=deny 404 不是 POST /sign，这条不收\n')
+            return reply(404, { ok: false, error: '只转发 POST /sign' })
+        }
+        // 只认 JSON：浏览器 no-cors 的 simple POST 能送 text/plain 而不必预检，这一道就是拦它的。
+        const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+            log('event=deny 415 请求体不是 application/json，这条不收\n')
+            return reply(415, { ok: false, error: '请求体必须是 application/json' })
+        }
+        // 这台机器没有跨源调用方：桌面签名客户端不发 Origin，浏览器页面才发。带 Origin 就不是该收的那种请求。
+        if (request.headers.origin) {
+            log('event=deny 403 带 Origin 的请求不收\n')
+            return reply(403, { ok: false, error: '不收跨源请求' })
+        }
         readBody(request)
             .then(async text => {
                 if (text === null) return reply(413, { ok: false, error: '请求体超出上限' })
                 let record = null
+                let reason = null
                 try {
                     const signRequest = normalizeSignRequest(JSON.parse(text || '{}'))
-                    record = captureRecord({
+                    const captured = captureRecord({
                         url: signRequest.url,
                         headers: signRequest.headers,
                         method: signRequest.method,
                         tsMs: signRequest.ts_ms,
                     })
+                    record = captured.record
+                    reason = captured.reason
                 } catch {
                     // 解析不了就单纯转发：这台中转的职责是记录能记录的东西，不是替签名服务做校验。
                     // 要出声，但不复述内容——报文里可能带着 cookie 与令牌。
                     log('event=skip 这条请求体解析不了，只转发不记录\n')
                 }
+                // 带着设备号却缺 iid / fp：是业务请求，只是身份不齐。不出声就等于悄悄少记一条。
+                if (reason) log(`event=skip ${reason}，这条只转发不落盘\n`)
                 // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
                 if (record) {
+                    let line = null
                     try {
                         appendRecord(out, record)
-                        log(`${formatCapture(record)}\n`)
-                    } catch {
-                        log('event=error 抓包件写不进去，这条只转发没记录\n')
+                        line = formatCapture(record)
+                    } catch (error) {
+                        log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
+                    }
+                    // 落盘成功之后才写终端：这一步失败不能改口说「抓包件写不进去」——那一行确实进件了。
+                    if (line) {
+                        try {
+                            log(`${line}\n`)
+                        } catch (error) {
+                            // 只说这一行确实进了抓包件、写终端时抛了什么码；不打「有没有打出来」的包票——
+                            // 抛错之前字节可能已经落进日志文件了。
+                            process.stderr.write(`event=warn 这一行已进抓包件；写终端时抛错（code=${error.code || error.name}）\n`)
+                        }
                     }
                 }
                 const upstreamResponse = await fetch(upstream, {
                     method: 'POST',
+                    // 不跟跳转：这台中转的职责是转发给指定上游，不是替它追重定向——
+                    // 默认跟随会把带着 cookie 的那份请求体重发到跳转目的地。
+                    redirect: 'error',
                     headers: {
                         'content-type': request.headers['content-type'] || 'application/json',
                         ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}),
@@ -184,7 +284,7 @@ async function main() {
     const upstream = argValue('upstream')
     const out = argValue('out')
     if (!upstream) throw new Error('需要 --upstream <真正的签名服务 /sign 地址>')
-    if (!/^https?:\/\//i.test(upstream)) throw new Error('--upstream 必须是 http(s) 绝对地址')
+    assertUpstreamUrl(upstream)
     if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
     // 这台中转会把请求原样转发出去，绑定收到谁那儿必须自己说得清：只许回环。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
