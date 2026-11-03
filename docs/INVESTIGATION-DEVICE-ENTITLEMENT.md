@@ -461,12 +461,22 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
 - 当初那 7 首里有 5 首没逐首复测（第四节 4）。
 - 其它接口（不止 `track_v2`）上签名有效性是否同样宽松。
   抓包看到的一个线索：真机也在给 `POST /luna/pc/feed/song-tab` 求签名。
-- **WSL 容器里第一次调用签名会挂住**：`libmssdk:local` 镜像、`--entrypoint bash` 覆盖掉
-  `wineboot -u` 之后手动补过，`wine /opt/node-win/node.exe tools/entitlement-matrix.mjs --arm captured`
-  仍是 6 分钟无输出、`timeout 180` 切不断，只能 `docker rm -f`。同一份模块与同一个签名器在
-  Windows 原生 Node 下几秒就出签名（本节的补跑读数就是这么来的）。
-  没定位，也**不影响结论**，但 `verify/wine-multi` 之外第一次在 Wine 里直接加载模块跑工具这条路径
-  目前是红的，值得单开一张票查。
+- **WSL 容器里第一次调用签名会挂住 —— 已定位（#30），是挂载位置，不是这条路不支持**：
+  `libmssdk:local` 镜像、`--entrypoint bash` 覆盖掉入口、`wineboot -u` 也手工补过，
+  `wine node.exe tools/entitlement-matrix.mjs --arm captured` 仍然 6 分钟无输出、只能 `docker rm -f`。
+  #30 那条复现命令把仓库目录整个 `-v` 进容器，而仓库在这台机器上位于 Windows 盘——`bdms.node` 就是从
+  `/mnt/*` 这类 drvfs 绑定挂载上被加载的。分层探针 `verify/wine-multi/bdms-layers.mjs` 把卡点钉在
+  **加载模块**这一层：本次那一次只打 `step=begin` 与 `step=load` 两行就没了，`init` 与签名两层
+  根本没开始（外层 `timeout -s KILL 45` 切断回 `rc=137`）；同一份模块换进容器自己的文件系统，
+  三层 1.5 秒（TTY）/ 3.2 秒（重定向到文件）走完。工具那一次没分层，卡点是按同一挂载形状推的。
+  第三节那批补跑读数仍出自本机 Windows 原生 Node（与容器里是同一个 `bdms.node`）——换到容器里重跑
+  同样的 arm 属于复现，不构成新的对照，但现在这条路是通的：容器内的跑法（`--arm good-ts`、
+  曲目号当场编、`--cookie-from` 指一个空文件＝匿名，上游回 `HTTP 200` 非空回包）与探针的实测秒数
+  写在 `verify/wine-multi/README.md` 的「已知的环境坑」。**那次只是通路验证，不是权益读数**——
+  合成曲目号加匿名 cookie 下 `fullTrack` 本来就该是 false，别把它当成一条新的权益证据。
+  仍然没查出来的两件事：#30 里记的 `timeout 180` 切不断（本次 `timeout -s KILL` 与对整个进程组发
+  TERM 都切得断，为什么默认信号不行没测）；覆盖 entrypoint 之后 prefix 初始化程度是否另有影响
+  （本次用过的两个卷都先跑过一次 `wineboot -u`，全新没初始化的卷没测）。
 - 输出脱敏覆盖到的形态有离线测试钉住（带空格的用户名、`Program Files`、无冒号的容器路径、
   盘根、首段带空格的 posix、单段路径、UNC）。代价是相对路径也会被一并隐掉——诊断时少点线索，
   换的是日志可以放心外贴。
