@@ -293,7 +293,7 @@ test('抓包件读不到、或里面没有身份：都在碰凭据之前停下�
     assert.match(empty.stderr, /没有带 device_id/)
 })
 
-test('--device 与 --from-capture 同时给：报错，不做字段级混合，且发生在碰凭据之前', () => {
+test('命令行给的号与 --from-capture 只能给一个，报错发生在碰凭据之前', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-mixed-'))
     const capture = path.join(dir, 'capture.jsonl')
     fs.writeFileSync(
@@ -304,6 +304,13 @@ test('--device 与 --from-capture 同时给：报错，不做字段级混合，�
     assert.notEqual(mixed.status, 0)
     assert.match(mixed.stderr, /只能给一个/)
     assert.ok(!mixed.stderr.includes('签名器：'), `报错后还在往下走：${mixed.stderr}`)
+    // 只给 --iid / --fp 也算混来源：设备号来自件、其余来自命令行，同样拼出一份「谁都不是」的
+    for (const extra of [['--iid', '1730000000088'], ['--fp', '1730000000077']]) {
+        const oneMore = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture, ...extra)
+        assert.notEqual(oneMore.status, 0, `${extra[0]} 与 --from-capture 同时给竟然走通了`)
+        assert.match(oneMore.stderr, /只能给一个/)
+        assert.ok(!oneMore.stderr.includes('签名器：'), `${extra[0]} 那条报错后还在往下走：${oneMore.stderr}`)
+    }
     // 只给其中一种来源的，照旧能走完参数校验（这条守住了互斥没误杀合法用法）
     const fileOnly = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', path.join(dir, 'nope.jsonl'))
     assert.match(fileOnly.stderr, /读不到/, '只给 --from-capture 仍走原来那条报错')

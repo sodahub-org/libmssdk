@@ -477,8 +477,9 @@ async function main() {
     // 要么直接报错（明确点名了它），不存在「跑到一半才炸」那条路径。
     const captureFile = argValue('from-capture')
     // 两个来源同时给，会拼出一份「谁都不是」的身份：device 取命令行，iid/fp 取文件。
-    if (captureFile && argValue('device')) {
-        throw new Error('--device 与 --from-capture 只能给一个：混出来的那份既不是抓包里的，也不是你手上给的')
+    // 反过来也一样——只给 --iid 或只给 --fp，设备号仍来自文件，那条读数就不再是抓包里那份。
+    if (captureFile && ['device', 'iid', 'fp'].some(name => argValue(name))) {
+        throw new Error('--device / --iid / --fp 与 --from-capture 只能给一个：混出来的那份既不是抓包里的，也不是你手上给的')
     }
     let capturedFromFile = null
     if (captureFile) {
