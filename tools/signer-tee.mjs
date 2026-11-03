@@ -83,7 +83,7 @@ export function formatCapture(record) {
     return (
         `event=tee ${record.method} ${record.path}｜device=${maskDeviceId(deviceId)}(${deviceId.length}位)｜` +
         `iid=${maskDeviceId(iid)}(${iid.length}位)｜fp=${maskDeviceId(fp)}(${fp.length}位)｜` +
-        `版本=${record.shape.version_name || '?'}｜UA头=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
+        `版本=${record.shape.version_name || '?'}｜头名=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
     )
 }
 
