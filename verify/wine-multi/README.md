@@ -4,6 +4,10 @@
 `bdms.node`，两个 `serve` 进程能不能同时工作**（[sodahub-org/libmssdk#6](https://github.com/sodahub-org/libmssdk/issues/6)）。
 
 它是**手动执行**的验证脚本，不进 `npm test`、不进 CI —— 因为它要用户自备的官方二进制和真实凭据。
+一个例外：`bdms-layers.mjs`（分层探针）配了离线用例 `test/bdms-layers.test.mjs`，用桩模块跑，
+既不要 `bdms.node` 也不要凭据，所以那一支进 `npm test`；要 Wine 与 Docker 的部分仍然不进。
+这支探针只 import Node 内置模块，为的就是「一个 `docker cp` 拷进容器就能跑」——
+它诊断的正是容器里那条路，带上仓库内的相对 import 就没法单独拷进去。
 
 ## 一条命令
 
@@ -124,17 +128,30 @@ bash verify/wine-multi/run.sh --mode mock
    是挂载路径的问题，不是 Wine 版本或多实例的问题。
    **这条坑不只咬 `serve`**（#30）。`-v <Windows 目录>:/app` 把整个仓库挂进容器、再让工具进程
    自己 `require` 原生模块，就是这么撞上的。决定成败的只有**二进制**在哪：脚本留在 drvfs 上照样跑
-   （`run.sh` 连入口 `/verify/container-entry.sh` 都是从 drvfs 挂载里读的，只有两个二进制走
-   `docker cp`），二进制一进容器自己的文件系统，`加载 → init → 签名` 走完是 1.5–3.2 秒
-   （TTY 与重定向到文件各一次，同一个 prefix 卷）。
-   卡住时的形状，实测：安静、无报错、停在 `require` 里——`init` 与签名根本没开始，而且容器不会
-   跟着立刻没（对进程发 KILL 之后 40 秒仍 `running`）；换一个用同一个 prefix 卷的新容器照常能用，
-   **不必重建 prefix**。清掉挂住的进程两条都管用：`timeout -s KILL`（`rc=137`），或对**整个进程组**
-   发 TERM（实测 25 秒内连 `wineserver` 一起走，容器不受影响）。`timeout` 不带 `-s` 只把信号发给
-   它的直接子进程，#30 那一轮 `timeout 180` 为什么切不断，本次没查出来。
-   到底卡在哪一层就跑 `bdms-layers.mjs`：每层**进之前**先出一行，最后一条就是答案（不出网、不碰 cookie）。
-   另外别把「容器自己退成 `255`」当成加载失败的症状：本次有几台**没碰这条坑**的容器也自己退了 255，
-   与这条坑的对应关系没查出来。
+   （仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs 挂载里读，两个二进制走
+   `docker cp`）；二进制一进容器自己的文件系统，`加载 → init → 签名` 三层走完是 1.5 秒（TTY）与
+   3.2 秒（重定向到文件），同一个 prefix 卷各一次。
+
+   卡住时读到的是这个（`bdms-layers.mjs` 打在一个 drvfs 挂载的 `bdms.node` 上，外层
+   `timeout -s KILL 45`）：
+
+   ```text
+   step=begin device=13位
+   step=load            ← 到此为止，init 与签名两层根本没开始
+   rc=137
+   ```
+
+   三条实测边界：容器不会跟着立刻没（发 KILL 之后 40 秒仍 `running`）；换一个用同一个 prefix 卷的
+   新容器照常能用，**不必重建 prefix**；`timeout -s KILL` 与对**整个进程组**发 TERM 都切得断
+   （后者实测 25 秒内连 `wineserver` 一起走，容器不受影响）。#30 那一轮 `timeout 180` 为什么切不断，
+   本次没查出来——只把现象记下来，别当真因。也别把「容器自己退成 `255`」当成加载失败的症状：
+   本次有几台没碰这条坑的容器也退了 255，对应关系没查。
+
+   对照实验工具（`tools/entitlement-matrix.mjs`）在容器里跑的形状：`docker cp` 仓库进容器，
+   两个二进制也 `docker cp` 进容器（放在哪里都行，**但不能是 drvfs 挂载里的路径**），然后用
+   `LIBMSSDK_CLIENT_DIR` 或 `LIBMSSDK_BDMS_MODULE` 指过去——这两个环境变量才是本工具找 `bdms.node`
+   的入口，`vendor/soda-music/` 只是本机默认路径。实测走通的是整个仓库连同二进制一起
+   `docker cp` 进容器那一种形状。
 2. **`docker exec`（不加 `-t`）不能把 `wine node.exe` 直接接在管道上**，会 `open EBADF`：
    Wine 下的 Node 打不开管道型 stdio。加 `-t` 能跑，但 TTY 会在 80 列插换行，多行 JSON 被切断。
    脚本的做法是容器内 bash 把输出重定向到文件再 `cat` 出来（见 `driver-docker.mjs` 的 `wineNode`）。
