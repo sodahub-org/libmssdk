@@ -104,7 +104,10 @@ node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --arm good-
 # 账号自己是什么档位（免签名，不需要 --track）
 node tools/entitlement-matrix.mjs --arm account-me
 # 上面那条的匿名对照：这条回包解析不出用户 id，才说明上一条认的是登录态
-node tools/entitlement-matrix.mjs --arm account-me --cookie-from <一个空文件>
+# 实测读数：HTTP 200、157 字节、status_code 1000016、hasUser=false，退出码 1
+# ——这条「跑对了」就是以非零码退出，别把它当成工具坏了
+node tools/entitlement-matrix.mjs --arm account-me --cookie-from <一个空的文本文件>
+# 别把这个文件命名成 .json：空内容过不了 JSON.parse，会被报成「--cookie-from 指定的文件读不到」（退出码 2）
 
 # 一次跑完（不给 --from-capture 时自动跳过 captured：每轮 11 条上游请求 × 轮数）
 node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --repeat 2
@@ -448,8 +451,9 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
   或填了 `SODA_DEVICE_ID` 的）才能给「固定 vs 变化」这组对照补上真实主语；
   而「成套」那条要求要测出区分力，还得有一首「只有成套才给整曲」的曲目（第四节末），也没找到。
 - 「Cookie 字段不全」这个具体形态没测（两轮都只测了有无）。
-- `captured` 只给 `--device` 时 `iid` / `fp` 会被 `device_id` 顶上（脚本会打一行提醒）——
-  那不是一份完整的抓包身份。默认走 `--from-capture` 就没这个问题：那份文件里三样都是真机原值。
+- `captured` 缺 `iid` 或 `fp` 时，缺哪个就拿 `device_id` 顶哪个（脚本按缺的字段逐个提醒）——
+  那不是一份完整的抓包身份。默认走 `--from-capture` 没这个问题：那份文件里三样都得是真机原值，缺一个直接报错；
+  而且 `--device` / `--iid` / `--fp` 与 `--from-capture` 不能同时给（同时给会在参数校验阶段就拒）。
 - `probe-shape` 没带上 shipped `probe` 多发的 `x-tt-trace-id` 与 `accept-encoding`。补跑给出的
   新事实是：**真机这两个头都不发**，所以这一条只是「arm 与 shipped probe 不同形」，
   不是「arm 与真机不同形」。要替 `probe` 本身背书，得再补一条带这两个头的 arm。
