@@ -304,6 +304,17 @@ node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --arm no-si
   换的是日志可以放心外贴。
 - `probe` 的试听提示文案按本结论改掉了「设备指纹不匹配」这一归因；
   若日后发现能判定的字段，应把提示改成可行动的那一句。
+- 对照实验能不能在 Docker + Wine 容器里跑：**能**（#30）。上一轮那条「容器里跑就挂住」不是这条路
+  不支持，是二进制放错了地方——`bdms.node` / `metasecml.dll` 必须在容器自己的文件系统里；放在
+  `/mnt/*` 这类 drvfs 绑定挂载上，Wine 会卡在 `require` 里，安静、无报错，`init` 与签名根本没开始。
+  形状、实测数字、卡住时怎么清，都写在 `verify/wine-multi/README.md` 的「已知的环境坑」；只想知道
+  卡在哪一层就跑 `verify/wine-multi/bdms-layers.mjs`。容器里跑本工具只需记住一条：
+  **决定成败的是二进制在哪**。实测两种形状都通——脚本留在 drvfs 挂载上、只有二进制进容器自己的
+  文件系统（仓库在 Windows 盘上时 `run.sh` 就是这个分工：连入口脚本都从 drvfs 挂载里读，两个二进制
+  走 `docker cp`）；以及仓库连同二进制整个 `docker cp` 进容器（本工具的整条链路在这种形状下走完，
+  含身份生成与上游判定）。别再拿 `-v <Windows 目录>:/app` 当 `bdms.node` 的来源。本报告的读数出自
+  本机 Windows 原生 Node（与容器里是同一个 `bdms.node`），换到容器里再跑一遍只是复现，
+  不增加新的对照价值。
 
 ## 八、敏感边界
 
