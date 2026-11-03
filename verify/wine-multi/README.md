@@ -122,9 +122,24 @@ bash verify/wine-multi/run.sh --mode mock
    Wine 的 loader 锁**，于是同 prefix 下所有进程一起卡住（90 秒不返回、CPU 近似空转）。
    所以 `run.sh` 用 `docker cp` 把两个二进制放进容器自己的文件系统。换 Wine 版本不解决——
    是挂载路径的问题，不是 Wine 版本或多实例的问题。
+   **这条坑不只咬 `serve`**（#30）。`-v <Windows 目录>:/app` 把整个仓库挂进容器、再让工具进程
+   自己 `require` 原生模块，就是这么撞上的。决定成败的只有**二进制**在哪：脚本留在 drvfs 上照样跑
+   （`run.sh` 连入口 `/verify/container-entry.sh` 都是从 drvfs 挂载里读的，只有两个二进制走
+   `docker cp`），二进制一进容器自己的文件系统，`加载 → init → 签名` 走完是 1.5–3.2 秒
+   （TTY 与重定向到文件各一次，同一个 prefix 卷）。
+   卡住时的形状，实测：安静、无报错、停在 `require` 里——`init` 与签名根本没开始，而且容器不会
+   跟着立刻没（对进程发 KILL 之后 40 秒仍 `running`）；换一个用同一个 prefix 卷的新容器照常能用，
+   **不必重建 prefix**。清掉挂住的进程两条都管用：`timeout -s KILL`（`rc=137`），或对**整个进程组**
+   发 TERM（实测 25 秒内连 `wineserver` 一起走，容器不受影响）。`timeout` 不带 `-s` 只把信号发给
+   它的直接子进程，#30 那一轮 `timeout 180` 为什么切不断，本次没查出来。
+   到底卡在哪一层就跑 `bdms-layers.mjs`：每层**进之前**先出一行，最后一条就是答案（不出网、不碰 cookie）。
+   另外别把「容器自己退成 `255`」当成加载失败的症状：本次有几台**没碰这条坑**的容器也自己退了 255，
+   与这条坑的对应关系没查出来。
 2. **`docker exec`（不加 `-t`）不能把 `wine node.exe` 直接接在管道上**，会 `open EBADF`：
    Wine 下的 Node 打不开管道型 stdio。加 `-t` 能跑，但 TTY 会在 80 列插换行，多行 JSON 被切断。
    脚本的做法是容器内 bash 把输出重定向到文件再 `cat` 出来（见 `driver-docker.mjs` 的 `wineNode`）。
+   注意「管道」算到容器内部为止：`docker exec -t <容器> bash -c "wine node … | grep -v foo"` 一样当场
+   EBADF 崩掉（实测）——要过滤就在**宿主侧**过滤，或者重定向到文件之后再读。
 3. **`--skip-build` 测的是镜像里的 `src`**。改过 `src/` 就要去掉 `--skip-build` 重新构建，
    否则测的是旧代码。
 4. **身份先落盘，再拉起进程。** `container-entry.sh` 先跑一次 `config` 把 `identity.json` 写好。
@@ -174,6 +189,7 @@ bash verify/wine-multi/run.sh --mode mock
 | `endpoints.mjs` | 两个控制面共用的 `/readyz` 探活与就绪等待 |
 | `driver-docker.mjs` | 真环境控制面：`docker exec` 读日志、探活、杀进程、记版本 |
 | `driver-mock.mjs` | 彩排控制面：本机两个 serve + 假上游 + 故障注入 |
+| `bdms-layers.mjs` | 分层探针：加载 / `init` / 签名各出一行，安静挂住时定位卡在哪一层（不出网、不碰 cookie） |
 
 ## 这些数字只是参照
 
