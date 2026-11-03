@@ -187,12 +187,22 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
         }
         // 只从请求行取路径，Host 不参与：这台中转认的就只有 /sign 这一个入口。
         const requestPath = String(request.url || '').split('?')[0]
-        if (request.method !== 'POST' || requestPath !== '/sign') return reply(404, { ok: false, error: '只转发 POST /sign' })
+        // 三道拒绝都要出声：操作者只看得见终端，悄悄回 4xx 等于「护栏有，但没人知道它挡了什么」。
+        if (request.method !== 'POST' || requestPath !== '/sign') {
+            log('event=deny 404 不是 POST /sign，这条不收\n')
+            return reply(404, { ok: false, error: '只转发 POST /sign' })
+        }
         // 只认 JSON：浏览器 no-cors 的 simple POST 能送 text/plain 而不必预检，这一道就是拦它的。
         const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
-        if (contentType !== 'application/json') return reply(415, { ok: false, error: '请求体必须是 application/json' })
+        if (contentType !== 'application/json') {
+            log('event=deny 415 请求体不是 application/json，这条不收\n')
+            return reply(415, { ok: false, error: '请求体必须是 application/json' })
+        }
         // 这台机器没有跨源调用方：桌面签名客户端不发 Origin，浏览器页面才发。带 Origin 就不是该收的那种请求。
-        if (request.headers.origin) return reply(403, { ok: false, error: '带 Origin 的请求不收' })
+        if (request.headers.origin) {
+            log('event=deny 403 带 Origin 的请求不收\n')
+            return reply(403, { ok: false, error: '不收跨源请求' })
+        }
         readBody(request)
             .then(async text => {
                 if (text === null) return reply(413, { ok: false, error: '请求体超出上限' })

@@ -445,6 +445,22 @@ test('start() 自己就拒非回环绑定：判据不能只写在命令行那一
     assert.throws(() => start({ upstream: DEAD_UPSTREAM, host: '', port: 0, out, log: () => {} }), /回环/)
 })
 
+test('门口拒掉的三种请求各出一行声：护栏不出声就等于没有护栏', async () => {
+    const logged = []
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-deny-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
+    const port = tee.address().port
+    await fetch(`http://127.0.0.1:${port}/whatever-not-sign`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: signRequest() })
+    await fetch(`http://127.0.0.1:${port}/sign`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: signRequest() })
+    await fetch(`http://127.0.0.1:${port}/sign`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: signRequest() })
+    const text = logged.join('')
+    assert.match(text, /event=deny 404/, `路径不符没出声：${JSON.stringify(text)}`)
+    assert.match(text, /event=deny 415/, 'content-type 不符没出声')
+    assert.match(text, /event=deny 403/, '带 Origin 没出声')
+    assert.ok(!text.includes('SECRET-COOKIE-VALUE'), '出声也不得带出报文内容')
+    assert.equal(fs.existsSync(out), false, '三条都不该落盘')
+})
+
 test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-skip-')), 'capture.jsonl')
     const logged = []
