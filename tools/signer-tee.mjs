@@ -178,6 +178,8 @@ async function readBody(request) {
 }
 
 export function start({ upstream, host, port, out, log = text => process.stdout.write(text) }) {
+    // 判据放在入口本身，不放调用方身上：这台中转会把请求原样转发，绑到非回环就等于对外提供服务。
+    if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
     const server = http.createServer((request, response) => {
         const reply = (status, payload) => {
             response.writeHead(status, { 'content-type': 'application/json' })

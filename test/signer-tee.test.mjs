@@ -439,6 +439,12 @@ test('上游回跳转时不跟着跑：带 cookie 的请求体不能被重发到
     await new Promise(resolve => dest.close(resolve))
 })
 
+test('start() 自己就拒非回环绑定：判据不能只写在命令行那一层', () => {
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-bind-')), 'capture.jsonl')
+    assert.throws(() => start({ upstream: DEAD_UPSTREAM, host: '0.0.0.0', port: 0, out, log: () => {} }), /回环/)
+    assert.throws(() => start({ upstream: DEAD_UPSTREAM, host: '', port: 0, out, log: () => {} }), /回环/)
+})
+
 test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-skip-')), 'capture.jsonl')
     const logged = []
