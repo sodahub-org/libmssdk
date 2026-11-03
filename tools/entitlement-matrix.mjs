@@ -476,6 +476,10 @@ async function main() {
     // 先把参数验完，再碰任何凭据与网络：缺身份时要么跳过 captured（跑整份矩阵），
     // 要么直接报错（明确点名了它），不存在「跑到一半才炸」那条路径。
     const captureFile = argValue('from-capture')
+    // 两个来源同时给，会拼出一份「谁都不是」的身份：device 取命令行，iid/fp 取文件。
+    if (captureFile && argValue('device')) {
+        throw new Error('--device 与 --from-capture 只能给一个：混出来的那份既不是抓包里的，也不是你手上给的')
+    }
     let capturedFromFile = null
     if (captureFile) {
         let text = ''

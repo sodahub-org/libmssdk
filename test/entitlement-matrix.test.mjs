@@ -293,6 +293,22 @@ test('抓包件读不到、或里面没有身份：都在碰凭据之前停下�
     assert.match(empty.stderr, /没有带 device_id/)
 })
 
+test('--device 与 --from-capture 同时给：报错，不做字段级混合，且发生在碰凭据之前', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-mixed-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(
+        capture,
+        '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}\n',
+    )
+    const mixed = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture, '--device', '1730000000099')
+    assert.notEqual(mixed.status, 0)
+    assert.match(mixed.stderr, /只能给一个/)
+    assert.ok(!mixed.stderr.includes('签名器：'), `报错后还在往下走：${mixed.stderr}`)
+    // 只给其中一种来源的，照旧能走完参数校验（这条守住了互斥没误杀合法用法）
+    const fileOnly = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', path.join(dir, 'nope.jsonl'))
+    assert.match(fileOnly.stderr, /读不到/, '只给 --from-capture 仍走原来那条报错')
+})
+
 test('报错信息里的路径整段隐掉，带空格的用户名/目录也算 (#10 日志要能贴进票里)', () => {
     const leaks = [
         'bdms.node 不存在：D:\\Users\\Jean Dupont\\vendor\\soda-music\\bdms.node',
