@@ -196,11 +196,20 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                 if (reason) log(`event=skip ${reason}，这条只转发不落盘\n`)
                 // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
                 if (record) {
+                    let line = null
                     try {
                         appendRecord(out, record)
-                        log(`${formatCapture(record)}\n`)
-                    } catch {
-                        log('event=error 抓包件写不进去，这条只转发没记录\n')
+                        line = formatCapture(record)
+                    } catch (error) {
+                        log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
+                    }
+                    // 落盘成功之后才写终端：这一步失败不能改口说「抓包件写不进去」——那一行确实进件了。
+                    if (line) {
+                        try {
+                            log(`${line}\n`)
+                        } catch {
+                            process.stderr.write('event=warn 这一行已进抓包件，只是终端没打出来\n')
+                        }
                     }
                 }
                 const upstreamResponse = await fetch(upstream, {

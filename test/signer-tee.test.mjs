@@ -360,6 +360,41 @@ test('带 Origin 的一律拒：本机桌面客户端不发这个头，只有网
     assert.equal(fs.existsSync(out), false, '不该落盘')
 })
 
+test('落盘失败要带错误码；终端写不出不能报成「抓包件写不进去」', async () => {
+    // 一、落盘失败：指到目录上，openSync 必抛——报的那行要带上 code，人才知道是哪一类失败
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-code-'))
+    const loggedA = []
+    const teeWithCollector = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out: directory,
+        log: line => loggedA.push(line),
+    })
+    await fetch(`http://127.0.0.1:${teeWithCollector.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    const textA = loggedA.join('')
+    assert.match(textA, /event=error 抓包件写不进去（code=[A-Z_]+）/, `失败原因没带错误码：${textA}`)
+
+    // 二、落盘成功但终端写不出：那一行确实在件里，就不能报成「抓包件写不进去」
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-logfail-')), 'capture.jsonl')
+    const boom = {
+        write(value) {
+            if (String(value).startsWith('event=tee')) throw new Error('stdout 被占了')
+            return true
+        },
+    }
+    const teeB = await startTee({ upstream: DEAD_UPSTREAM, out, log: text => boom.write(text) })
+    await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(fs.existsSync(out), true, '这条其实落盘了')
+    assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1)
+})
+
 test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-skip-')), 'capture.jsonl')
     const logged = []
