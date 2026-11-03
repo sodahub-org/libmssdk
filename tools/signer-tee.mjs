@@ -45,29 +45,36 @@ function argValue(name, fallback = '') {
 }
 
 /**
- * 从一条签名请求里取出记录。没有 `device_id` 就不算一份身份（返回 null），
- * 免得把无关请求记进抓包件里，回头被当成抓到的那一份。
+ * 从一条签名请求里取出身份与形状。返回 `{record, reason}`，三种出口：
+ * 三个号齐全 → 有 record；不是业务请求（没有 `device_id`）或 URL 解析不了 → 两边都空，安静；
+ * 是业务请求但 `iid` / `fp` 缺一个 → record 为空、reason 给出缺字段，由调用方出声。
+ * 「身份不齐」要单独出声：那种请求确实带着设备号，只是不完整——把它当无关流量咽下去，
+ * 取证白跑就看不见原因了。
  */
 export function captureRecord({ url, headers = {}, method = 'POST', tsMs }) {
     let parsed
     try {
         parsed = new URL(String(url))
     } catch {
-        return null
+        return { record: null, reason: null }
     }
     const query = parsed.searchParams
     const deviceId = String(query.get('device_id') || '').trim()
-    if (!deviceId) return null
+    if (!deviceId) return { record: null, reason: null }
+    const iid = String(query.get('iid') || '').trim()
+    const fp = String(query.get('fp') || '').trim()
+    if (!iid || !fp) return { record: null, reason: '缺 iid / fp' }
     const cookie = String(headers.cookie || headers.Cookie || '')
-    return {
+    const record = {
         at: new Date(Number(tsMs) || Date.now()).toISOString(),
         method: String(method).toUpperCase(),
         path: parsed.pathname,
-        identity: { deviceId, iid: String(query.get('iid') || '').trim(), fp: String(query.get('fp') || '').trim() },
+        identity: { deviceId, iid, fp },
         shape: Object.fromEntries(SHAPE_PARAMS.map(key => [key, String(query.get(key) || '')])),
         headerNames: [...new Set(Object.keys(headers).map(name => String(name).toLowerCase()))].sort(),
         cookieFields: cookie ? cookie.split(';').filter(item => item.trim()).length : 0,
     }
+    return { record, reason: null }
 }
 
 /** 打到终端的那一行：设备号只留首尾，曲名与完整曲目号根本不进这里。 */
@@ -127,19 +134,24 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
             .then(async text => {
                 if (text === null) return reply(413, { ok: false, error: '请求体超出上限' })
                 let record = null
+                let reason = null
                 try {
                     const signRequest = normalizeSignRequest(JSON.parse(text || '{}'))
-                    record = captureRecord({
+                    const captured = captureRecord({
                         url: signRequest.url,
                         headers: signRequest.headers,
                         method: signRequest.method,
                         tsMs: signRequest.ts_ms,
                     })
+                    record = captured.record
+                    reason = captured.reason
                 } catch {
                     // 解析不了就单纯转发：这台中转的职责是记录能记录的东西，不是替签名服务做校验。
                     // 要出声，但不复述内容——报文里可能带着 cookie 与令牌。
                     log('event=skip 这条请求体解析不了，只转发不记录\n')
                 }
+                // 带着设备号却缺 iid / fp：是业务请求，只是身份不齐。不出声就等于悄悄少记一条。
+                if (reason) log(`event=skip ${reason}，这条只转发不落盘\n`)
                 // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
                 if (record) {
                     try {

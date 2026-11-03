@@ -46,7 +46,7 @@ test('抓到的是 URL 里那份设备身份与形状字段，其余按键名丢
         method: 'POST',
         tsMs: 1789435000000,
         headers: { Cookie: SECRET_COOKIE, 'user-agent': 'LunaPC/3.3.0(359450208)', 'X-Luna-Is-Local-User': '1' },
-    })
+    }).record
     assert.deepEqual(record.identity, { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
     assert.equal(record.at, new Date(1789435000000).toISOString())
     assert.equal(record.path, '/luna/pc/track_v2')
@@ -67,7 +67,7 @@ test('凭据一个字节都不落盘：cookie 值、签名值、令牌都不进�
             'x-helios': 'SECRET-HELIOS',
             'x-medusa': 'SECRET-MEDUSA',
         },
-    })
+    }).record
     const text = JSON.stringify(record)
     assert.ok(!text.includes('SECRET-COOKIE-VALUE'), 'cookie 值不得进抓包件')
     assert.ok(!text.includes('SECRET-HELIOS'), '签名值不得进抓包件')
@@ -78,13 +78,29 @@ test('凭据一个字节都不落盘：cookie 值、签名值、令牌都不进�
 })
 
 test('没有 device_id 的请求不算一份身份，坏 URL 也不炸', () => {
-    assert.equal(captureRecord({ url: 'https://api.qishui.com/luna/pc/me?iid=1' }), null)
-    assert.equal(captureRecord({ url: 'not a url' }), null)
-    assert.equal(captureRecord({ url: '' }), null)
+    assert.equal(captureRecord({ url: 'https://api.qishui.com/luna/pc/me?iid=1' }).record, null)
+    assert.equal(captureRecord({ url: 'not a url' }).record, null)
+    assert.equal(captureRecord({ url: '' }).record, null)
+    assert.equal(captureRecord({ url: '' }).reason, null, '无关流量不该出声')
+})
+
+test('业务请求但身份不齐：不落盘，且说清是缺字段', () => {
+    const noIid = captureRecord({ url: 'https://api.qishui.com/luna/pc/track_v2?device_id=1789435000000&fp=1789435000000' })
+    const noFp = captureRecord({ url: 'https://api.qishui.com/luna/pc/track_v2?device_id=1789435000000&iid=1789435000001' })
+    const neither = captureRecord({ url: 'https://api.qishui.com/luna/pc/track_v2?device_id=1789435000000' })
+    assert.equal(noIid.record, null)
+    assert.equal(noFp.record, null)
+    assert.equal(neither.record, null)
+    assert.equal(noIid.reason, '缺 iid / fp')
+    assert.equal(noFp.reason, '缺 iid / fp')
+    assert.equal(neither.reason, '缺 iid / fp')
+    const full = captureRecord({ url: TRACK_V2_URL })
+    assert.equal(full.reason, null, '三个号齐全的照样过——这条守住误杀')
+    assert.deepEqual(full.record.identity, { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
 })
 
 test('打到终端的那一行只留首尾：完整设备号不进日志', () => {
-    const line = formatCapture(captureRecord({ url: TRACK_V2_URL }))
+    const line = formatCapture(captureRecord({ url: TRACK_V2_URL }).record)
     assert.match(line, /178\*\*\*000/)
     assert.ok(!line.includes('1789435000000'), `设备号被整串打出来了：${line}`)
     assert.match(line, /13位/)
@@ -247,4 +263,27 @@ test('三道用法守卫都在起监听之前退出，报错也不带本机路�
     const noUpstream = runTee('--out', outside)
     assert.notEqual(noUpstream.status, 0)
     assert.match(noUpstream.stderr, /--upstream/)
+})
+
+test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-skip-')), 'capture.jsonl')
+    const logged = []
+    const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
+    const incomplete = JSON.stringify({
+        url: 'https://api.qishui.com/luna/pc/track_v2?device_id=1789435000000&fp=1789435000000',
+        method: 'POST',
+        body: '{"track_id":"123"}',
+        ts_ms: 1789435000000,
+        headers: { cookie: SECRET_COOKIE },
+    })
+    await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: incomplete,
+    })
+    assert.equal(fs.existsSync(out), false, '缺 iid 的那条一个字都不该落盘')
+    const text = logged.join('')
+    assert.match(text, /event=skip/, '带着设备号却身份不齐，要出声')
+    assert.match(text, /缺 iid \/ fp/, '要说清是身份不齐，不是解析不了')
+    assert.ok(!text.includes('SECRET-COOKIE-VALUE'), '出声也不得带出 cookie 值')
 })
