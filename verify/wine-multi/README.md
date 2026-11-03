@@ -127,31 +127,33 @@ bash verify/wine-multi/run.sh --mode mock
    所以 `run.sh` 用 `docker cp` 把两个二进制放进容器自己的文件系统。换 Wine 版本不解决——
    是挂载路径的问题，不是 Wine 版本或多实例的问题。
    **这条坑不只咬 `serve`**（#30）。`-v <Windows 目录>:/app` 把整个仓库挂进容器、再让工具进程
-   自己 `require` 原生模块，就是这么撞上的。决定成败的只有**二进制**在哪：脚本留在 drvfs 上照样跑
-   （仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs 挂载里读，两个二进制走
-   `docker cp`）；二进制一进容器自己的文件系统，`加载 → init → 签名` 三层走完是 1.5 秒（TTY）与
-   3.2 秒（重定向到文件），同一个 prefix 卷各一次。
+   自己 `require` 原生模块，就是这么撞上的。这次的卡点就落在二进制的挂载位置上：同一个镜像、
+   同一个 prefix 卷、同一个脚本，只把 `bdms.node` 从 drvfs 挂载换进容器自己的文件系统，三层就
+   走完了——`加载 → init → 签名` 1.5 秒（TTY）与 3.2 秒（重定向到文件），各一次。别的因素
+   （prefix 初始化程度、Wine 版本）没有被逐一排除过，`run.sh` 现成的注释也只指这一条。
+   脚本留在 drvfs 上不影响：仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs
+   挂载里读，只有两个二进制走 `docker cp`。
 
-   卡住时读到的是这个（`bdms-layers.mjs` 打在一个 drvfs 挂载的 `bdms.node` 上，外层
-   `timeout -s KILL 45`）：
+   卡住时探针打出来的就是这两行，再没有第三条：
 
    ```text
    step=begin device=13位
-   step=load            ← 到此为止，init 与签名两层根本没开始
-   rc=137
+   step=load
    ```
+
+   `init` 与签名两层根本没开始（外层 `timeout -s KILL 45` 切断时回 `rc=137`）。这是**探针**在
+   drvfs 挂载上的读数；`entitlement-matrix.mjs` 那一次没单独分层，它的卡点按同一挂载形状推在同一层。
+   想知道自己那次卡在哪一层就跑 `bdms-layers.mjs`：每层**进之前**先出一行，最后一条就是答案。
 
    三条实测边界：容器不会跟着立刻没（发 KILL 之后 40 秒仍 `running`）；换一个用同一个 prefix 卷的
    新容器照常能用，**不必重建 prefix**；`timeout -s KILL` 与对**整个进程组**发 TERM 都切得断
    （后者实测 25 秒内连 `wineserver` 一起走，容器不受影响）。#30 那一轮 `timeout 180` 为什么切不断，
-   本次没查出来——只把现象记下来，别当真因。也别把「容器自己退成 `255`」当成加载失败的症状：
-   本次有几台没碰这条坑的容器也退了 255，对应关系没查。
+   本次没查出来，只记现象；同理，本次也有几台**没碰这条坑**的容器自己退成 `255`，别把这两件事当成
+   同一个因果链。
 
-   对照实验工具（`tools/entitlement-matrix.mjs`）在容器里跑的形状：`docker cp` 仓库进容器，
-   两个二进制也 `docker cp` 进容器（放在哪里都行，**但不能是 drvfs 挂载里的路径**），然后用
-   `LIBMSSDK_CLIENT_DIR` 或 `LIBMSSDK_BDMS_MODULE` 指过去——这两个环境变量才是本工具找 `bdms.node`
-   的入口，`vendor/soda-music/` 只是本机默认路径。实测走通的是整个仓库连同二进制一起
-   `docker cp` 进容器那一种形状。
+   对照实验工具（`tools/entitlement-matrix.mjs`）在容器里跑的形状：仓库与两个二进制都 `docker cp`
+   进容器，再用 `LIBMSSDK_CLIENT_DIR` 或 `LIBMSSDK_BDMS_MODULE` 指到那份容器内的 `bdms.node`——
+   这两个环境变量才是本工具找模块的入口，`vendor/soda-music/` 只是本机默认路径。
 2. **`docker exec`（不加 `-t`）不能把 `wine node.exe` 直接接在管道上**，会 `open EBADF`：
    Wine 下的 Node 打不开管道型 stdio。加 `-t` 能跑，但 TTY 会在 80 列插换行，多行 JSON 被切断。
    脚本的做法是容器内 bash 把输出重定向到文件再 `cat` 出来（见 `driver-docker.mjs` 的 `wineNode`）。
