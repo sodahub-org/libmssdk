@@ -461,6 +461,40 @@ test('门口拒掉的三种请求各出一行声：护栏不出声就等于没�
     assert.equal(fs.existsSync(out), false, '三条都不该落盘')
 })
 
+test('复用一份权限更宽的既有抓包件时，写着设备号的那一笔不该以旧权限落地', async t => {
+    if (process.platform === 'win32') {
+        t.skip('NTFS 不认这个权限位，这条只在 POSIX 上有意义')
+        return
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-perm-'))
+    const out = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(out, '')
+    fs.chmodSync(out, 0o666) // 一份本来就谁都能读的旧文件
+    const modesAtWrite = []
+    const originalWrite = fs.writeSync
+    fs.writeSync = function patched(fd, ...rest) {
+        try {
+            modesAtWrite.push(fs.fstatSync(fd).mode & 0o777)
+        } catch {
+            // 观察失败不影响写入本身
+        }
+        return originalWrite.call(fs, fd, ...rest)
+    }
+    try {
+        const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: () => {} })
+        await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })
+    } finally {
+        fs.writeSync = originalWrite
+    }
+    assert.ok(modesAtWrite.length > 0, '这一笔写没发生，测不出权限')
+    assert.deepEqual([...new Set(modesAtWrite)], [0o600], '写下那一刻文件权限还是宽的——先定权限再写')
+    assert.equal(fs.statSync(out).mode & 0o777, 0o600)
+})
+
 test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-skip-')), 'capture.jsonl')
     const logged = []

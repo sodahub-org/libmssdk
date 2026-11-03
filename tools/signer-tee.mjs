@@ -154,15 +154,16 @@ export function assertUpstreamUrl(upstream) {
 function appendRecord(file, record) {
     const handle = fs.openSync(file, 'a', 0o600)
     try {
+        // 先把权限定下来再写：`openSync` 的 mode 会被既有 umask 削掉，而复用一份权限更宽的既有文件时，
+        // 第一条（写着完整设备号的）记录不该以旧权限落地哪怕一小会儿。
+        try {
+            fs.fchmodSync(handle, 0o600)
+        } catch {
+            // Windows 上 NTFS 权限不认这个位；文件在仓库外、由本机账号所有，够用。
+        }
         fs.writeSync(handle, `${JSON.stringify(record)}\n`)
     } finally {
         fs.closeSync(handle)
-    }
-    // openSync 的 mode 会被既有 umask 削掉，已存在的文件也不受它影响，所以补一次显式 chmod。
-    try {
-        fs.chmodSync(file, 0o600)
-    } catch {
-        // Windows 上 NTFS 权限不认这个位；文件在仓库外、由本机账号所有，够用。
     }
 }
 
