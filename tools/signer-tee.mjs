@@ -114,7 +114,9 @@ function resolveRealPath(resolved) {
 
 function insideRepo(candidate, root) {
     const relative = path.relative(root, candidate)
-    return !relative || (!relative.startsWith('..') && !path.isAbsolute(relative))
+    // 「出去了」只有两种形态：以 `..<分隔符>` 开头，或跨盘时给出绝对路径。
+    // 只看了 `..` 前缀就会把仓库里名为 `..cache` 的目录判成外面，护栏恰好在这一格落空。
+    return !relative || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
 
 /**

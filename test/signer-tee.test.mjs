@@ -276,6 +276,14 @@ test('仓库根目录本身也要拒：指到根就等于往提交里送设备�
     assert.throws(() => assertOutsideRepo(repoRoot + path.sep), /不入库/)
 })
 
+test('名字以 .. 开头的目录其实在仓库里，也要拒：前缀不等于「出去了」', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    assert.throws(() => assertOutsideRepo(path.join(repoRoot, '..cache', 'capture.jsonl')), /不入库/)
+    // 真的在仓库外的仍然放行，别把修法做成一律拒
+    const outside = path.join(repoRoot, '..', 'libmssdk-tee-outside.jsonl')
+    assert.equal(assertOutsideRepo(outside), path.resolve(outside))
+})
+
 test('仓库外的链接指进仓库：按解析后的真实路径判，不按字面路径判', t => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-link-'))
