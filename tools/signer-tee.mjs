@@ -239,8 +239,10 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                     if (line) {
                         try {
                             log(`${line}\n`)
-                        } catch {
-                            process.stderr.write('event=warn 这一行已进抓包件，只是终端没打出来\n')
+                        } catch (error) {
+                            // 只说这一行确实进了抓包件、写终端时抛了什么码；不打「有没有打出来」的包票——
+                            // 抛错之前字节可能已经落进日志文件了。
+                            process.stderr.write(`event=warn 这一行已进抓包件；写终端时抛错（code=${error.code || error.name}）\n`)
                         }
                     }
                 }

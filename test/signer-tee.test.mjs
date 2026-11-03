@@ -386,13 +386,27 @@ test('落盘失败要带错误码；终端写不出不能报成「抓包件写�
         },
     }
     const teeB = await startTee({ upstream: DEAD_UPSTREAM, out, log: text => boom.write(text) })
-    await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: signRequest(),
-    })
+    const warnings = []
+    const originalWarn = process.stderr.write
+    process.stderr.write = function patched(chunk, ...rest) {
+        warnings.push(String(chunk))
+        return originalWarn.call(process.stderr, chunk, ...rest)
+    }
+    try {
+        await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })
+    } finally {
+        process.stderr.write = originalWarn
+    }
     assert.equal(fs.existsSync(out), true, '这条其实落盘了')
     assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1)
+    const textB = warnings.join('')
+    assert.match(textB, /event=warn/, '终端写失败要单独说，不能沉默')
+    assert.match(textB, /code=[A-Za-z_]+/, `没带错误码：${JSON.stringify(textB)}`)
+    assert.ok(!/没打出来/.test(textB), `还在断言打没打出来：${JSON.stringify(textB)}`)
 })
 
 test('上游是非回环地址时不许走明文 http：入站拦得住，出站那一跳也得管', () => {
