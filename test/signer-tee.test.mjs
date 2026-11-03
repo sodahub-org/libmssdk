@@ -270,6 +270,30 @@ test('三道用法守卫都在起监听之前退出，报错也不带本机路�
     assert.match(noUpstream.stderr, /--upstream/)
 })
 
+test('仓库根目录本身也要拒：指到根就等于往提交里送设备号', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    assert.throws(() => assertOutsideRepo(repoRoot), /不入库/)
+    assert.throws(() => assertOutsideRepo(repoRoot + path.sep), /不入库/)
+})
+
+test('仓库外的链接指进仓库：按解析后的真实路径判，不按字面路径判', t => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-link-'))
+    const link = path.join(dir, 'into-repo')
+    try {
+        fs.symlinkSync(path.join(repoRoot, 'tools'), link, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(path.join(link, 'capture.jsonl')), /不入库/)
+    } finally {
+        fs.rmSync(link, { force: true })
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
 test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
     const seen = []
     const upstream = await listen((request, response) => {

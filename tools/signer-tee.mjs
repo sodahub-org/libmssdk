@@ -87,11 +87,44 @@ export function formatCapture(record) {
     )
 }
 
-/** 抓包件写进仓库目录就等于把真实设备号往提交里送，直接拒。 */
+/** 仓库根的真实路径：链接绕过来的判断要跟真实路径比，不能跟拼出来的字面路径比。 */
+const REAL_REPO_ROOT = (() => {
+    try {
+        return fs.realpathSync(REPO_ROOT)
+    } catch {
+        return REPO_ROOT
+    }
+})()
+
+/** 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。 */
+function resolveRealPath(resolved) {
+    const tail = []
+    let cursor = resolved
+    for (;;) {
+        try {
+            return path.join(fs.realpathSync(cursor), ...tail.reverse())
+        } catch {
+            const parent = path.dirname(cursor)
+            if (parent === cursor) return resolved
+            tail.push(path.basename(cursor))
+            cursor = parent
+        }
+    }
+}
+
+function insideRepo(candidate, root) {
+    const relative = path.relative(root, candidate)
+    return !relative || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+/**
+ * 抓包件写进仓库目录就等于把真实设备号往提交里送，直接拒。
+ * 字面路径和解析后的真实路径都要判：仓库外放一个指进仓库的链接（Windows 上 `mklink /J` 不用特权），
+ * 只看字面会放行，而 `openSync` 会跟随链接把内容写进仓库里。
+ */
 export function assertOutsideRepo(target) {
     const resolved = path.resolve(target)
-    const relative = path.relative(REPO_ROOT, resolved)
-    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    if (insideRepo(resolved, REPO_ROOT) || insideRepo(resolveRealPath(resolved), REAL_REPO_ROOT)) {
         throw new Error('--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
     }
     return resolved
