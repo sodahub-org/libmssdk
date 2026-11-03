@@ -129,7 +129,14 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
             response.writeHead(status, { 'content-type': 'application/json' })
             response.end(JSON.stringify(payload))
         }
-        if (request.method !== 'POST') return reply(404, { ok: false, error: '只转发 POST /sign' })
+        // 只从请求行取路径，Host 不参与：这台中转认的就只有 /sign 这一个入口。
+        const requestPath = String(request.url || '').split('?')[0]
+        if (request.method !== 'POST' || requestPath !== '/sign') return reply(404, { ok: false, error: '只转发 POST /sign' })
+        // 只认 JSON：浏览器 no-cors 的 simple POST 能送 text/plain 而不必预检，这一道就是拦它的。
+        const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
+        if (contentType !== 'application/json') return reply(415, { ok: false, error: '请求体必须是 application/json' })
+        // 这台机器没有跨源调用方：桌面签名客户端不发 Origin，浏览器页面才发。带 Origin 就不是该收的那种请求。
+        if (request.headers.origin) return reply(403, { ok: false, error: '带 Origin 的请求不收' })
         readBody(request)
             .then(async text => {
                 if (text === null) return reply(413, { ok: false, error: '请求体超出上限' })

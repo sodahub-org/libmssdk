@@ -179,7 +179,7 @@ test('原样转发给上游签名器，抓包件里只多一行身份；回包�
     // 上游没人听时报 502，且报文里不带本机/上游细节。
     const deadOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-')), 'dead.jsonl')
     const deadTee = await startTee({ upstream: DEAD_UPSTREAM, out: deadOut, log: line => logged.push(line) })
-    const dead = await fetch(`http://127.0.0.1:${deadTee.address().port}/sign`, { method: 'POST', body: signRequest() })
+    const dead = await fetch(`http://127.0.0.1:${deadTee.address().port}/sign`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: signRequest() })
     assert.equal(dead.status, 502)
     const deadText = await dead.text()
     assert.ok(!deadText.includes('127.0.0.1'), `报错漏出了上游地址：${deadText}`)
@@ -203,7 +203,11 @@ test('非 POST 不记录也不转发，坏 JSON 只转发不记录但要说出�
     assert.equal(wrongMethod.status, 404)
     assert.equal(hits, 0, 'GET 不该被转发')
 
-    const garbage = await fetch(base, { method: 'POST', body: 'not json at all' })
+    const garbage = await fetch(base, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: 'not json at all',
+    })
     assert.equal(garbage.status, 200, '解析不了照样转发：记录是顺带的事')
     assert.equal(hits, 1)
     assert.equal(fs.existsSync(out), false, '坏 JSON 里没有身份，抓包件不该被创建')
@@ -220,6 +224,7 @@ test('没有 device_id 的请求转发但不进抓包件', async () => {
     const tee = await startTee({ upstream: upstream.url, out })
     const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
         method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...JSON.parse(signRequest()), url: 'https://api.qishui.com/luna/pc/me?iid=1' }),
     })
     assert.equal(response.status, 200)
@@ -235,7 +240,7 @@ test('抓包件写不进去时单独出声：这条只转发没记录，取证�
     // 把抓包件指到一个目录上：openSync 必失败，失败原因与「解析不了」是两回事。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-dir-'))
     const tee = await startTee({ upstream: upstream.url, out: directory, log: line => logged.push(line) })
-    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, { method: 'POST', body: signRequest() })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: signRequest() })
     assert.equal(response.status, 200, '落盘失败也不能把调用方晾着：转发照做')
     assert.match(logged.join(''), /event=error/, '写不进去要单独报，不能混成「解析不了」')
     assert.ok(!logged.join('').includes('event=skip'), '这条报文是好 JSON，不该报解析失败')
@@ -263,6 +268,64 @@ test('三道用法守卫都在起监听之前退出，报错也不带本机路�
     const noUpstream = runTee('--out', outside)
     assert.notEqual(noUpstream.status, 0)
     assert.match(noUpstream.stderr, /--upstream/)
+})
+
+test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
+    const seen = []
+    const upstream = await listen((request, response) => {
+        seen.push(request.url)
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end('{}')
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-path-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: upstream.url, out, log: () => {} })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/whatever-not-sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 404)
+    assert.equal(seen.length, 0, '不该把这条转给上游')
+    assert.equal(fs.existsSync(out), false, '不该落盘')
+})
+
+test('content-type 不是 JSON：415，不转发不落盘', async () => {
+    const seen = []
+    const upstream = await listen((request, response) => {
+        seen.push(request.url)
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end('{}')
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-ctype-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: upstream.url, out, log: () => {} })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        // 浏览器 no-cors 的 simple POST 就发这个类型，不需要预检也能把 body 送到位
+        headers: { 'content-type': 'text/plain;charset=UTF-8' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 415)
+    assert.equal(seen.length, 0, '不该把这条转给上游')
+    assert.equal(fs.existsSync(out), false, '不该落盘')
+})
+
+test('带 Origin 的一律拒：本机桌面客户端不发这个头，只有网页会发', async () => {
+    const seen = []
+    const upstream = await listen((request, response) => {
+        seen.push(request.url)
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end('{}')
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-origin-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: upstream.url, out, log: () => {} })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 403)
+    assert.equal(seen.length, 0, '不该把这条转给上游')
+    assert.equal(fs.existsSync(out), false, '不该落盘')
 })
 
 test('身份不齐那条走真中转：一个字不落盘，但终端要有一行说清缺什么', async () => {
