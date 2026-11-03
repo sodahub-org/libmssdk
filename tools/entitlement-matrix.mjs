@@ -337,7 +337,9 @@ export function captureIdentity(text) {
         const missing = [!iid && 'iid', !fp && 'fp'].filter(Boolean).join(' / ')
         throw new Error(`抓包件里最后那条身份不齐（缺 ${missing}）——不顶替，也不回落到更早那一条`)
     }
-    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount: lines.length }
+    // 件尾那个换行会被切出一个空段，它不是一行记录：lineCount 报的是记录行数，不是切出来的段数。
+    const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */

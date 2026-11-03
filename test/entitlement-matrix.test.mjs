@@ -207,6 +207,21 @@ test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那
     assert.throws(() => captureIdentity([line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }), noFp].join('\n')), /不齐/)
 })
 
+test('件尾那个换行不算一行：lineCount 是记录数，不是切出来的段数', () => {
+    const row = '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    assert.deepEqual(captureIdentity(`${row}\n`), {
+        deviceId: '1789435000000',
+        iid: '1789435000001',
+        fp: '1789435000000',
+        at: '2026-11-03T00:00:00.000Z',
+        line: 1,
+        lineCount: 1,
+    })
+    const two = captureIdentity(`${row}\n${row}\n`)
+    assert.equal(two.line, 2, '取的是最后一份')
+    assert.equal(two.lineCount, 2, '两条记录就是两行')
+})
+
 test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {
     const identity = buildIdentity('ts', { now: FIXED_NOW })
     const spec = buildPcMeRequest({ identity, app: APP_PROFILES.luna330, cookie: 'sessionid_ss=fixed' })
