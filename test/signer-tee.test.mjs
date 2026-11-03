@@ -496,7 +496,12 @@ test('复用一份权限更宽的既有抓包件时，写着设备号的那一�
 })
 
 test('终端那行的标签要对得上它数的东西：是全部头名，不是 UA 相关', () => {
-    const line = formatCapture(captureRecord({ url: TRACK_V2_URL }).record)
+    const line = formatCapture(
+        captureRecord({
+            url: TRACK_V2_URL,
+            headers: { Cookie: SECRET_COOKIE, 'user-agent': 'LunaPC/3.3.0(359450208)', 'x-ss-stub': 'A' },
+        }).record,
+    )
     assert.match(line, /头名=3条/, `标签名不副实：${line}`)
     assert.ok(!line.includes('UA头'), '这个数是全部头名，跟 UA 没关系——真机是 7 个里头只有 1 个 UA')
 })
