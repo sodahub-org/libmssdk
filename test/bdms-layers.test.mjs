@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -25,12 +25,19 @@ const PROBE_STEPS = [
 // 桩模块写在仓库外的临时目录里，文件名只能是 .js：仓库 package.json 带 `"type": "module"`，
 // 仓库内的 .js 会被当 ESM；而 .node 会被 require 当原生插件加载。
 // 目录名故意带空格与 Program Files——探针的输出里一个字符都不该出现它。
+const made = []
 function stubDir() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-layers probe-'))
     const dir = path.join(root, 'Program Files')
     fs.mkdirSync(dir, { recursive: true })
+    made.push(root)
     return dir
 }
+
+// 自己造的残留自己清：一次跑下来堆七八个临时目录在临时区里不算收尾。
+after(() => {
+    for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
 
 function stub(source) {
     const file = path.join(stubDir(), 'bdms-stub.js')
@@ -65,20 +72,22 @@ function run(script, args) {
     }
 }
 
-// 这批路径形状与 test/entitlement-matrix.test.mjs 盯的是同一套：带空格的用户名、Program Files、
-// 无冒号的容器路径、盘根、首段带空格的 posix、单段路径、UNC。探针把它们全挡在输出之外。
+// 七个形状全是编出来的，没有一个指向本机真实目录（开源边界：公开仓库里不许出现本机路径）。
+// 它们分别对应 test/entitlement-matrix.test.mjs 那批脱敏形状里的这几类：带空格的用户名、
+// Program Files、首段带空格的 posix、无冒号的容器路径、单段 posix 根、盘根、UNC。
 const PATH_SHAPES = [
     'D:\\Users\\Jean Dupont\\vendor\\soda-music\\bdms.node',
     'C:\\Program Files\\Soda Music\\resources\\bdms.node',
     '/soda music/vendor/bdms.node',
+    '/app/client/bdms.node',
     '/bdms.node',
+    'D:\\bdms.node',
     '\\\\srv\\share\\bdms.node',
-    'D:\\Aworker\\libmssdk\\vendor\\soda-music\\没有这个.node',
 ]
 
 function assertNoPath(text, where) {
     assert.ok(!/[\\/]/.test(text), `${where}里出现了路径分隔符：${text}`)
-    assert.ok(!/Jean|Dupont|Program Files|soda music|Users|Aworker|wine|home/i.test(text), `${where}里出现了本机目录或用户名：${text}`)
+    assert.ok(!/Jean|Dupont|Program Files|soda music|Users|home|srv|share/i.test(text), `${where}里出现了本机目录或用户名：${text}`)
 }
 
 test('三层各自出声：load / init / sign 一行不差', () => {
@@ -87,11 +96,12 @@ test('三层各自出声：load / init / sign 一行不差', () => {
     assert.deepEqual(out.lines, PROBE_STEPS)
 })
 
-test('begin 只报设备号的位数，完整值与掩码都不出现', () => {
+test('begin 那行只报设备号的位数，完整值与掩码都不出现', () => {
+    // 第一行的形状已由 PROBE_STEPS 全量断言钉住，这里只管一件事：别把设备号带出来。
     const out = run(probe, [okStub(), DEVICE])
-    assert.equal(out.lines[0], 'step=begin device=13位')
-    for (const text of [out.lines.join('\n'), out.stderr]) assertNoPath(text, '输出')
-    assert.ok(!out.lines.join('\n').includes(DEVICE), '完整设备号不该出现在输出里')
+    const text = out.lines.join('\n')
+    assert.ok(!text.includes(DEVICE), '完整设备号不该出现在输出里')
+    for (const each of [text, out.stderr]) assertNoPath(each, '输出')
 })
 
 test('init 与签名拿到的确实是同一个设备号，URL 是探针当场编的', () => {
@@ -130,7 +140,7 @@ test('导出不符合预期时停在 load，说清缺哪一个', () => {
     assert.deepEqual(out.lines.slice(-2), ['step=load', 'step=failed layer=load reason=exports hasInit=true hasSign=false'])
 })
 
-test('路径不存在时报的是类别，六种路径形状一种都不回声', () => {
+test('路径不存在时报的是类别，七个形状一个都不回声', () => {
     for (const shape of PATH_SHAPES) {
         const out = run(probe, [shape, DEVICE])
         assert.equal(out.code, 1)
@@ -162,8 +172,20 @@ test('一个路径都不给就说缺参数，不去猜默认值', () => {
     assert.deepEqual(out.lines.slice(-1), ['step=failed layer=args reason=missing 把 bdms.node 的路径作为第一个参数传进来'])
 })
 
-test('探针同时出现在 README 的坑条目与文件表里', () => {
+test('README 的坑 1 与文件表都指着这支探针（少一处就红灯）', () => {
     const readme = fs.readFileSync(path.join(repoRoot, 'verify/wine-multi/README.md'), 'utf8')
-    assert.match(readme, /bdms-layers\.mjs/)
-    assert.match(readme, /分层探针/)
+    // 文件表那一行要整行在：只 grep 文件名的话，开头「一条命令」那段与坑 1 都能替它顶上。
+    assert.match(readme, /^\| `bdms-layers\.mjs` \| .*分层探针.*$/m)
+    assert.match(readme, /想知道自己那次卡在哪一层就跑 `bdms-layers\.mjs`/)
+})
+
+test('加载判据不许两处各自漂：探针与服务认的是同一对导出名', () => {
+    // 探针故意不 import 服务那套判据（要能一个 docker cp 单独拷进容器），所以这里用文本钉住同一对名字：
+    // src/bdms.mjs 改了导出口径，这条当场红灯，提醒回来看探针那一处。
+    const signer = fs.readFileSync(path.join(repoRoot, 'src/bdms.mjs'), 'utf8')
+    assert.match(signer, /typeof this\.#module\?\.init !== 'function'/)
+    assert.match(signer, /typeof this\.#module\?\.generateHttpSignatureHeaders !== 'function'/)
+    const text = fs.readFileSync(probe, 'utf8')
+    assert.match(text, /typeof module\?\.init === 'function'/)
+    assert.match(text, /typeof module\?\.generateHttpSignatureHeaders === 'function'/)
 })
