@@ -470,8 +470,10 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
   根本没开始（外层 `timeout -s KILL 45` 切断回 `rc=137`）；同一份模块换进容器自己的文件系统，
   三层 1.5 秒（TTY）/ 3.2 秒（重定向到文件）走完。工具那一次没分层，卡点是按同一挂载形状推的。
   第三节那批补跑读数仍出自本机 Windows 原生 Node（与容器里是同一个 `bdms.node`）——换到容器里重跑
-  同样的 arm 属于复现，不构成新的对照，但现在这条路是通的：容器内的跑法与全部实测数字写在
-  `verify/wine-multi/README.md` 的「已知的环境坑」。
+  同样的 arm 属于复现，不构成新的对照，但现在这条路是通的：容器内的跑法（`--arm good-ts`、
+  曲目号当场编、`--cookie-from` 指一个空文件＝匿名，上游回 `HTTP 200` 非空回包）与探针的实测秒数
+  写在 `verify/wine-multi/README.md` 的「已知的环境坑」。**那次只是通路验证，不是权益读数**——
+  合成曲目号加匿名 cookie 下 `fullTrack` 本来就该是 false，别把它当成一条新的权益证据。
   仍然没查出来的两件事：#30 里记的 `timeout 180` 切不断（本次 `timeout -s KILL` 与对整个进程组发
   TERM 都切得断，为什么默认信号不行没测）；覆盖 entrypoint 之后 prefix 初始化程度是否另有影响
   （本次用过的两个卷都先跑过一次 `wineboot -u`，全新没初始化的卷没测）。
