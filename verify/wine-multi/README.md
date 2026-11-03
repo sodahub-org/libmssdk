@@ -129,10 +129,13 @@ bash verify/wine-multi/run.sh --mode mock
    **这条坑不只咬 `serve`**（#30）。`-v <Windows 目录>:/app` 把整个仓库挂进容器、再让工具进程
    自己 `require` 原生模块，就是这么撞上的。这次的卡点就落在二进制的挂载位置上：同一个镜像、
    同一个 prefix 卷、同一个脚本，只把 `bdms.node` 从 drvfs 挂载换进容器自己的文件系统，三层就
-   走完了——`加载 → init → 签名` 1.5 秒（TTY）与 3.2 秒（重定向到文件），各一次。别的因素
-   （prefix 初始化程度、Wine 版本）没有被逐一排除过，`run.sh` 现成的注释也只指这一条。
-   脚本留在 drvfs 上不影响：仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs
-   挂载里读，只有两个二进制走 `docker cp`。
+   走完了——`加载 → init → 签名` 1.5 秒（TTY）与 3.2 秒（重定向到文件），各一次。脚本留在 drvfs
+   上不影响：仓库在 Windows 盘上时 `run.sh` 就是这个分工——连入口脚本都从 drvfs 挂载里读，
+   只有两个二进制走 `docker cp`。
+   票面还留着一个怀疑（覆盖 entrypoint 之后 prefix 初始化程度与 `serve` 路径不同）：**这次没排掉**——
+   每次成功跑的容器都先做过 `wineboot -u`，「完全没初始化过 prefix」那一格没测。Wine 版本那一格沿用
+   本节开头 #6 那轮的实测结论（换版本不解决），本轮没有新证据。同容器里不加载原生模块的那条 arm
+   照常出数（这是 #30 票面记录的现象，本轮没重跑），与「卡点在加载原生模块这一层」相互印证。
 
    卡住时探针打出来的就是这两行，再没有第三条：
 
@@ -144,6 +147,7 @@ bash verify/wine-multi/run.sh --mode mock
    `init` 与签名两层根本没开始（外层 `timeout -s KILL 45` 切断时回 `rc=137`）。这是**探针**在
    drvfs 挂载上的读数；`entitlement-matrix.mjs` 那一次没单独分层，它的卡点按同一挂载形状推在同一层。
    想知道自己那次卡在哪一层就跑 `bdms-layers.mjs`：每层**进之前**先出一行，最后一条就是答案。
+   它自己不带超时——同步的原生调用在进程内打断不了，要限定等待就在外面套 `timeout -s KILL`。
 
    三条实测边界：容器不会跟着立刻没（发 KILL 之后 40 秒仍 `running`）；换一个用同一个 prefix 卷的
    新容器照常能用，**不必重建 prefix**；`timeout -s KILL` 与对**整个进程组**发 TERM 都切得断
@@ -151,9 +155,24 @@ bash verify/wine-multi/run.sh --mode mock
    本次没查出来，只记现象；同理，本次也有几台**没碰这条坑**的容器自己退成 `255`，别把这两件事当成
    同一个因果链。
 
-   对照实验工具（`tools/entitlement-matrix.mjs`）在容器里跑的形状：仓库与两个二进制都 `docker cp`
-   进容器，再用 `LIBMSSDK_CLIENT_DIR` 或 `LIBMSSDK_BDMS_MODULE` 指到那份容器内的 `bdms.node`——
-   这两个环境变量才是本工具找模块的入口，`vendor/soda-music/` 只是本机默认路径。
+   对照实验工具（`tools/entitlement-matrix.mjs`）在容器里跑的形状，本次实测走通的是这一种：
+
+   ```bash
+   # 1) 起一台带 prefix 卷、带 TTY 的容器
+   docker run -d --name matrix -t -v <wine卷>:/wine \
+       -e WINEPREFIX=/wine -e WINEDEBUG=-all \
+       libmssdk:local -c 'sleep infinity'
+   # 2) 仓库连同你已经放在 vendor/soda-music 里的两个二进制，一起拷进容器自己的文件系统
+   docker cp . matrix:/appc
+   # 3) 容器里跑，工具照旧；不加 -t 就把输出重定向到文件再 cat（见坑 2）
+   docker exec -t matrix bash -c \
+       'cd /appc; wine /opt/node-win/node.exe tools/entitlement-matrix.mjs --track <曲目> --arm good-ts'
+   ```
+
+   想把模块放在容器里的别处，用 `LIBMSSDK_CLIENT_DIR`（给目录）或 `LIBMSSDK_BDMS_MODULE`（给文件全路径）
+   指过去——这两个环境变量才是工具找模块的入口，`vendor/soda-music/` 只是它默认就去看的那一处；
+   指哪儿都行，**唯一的条件是不是 drvfs 挂载里的路径**。注意 `docker cp` 单个文件不会替目标建父目录，
+   所以 `run.sh` 是先 `mkdir -p` 再整目录拷。
 2. **`docker exec`（不加 `-t`）不能把 `wine node.exe` 直接接在管道上**，会 `open EBADF`：
    Wine 下的 Node 打不开管道型 stdio。加 `-t` 能跑，但 TTY 会在 80 列插换行，多行 JSON 被切断。
    脚本的做法是容器内 bash 把输出重定向到文件再 `cat` 出来（见 `driver-docker.mjs` 的 `wineNode`）。

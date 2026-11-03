@@ -308,8 +308,10 @@ node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --arm no-si
   票面把这条路记成「要么修到能跑、要么改请本机 Windows Node 上跑」，实测站在前者一边：那次挂住
   的不是这条路，是二进制的挂载位置——`bdms.node` / `metasecml.dll` 放在 `/mnt/*` 这类 drvfs 绑定
   挂载上，Wine 会停在 `require` 里不返回，安静、无报错，`init` 与签名两层根本没开始；票面那条复现
-  命令（`--arm captured` 打在 drvfs 挂载的仓库上）撞的就是这一条。分层探针读到的形状与实测数字写在
-  `verify/wine-multi/README.md` 的「已知的环境坑」，想知道自己那次卡在哪一层就跑
+  命令把仓库目录挂在 drvfs 上、跑的是 `--arm captured`；按本票测到的挂载形状，卡点推在加载这一层
+  （工具那一次没单独分层，分层读数出自探针）。形状与实测数字写在
+  `verify/wine-multi/README.md` 的「已知的环境坑」（含一条可照抄的容器内命令）。想知道自己那次
+  卡在哪一层就跑
   `verify/wine-multi/bdms-layers.mjs`。
   测到的是：同镜像、同 prefix 卷、同脚本，只把二进制从 drvfs 换进容器自己的文件系统，三层就走完了
   （1.5 秒 / 3.2 秒各一次）；整个仓库连同二进制 `docker cp` 进容器时，本工具也跑完了一条 arm
