@@ -187,7 +187,14 @@ test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那
         line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
         line('/luna/pc/me', { deviceId: '' }),
     ].join('\n')
-    assert.deepEqual(captureIdentity(good), { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
+    assert.deepEqual(captureIdentity(good), {
+        deviceId: '1789435000000',
+        iid: '1789435000001',
+        fp: '1789435000000',
+        at: '2026-11-03T00:00:00.000Z',
+        line: 4,
+        lineCount: 5,
+    })
     assert.throws(() => captureIdentity(''), /device_id/)
     assert.throws(() => captureIdentity('{"at":"2026-11-03T00:00:00.000Z","path":"/x"}'), /device_id/)
     // 三个号缺一个就是那份不齐：报错，不顶替，也不回落到更早那一条

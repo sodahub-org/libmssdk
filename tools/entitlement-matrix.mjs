@@ -310,14 +310,21 @@ function safeParse(text) {
  * 设备号走文件而不是命令行参数：argv 会进 shell 历史与进程列表，那是本机里唯一一处
  * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错；
  * 那份带 device_id 的记录本身必须三个号齐全，缺一个也报错——不回落到更早那一条。
+ * 回包里带上选中那一条的 `at` 与它是第几行（`line` / `lineCount`）：读数用的是件里哪一份，
+ * 操作者必须看得见，否则「最新那一份」与「回落到的那一份」在读数上无法区分。
  */
 export function captureIdentity(text) {
+    const lines = String(text || '').split(/\r?\n/)
     let latest = null
-    for (const line of String(text || '').split(/\r?\n/)) {
+    let picked = null
+    for (const [index, line] of lines.entries()) {
         if (!line.trim()) continue
         const record = safeParse(line)
         const identity = record && record.identity
-        if (identity && String(identity.deviceId || '').trim()) latest = identity
+        if (identity && String(identity.deviceId || '').trim()) {
+            latest = identity
+            picked = { at: String(record.at || ''), line: index + 1 }
+        }
     }
     if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
     const trim = value => String(value || '').trim()
@@ -330,7 +337,7 @@ export function captureIdentity(text) {
         const missing = [!iid && 'iid', !fp && 'fp'].filter(Boolean).join(' / ')
         throw new Error(`抓包件里最后那条身份不齐（缺 ${missing}）——不顶替，也不回落到更早那一条`)
     }
-    return { deviceId, iid, fp }
+    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount: lines.length }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */
