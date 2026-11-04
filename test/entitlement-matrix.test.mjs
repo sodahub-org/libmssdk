@@ -313,6 +313,13 @@ test('--repeat 还要有上限：十亿轮手滑就是十亿次上游请求', ()
     assert.match(ok.stderr, /签名器：/, `上限内的值被误杀：${ok.stderr}`)
 })
 
+test('布尔 flag 也不能重复：--list --list 不许静默收下', () => {
+    // 「重复一律当场报错」这句得对两种 flag 都成立，否则脚本拼参数时看不出自己拼了两遍。
+    const out = runMatrix('--list', '--list')
+    assert.equal(out.status, 2)
+    assert.match(out.stderr, /--list 给了两次/, `重复的 --list 被放过了：${out.stdout.slice(0, 40)}`)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
