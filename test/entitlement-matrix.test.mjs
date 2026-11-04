@@ -266,7 +266,7 @@ test('跑 CLI 用例时真模块进不来：外层塞一份能加载的，也不
     }
 })
 
-test('件尾那个换行不算一行：lineCount 是记录数，不是切出来的段数', () => {
+test('line 与 lineCount 都按物理行算：空行也占一个号，所以 lineCount 报不出件里有几条记录', () => {
     const row = '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
     assert.deepEqual(captureIdentity(`${row}\n`), {
         deviceId: '1789435000000',
@@ -279,6 +279,11 @@ test('件尾那个换行不算一行：lineCount 是记录数，不是切出来�
     const two = captureIdentity(`${row}\n${row}\n`)
     assert.equal(two.line, 2, '取的是最后一份')
     assert.equal(two.lineCount, 2, '两条记录就是两行')
+    // 件尾多一个空行，报的就不是「两条记录」而是「文件有两行」：读数是第几行/共几行这一对，
+    // 两边同一口径，能直接翻到那一行去核。改成记录数反而和 line 对不上。
+    const withBlank = captureIdentity(`${row}\n\n`)
+    assert.equal(withBlank.lineCount, 2, '空行也占一个号')
+    assert.equal(withBlank.line, 1, '取到的还是那一条')
 })
 
 test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {
