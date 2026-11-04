@@ -319,6 +319,11 @@ export function captureIdentity(text) {
     // 记事本另存会带 BOM：它让第一行的 JSON.parse 必然失败，那条记录就悄悄没了——
     // 件里只有一条记录时会报「没有带 device_id 的记录」，文件明明有。
     const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/)
+    // 件尾那个换行会被切出一个空段，它不是一行记录。
+    const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+    const absent = value => value === undefined || value === null || (typeof value === 'string' && !value.trim())
+    const typeName = value =>
+        Array.isArray(value) ? '数组' : typeof value === 'boolean' ? '布尔值' : value && typeof value === 'object' ? '对象' : typeof value
     let latest = null
     let picked = null
     let skipped = 0
@@ -332,18 +337,27 @@ export function captureIdentity(text) {
             continue
         }
         const identity = record.identity
-        if (identity && String(identity.deviceId || '').trim()) {
+        if (identity && !absent(identity.deviceId)) {
             latest = identity
             picked = { at: String(record.at || ''), line: index + 1 }
         }
     }
     if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
-    const trim = value => String(value || '').trim()
-    const deviceId = trim(latest.deviceId)
-    const iid = trim(latest.iid)
-    const fp = trim(latest.fp)
-    // 件尾那个换行会被切出一个空段，它不是一行记录。
-    const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+    // 只收字符串与有限数字：`String({})` 出来的 `[object Object]` 是工具自己编的值，
+    // 会真的进请求，比顶替更糟——读取侧的职责是「不自己编」。
+    const asText = field => {
+        const value = latest[field]
+        if (value === undefined || value === null) return ''
+        if (typeof value === 'string') return value.trim()
+        if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+        throw new Error(
+            `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是${typeName(value)}，` +
+                '不是字符串或数字——那不是一份身份',
+        )
+    }
+    const deviceId = asText('deviceId')
+    const iid = asText('iid')
+    const fp = asText('fp')
     // 不拿 device_id 顶空缺：真机本来就满足 fp = device_id，顶完之后单看读数与真的逐字节相同，
     // 那份身份就不再是「文件里的原值」了。齐不齐由 #32 那道门口拦，这里只负责不再自己编。
     if (!iid || !fp) {

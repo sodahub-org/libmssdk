@@ -322,6 +322,29 @@ test('件首带 BOM 不许吞掉第一条；读不懂的行要数出来', () => 
     assert.equal(junk.skipped, 1, '半个 JSON 要数出来，别悄悄吞掉')
 })
 
+test('身份字段不是字符串或数字就拒：别把 [object Object] 当设备号发出去', () => {
+    // 读取侧的责任是「不自己编」：`String({})` 出来的 `[object Object]` 就是工具自己编的值，
+    // 而启动行还会自信地报「件里第 1 行」——比顶替更糟，因为那玩意儿会真的进请求。
+    const row = identity => JSON.stringify({ at: '2026-11-03T00:00:00.000Z', path: '/luna/pc/track_v2', identity })
+    assert.throws(() => captureIdentity(row({ deviceId: { a: 1 }, iid: '2', fp: '3' })), /identity\.deviceId 是对象/)
+    assert.throws(() => captureIdentity(row({ deviceId: '1', iid: [2], fp: '3' })), /identity\.iid 是数组/)
+    assert.throws(() => captureIdentity(row({ deviceId: '1', iid: '2', fp: true })), /identity\.fp 是布尔值/)
+    // 件里没引号时数字就是数字：这条是合法写法，不许误杀
+    const numeric = captureIdentity(row({ deviceId: 1789435000000, iid: 1789435000001, fp: 1789435000000 }))
+    assert.equal(numeric.deviceId, '1789435000000')
+    assert.equal(numeric.iid, '1789435000001')
+
+    // 走一遍 CLI：报错要能在终端看见，且 stdout 里不许出现编出来的值
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-type-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(capture, `${row({ deviceId: { a: 1 }, iid: '2', fp: '3' })}\n`)
+    const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.equal(out.status, 2)
+    assert.match(out.stderr, /identity\.deviceId 是对象/)
+    assert.ok(!out.stdout.includes('[object Object]'), `编出来的值进了读数：${out.stdout}`)
+    assert.ok(!out.stderr.includes('签名器：'), `报错后还在往下走：${out.stderr}`)
+})
+
 test('--repeat 不是正整数就当场报错，别跑出一份空的 verdict', () => {
     // 以前 `--repeat abc` / `--repeat 0` → rounds 循环一次都不进 → `{"verdict": []}` + exit 1，
     // 读起来像「每条 arm 都失败了」，实际是一条都没跑。
