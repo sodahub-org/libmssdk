@@ -457,6 +457,47 @@ test('命令行给的号与 --from-capture 只能给一个，报错点名实际�
     assert.match(fileOnly.stderr, /读不到/, '只给 --from-capture 仍走原来那条报错')
 })
 
+test('参数写法收紧：--名字=值 也认，缺值 / 重复 / 未知 / 多余 token 一律当场报错', () => {
+    // 以前 argValue 只做 indexOf('--名字')：`--from-capture=<件>` 是 -1，互斥判据整条被绕过，
+    // 件被完全忽略、身份静默换成命令行那份；`--arm=captured` 还会悄悄变成跑整矩阵。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-args-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(
+        capture,
+        '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}\n',
+    )
+
+    const equals = runMatrix('--arm=captured', '--track=123', `--from-capture=${capture}`, '--device=1730000000099')
+    assert.equal(equals.status, 2, `--名字=值 没被解析：${equals.stderr}`)
+    assert.match(equals.stderr, /只能给一个/, `= 写法绕过了互斥：${equals.stderr}`)
+    assert.match(equals.stderr, /--device/)
+
+    // --arm=captured 要真的只跑 captured：没身份就该报错，而不是悄悄跑整矩阵
+    const onlyCaptured = runMatrix('--arm=captured', '--track', '123')
+    assert.match(onlyCaptured.stderr, /captured 需要/, `--arm= 写法没生效：${onlyCaptured.stderr}`)
+
+    const missing = runMatrix('--arm', 'captured', '--track', '123', '--from-capture')
+    assert.match(missing.stderr, /--from-capture 后面没给值/, `缺值没报：${missing.stderr}`)
+
+    const duplicate = runMatrix('--arm', 'captured', '--track', '123', '--track', '456')
+    assert.match(duplicate.stderr, /--track 给了两次/, `重复没报：${duplicate.stderr}`)
+
+    const unknown = runMatrix('--arrm', 'captured')
+    assert.match(unknown.stderr, /未知参数：--arrm/, `未知参数没报：${unknown.stderr}`)
+
+    // 值的位置上是另一个 flag：以前会把 --device 当 iid 的值吞掉
+    const swallowed = runMatrix('--arm', 'captured', '--track', '123', '--iid', '--device', '1730000000099')
+    assert.match(swallowed.stderr, /--iid 后面没给值/, `吞值没报：${swallowed.stderr}`)
+
+    const stray = runMatrix('captured')
+    assert.match(stray.stderr, /看不懂的参数/, `多余 token 没报：${stray.stderr}`)
+
+    // --list 照旧：不碰凭据、不读配置
+    const list = runMatrix('--list')
+    assert.equal(list.status, 0)
+    assert.ok(Array.isArray(JSON.parse(list.stdout)), `--list 的输出坏了：${list.stdout.slice(0, 80)}`)
+})
+
 test('报错信息里的路径整段隐掉，带空格的用户名/目录也算 (#10 日志要能贴进票里)', () => {
     const leaks = [
         'bdms.node 不存在：D:\\Users\\Jean Dupont\\vendor\\soda-music\\bdms.node',
