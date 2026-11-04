@@ -375,24 +375,26 @@ test('抓包件读不到、或里面没有身份：都在碰凭据之前停下�
     assert.match(empty.stderr, /没有带 device_id/)
 })
 
-test('命令行给的号与 --from-capture 只能给一个，报错发生在碰凭据之前', () => {
+test('命令行给的号与 --from-capture 只能给一个，报错点名实际撞的那几个，且发生在碰凭据之前', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-mixed-'))
     const capture = path.join(dir, 'capture.jsonl')
     fs.writeFileSync(
         capture,
         '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}\n',
     )
-    const mixed = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture, '--device', '1730000000099')
-    assert.notEqual(mixed.status, 0)
-    assert.match(mixed.stderr, /只能给一个/)
-    assert.ok(!mixed.stderr.includes('签名器：'), `报错后还在往下走：${mixed.stderr}`)
-    // 只给 --iid / --fp 也算混来源：设备号来自件、其余来自命令行，同样拼出一份「谁都不是」的
-    for (const extra of [['--iid', '1730000000088'], ['--fp', '1730000000077']]) {
-        const oneMore = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture, ...extra)
-        assert.notEqual(oneMore.status, 0, `${extra[0]} 与 --from-capture 同时给竟然走通了`)
-        assert.match(oneMore.stderr, /只能给一个/)
-        assert.ok(!oneMore.stderr.includes('签名器：'), `${extra[0]} 那条报错后还在往下走：${oneMore.stderr}`)
+    // 只给一个号时，报错不许把另外两个也一并点进去：那才是「看不出到底撞了哪个」。
+    const check = (extra, given, notGiven) => {
+        const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture, ...extra)
+        assert.notEqual(out.status, 0, `${extra[0] || '--device'} 与 --from-capture 同时给竟然走通了`)
+        assert.match(out.stderr, /只能给一个/)
+        for (const name of given) assert.ok(out.stderr.includes(name), `报错没点名 ${name}：${out.stderr}`)
+        for (const name of notGiven) assert.ok(!out.stderr.includes(name), `报错点了一个没给的 ${name}：${out.stderr}`)
+        assert.ok(!out.stderr.includes('签名器：'), `报错后还在往下走：${out.stderr}`)
     }
+    check(['--device', '1730000000099'], ['--device'], ['--iid', '--fp'])
+    check(['--iid', '1730000000088'], ['--iid'], ['--device', '--fp'])
+    check(['--fp', '1730000000077'], ['--fp'], ['--device', '--iid'])
+    check(['--iid', '1730000000088', '--fp', '1730000000077'], ['--iid', '--fp'], ['--device'])
     // 只给其中一种来源的，照旧能走完参数校验（这条守住了互斥没误杀合法用法）
     const fileOnly = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', path.join(dir, 'nope.jsonl'))
     assert.match(fileOnly.stderr, /读不到/, '只给 --from-capture 仍走原来那条报错')

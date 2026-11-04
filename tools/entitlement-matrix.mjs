@@ -487,8 +487,13 @@ async function main() {
     const captureFile = argValue('from-capture')
     // 两个来源同时给，会拼出一份「谁都不是」的身份：device 取命令行，iid/fp 取文件。
     // 反过来也一样——只给 --iid 或只给 --fp，设备号仍来自文件，那条读数就不再是抓包里那份。
-    if (captureFile && ['device', 'iid', 'fp'].some(name => argValue(name))) {
-        throw new Error('--device / --iid / --fp 与 --from-capture 只能给一个：混出来的那份既不是抓包里的，也不是你手上给的')
+    // 判据不看 --arm：跑 good-ts 时同时给这两个参数，同样是在拼一份没人认领的身份，
+    // 只是它这次不进读数而已——参数写错了就该当场说，不该等 arm 决定要不要拦。
+    const fromCommandLine = ['device', 'iid', 'fp'].filter(name => argValue(name)).map(name => `--${name}`)
+    if (captureFile && fromCommandLine.length) {
+        throw new Error(
+            `${fromCommandLine.join(' / ')} 与 --from-capture 只能给一个：混出来的那份既不是抓包里的，也不是你手上给的`,
+        )
     }
     let capturedFromFile = null
     if (captureFile) {
