@@ -410,7 +410,13 @@ export function parseArgs(argv) {
     const values = {}
     for (let index = 0; index < argv.length; index += 1) {
         const token = String(argv[index])
-        if (!token.startsWith('--') || token === '--') {
+        if (token === '--') {
+            // POSIX 的「参数到此为止」：本工具不收位置参数，后面还有东西就只说个数。
+            const rest = argv.length - index - 1
+            if (rest > 0) throw new Error(`-- 后面还有 ${rest} 个参数，本工具不收位置参数`)
+            break
+        }
+        if (!token.startsWith('--')) {
             throw new Error(`看不懂的参数：${describeToken(token)}（参数写成 --名字 值 或 --名字=值）`)
         }
         const eq = token.indexOf('=')

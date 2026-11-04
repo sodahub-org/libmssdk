@@ -320,6 +320,17 @@ test('布尔 flag 也不能重复：--list --list 不许静默收下', () => {
     assert.match(out.stderr, /--list 给了两次/, `重复的 --list 被放过了：${out.stdout.slice(0, 40)}`)
 })
 
+test('裸 -- 按「参数到此为止」处理：后面还有东西就只说个数，不复读', () => {
+    // POSIX 惯例；本工具不收位置参数，所以后面还有东西仍要报错，但别把号再复读一遍。
+    const after = runMatrix('--arm', 'captured', '--', '1789435999999999')
+    assert.equal(after.status, 2)
+    assert.match(after.stderr, /-- 后面还有 1 个参数/, `裸 -- 没按惯例处理：${after.stderr}`)
+    assert.ok(!after.stderr.includes('1789435999999999'), `报错复读了后面的值：${after.stderr}`)
+    const trailing = runMatrix('--list', '--')
+    assert.equal(trailing.status, 0, `结尾的裸 -- 不该报错：${trailing.stderr}`)
+    assert.ok(Array.isArray(JSON.parse(trailing.stdout)))
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
