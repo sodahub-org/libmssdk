@@ -352,7 +352,7 @@ export function captureIdentity(text) {
         }
     }
     if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
-    // 只收字符串与有限数字：`String({})` 出来的 `[object Object]` 是工具自己编的值，
+    // 只收字符串与安全整数：`String({})` 出来的 `[object Object]` 是工具自己编的值，
     // 会真的进请求，比顶替更糟——读取侧的职责是「不自己编」。
     const asText = field => {
         const value = latest[field]
