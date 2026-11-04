@@ -331,14 +331,19 @@ export function captureIdentity(text) {
     const deviceId = trim(latest.deviceId)
     const iid = trim(latest.iid)
     const fp = trim(latest.fp)
+    // 件尾那个换行会被切出一个空段，它不是一行记录。
+    const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
     // 不拿 device_id 顶空缺：真机本来就满足 fp = device_id，顶完之后单看读数与真的逐字节相同，
     // 那份身份就不再是「文件里的原值」了。齐不齐由 #32 那道门口拦，这里只负责不再自己编。
     if (!iid || !fp) {
         const missing = [!iid && 'iid', !fp && 'fp'].filter(Boolean).join(' / ')
-        throw new Error(`抓包件里最后那条身份不齐（缺 ${missing}）——不顶替，也不回落到更早那一条`)
+        // 报的行号与 at 是文件里那条的坐标，不是设备号：操作者据此能直接翻到那一行核对，
+        // 也不会把「这份不齐」读成「程序回头用了早前那份齐的」。
+        throw new Error(
+            `抓包件里第 ${picked.line}/${lineCount} 行（at ${picked.at || '未记时间'}）身份不齐（缺 ${missing}）` +
+                '——不顶替；更早那一条就算齐也不回头用，读数只认最后一份',
+        )
     }
-    // 件尾那个换行会被切出一个空段，它不是一行记录：lineCount 报的是记录行数，不是切出来的段数。
-    const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
     return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount }
 }
 

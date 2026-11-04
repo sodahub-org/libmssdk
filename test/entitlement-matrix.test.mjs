@@ -207,6 +207,28 @@ test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那
     assert.throws(() => captureIdentity([line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }), noFp].join('\n')), /不齐/)
 })
 
+test('不齐那条报错要说中是哪一条：第几行、那条 at 何时，并说明为什么不回头用更早那份', () => {
+    const row = (at, identity) => JSON.stringify({ at, path: '/luna/pc/track_v2', identity })
+    const text = [
+        row('2026-11-03T00:00:01.000Z', { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
+        row('2026-11-03T00:00:09.000Z', { deviceId: '1789435222222', iid: '1789435222223', fp: '' }),
+    ].join('\n')
+    // 只说「不齐」，操作者还得自己数文件才知道是哪一条；早先那份是齐的，
+    // 不写清楚就会被读成「程序自己挑了一份好的」。
+    assert.throws(
+        () => captureIdentity(text),
+        error => {
+            assert.match(error.message, /不齐/)
+            assert.match(error.message, /缺 fp/)
+            assert.match(error.message, /第 2\/2 行/, `没说是第几行：${error.message}`)
+            assert.match(error.message, /2026-11-03T00:00:09\.000Z/, `没带那条的时间：${error.message}`)
+            assert.match(error.message, /更早/, `没说不会回头用更早那份：${error.message}`)
+            assert.ok(!error.message.includes('1789435222222'), `报错里漏出设备号：${error.message}`)
+            return true
+        },
+    )
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
