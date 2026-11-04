@@ -331,6 +331,14 @@ export function captureIdentity(text) {
     }
     const typeName = value =>
         Array.isArray(value) ? '数组' : typeof value === 'boolean' ? '布尔值' : value && typeof value === 'object' ? '对象' : typeof value
+    // 报错同时带一句短原因与坐标：调用方要转述时（「本次没用它」那行），
+    // 整句塞进括号会变成五层嵌套，只有短句才读得顺。
+    const fail = (message, short, extra = {}) => {
+        const error = new Error(message)
+        error.short = short
+        Object.assign(error, extra)
+        throw error
+    }
     let latest = null
     let picked = null
     let skipped = 0
@@ -354,9 +362,10 @@ export function captureIdentity(text) {
     }
     // 一条都没有时，最少要能分清「件是空的」与「件里的行都不是记录」：总行数与跳过数都带上。
     if (!latest) {
-        throw new Error(
+        fail(
             `抓包件里没有带 device_id 的记录（共 ${lineCount} 行，跳过 ${skipped} 条不是记录的行；` +
                 '只记 PC 客户端的业务请求）',
+            '没有带 device_id 的记录',
         )
     }
     // 只收字符串：数字的字面在 JSON.parse 那一步就没了——9007199254740993 变 …992、
@@ -365,9 +374,11 @@ export function captureIdentity(text) {
         const value = latest[field]
         if (value === undefined || value === null) return ''
         if (typeof value !== 'string') {
-            throw new Error(
+            fail(
                 `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是${typeName(value)}，` +
                     '不是字符串——数字的字面保不住，件里请写成字符串',
+                `identity.${field} 是${typeName(value)}`,
+                { line: picked.line, lineCount },
             )
         }
         return value.trim()
@@ -381,9 +392,11 @@ export function captureIdentity(text) {
         const missing = [!iid && 'iid', !fp && 'fp'].filter(Boolean).join(' / ')
         // 报的行号与 at 是文件里那条的坐标，不是设备号：操作者据此能直接翻到那一行核对，
         // 也不会把「这份不齐」读成「程序回头用了早前那份齐的」。
-        throw new Error(
+        fail(
             `抓包件里第 ${picked.line} 行（共 ${lineCount} 行，at ${picked.at || '未记时间'}）身份不齐（缺 ${missing}）` +
                 '——不顶替；更早那一条就算齐也不回头用，读数只认最后一份',
+            `缺 ${missing}`,
+            { line: picked.line, lineCount },
         )
     }
     return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount, skipped }
@@ -601,6 +614,8 @@ async function main() {
     }
     let capturedFromFile = null
     let capturedProblem = ''
+    let capturedShort = ''
+    let capturedWhere = ''
     if (captureFile) {
         let text = ''
         try {
@@ -616,6 +631,9 @@ async function main() {
             // 跑整份矩阵就跳过 captured，明确点名了 captured 才当场报错。
             // 以前这里直接抛，件尾一条不齐就把其余 11 条一起拖停。
             capturedProblem = error.message
+            // 转述时只用短原因与坐标：整句塞进括号会变成五层嵌套。
+            capturedShort = error.short || error.message
+            capturedWhere = error.line ? `第 ${error.line} 行（共 ${error.lineCount} 行）` : ''
         }
     }
     const capturedIdentity = {
@@ -633,7 +651,10 @@ async function main() {
     if (whyNotCaptured && !only) process.stderr.write(`跳过 captured：${whyNotCaptured}（其余 arm 照跑）\n`)
     // 件是给了的，只是这份身份用不了：本次连 captured 都不在跑，也得知会一声。
     if (capturedProblem && !wantsCaptured) {
-        process.stderr.write(`注意：抓包件里那份身份用不了（${capturedProblem}），本次没用它\n`)
+        const note = capturedWhere
+            ? `注意：抓包件里${capturedWhere}${capturedShort}，本次没用它`
+            : `注意：抓包件里那份身份用不了（${capturedShort}），本次没用它`
+        process.stderr.write(`${note}\n`)
     }
     if (capturedIdentity.deviceId && !capturedFromFile) {
         // 「哪个字段是顶上来的」只有本仓库说得出：上游对身份齐不齐没有信号（真跑实测缺 --fp 照样 200/ok）。

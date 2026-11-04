@@ -338,13 +338,16 @@ test('给了坏件却没跑 captured：也要出声，不能一声不吭', () =>
     fs.writeFileSync(capture, '{"at":"2026-11-03T00:00:09.000Z","identity":{"deviceId":"1789435222222","iid":"","fp":"1789435222222"}}\n')
 
     const other = runMatrix('--arm', 'good-ts', '--track', '123', '--from-capture', capture)
-    assert.match(other.stderr, /抓包件里那份身份用不了/, `一声不吭：${other.stderr}`)
-    assert.match(other.stderr, /不齐/, '原因要带上')
+    assert.match(other.stderr, /注意：抓包件里第 1 行（共 1 行）缺 iid，本次没用它/, `一声不吭或读不顺：${other.stderr}`)
+    // 这行是给人读、要贴进票的：只带短原因，别把整句塞进括号（那会变成五层嵌套）
+    const note = other.stderr.split(/\r?\n/).find(line => line.startsWith('注意：'))
+    assert.equal(note.split('（').length, 2, `转述套了多层括号：${note}`)
+    assert.ok(!note.includes('不顶替'), '完整原因留给点名 captured 那条报错')
 
     // 整轮里已经有一句「跳过 captured」，不要再说一遍
     const full = runMatrix('--track', '123', '--from-capture', capture)
     assert.match(full.stderr, /跳过 captured/)
-    assert.ok(!full.stderr.includes('身份用不了'), `同一件事说了两遍：${full.stderr}`)
+    assert.ok(!full.stderr.includes('本次没用它'), `同一件事说了两遍：${full.stderr}`)
 })
 
 test('skipped 数的是「不是记录的行」：合法 JSON 的 null / 0 / false 与没有 identity 的行都算', () => {
