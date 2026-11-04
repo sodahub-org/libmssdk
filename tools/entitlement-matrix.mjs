@@ -342,7 +342,7 @@ export function captureIdentity(text) {
         // 报的行号与 at 是文件里那条的坐标，不是设备号：操作者据此能直接翻到那一行核对，
         // 也不会把「这份不齐」读成「程序回头用了早前那份齐的」。
         throw new Error(
-            `抓包件里第 ${picked.line}/${lineCount} 行（at ${picked.at || '未记时间'}）身份不齐（缺 ${missing}）` +
+            `抓包件里第 ${picked.line} 行（共 ${lineCount} 行，at ${picked.at || '未记时间'}）身份不齐（缺 ${missing}）` +
                 '——不顶替；更早那一条就算齐也不回头用，读数只认最后一份',
         )
     }
@@ -563,7 +563,7 @@ async function main() {
     const sourceNote = !capturedSource
         ? ''
         : fromCapture
-          ? `抓包身份：件里第 ${capturedSource.line}/${capturedSource.lineCount} 行` +
+          ? `抓包身份：件里第 ${capturedSource.line} 行（共 ${capturedSource.lineCount} 行）` +
             `${capturedSource.at ? `（那条 at ${capturedSource.at}）` : ''}｜`
           : '抓包身份：命令行给的｜'
     process.stderr.write(

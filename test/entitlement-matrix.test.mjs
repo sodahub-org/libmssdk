@@ -220,13 +220,33 @@ test('不齐那条报错要说中是哪一条：第几行、那条 at 何时，�
         error => {
             assert.match(error.message, /不齐/)
             assert.match(error.message, /缺 fp/)
-            assert.match(error.message, /第 2\/2 行/, `没说是第几行：${error.message}`)
+            assert.match(error.message, /第 2 行（共 2 行/, `没说是第几行：${error.message}`)
             assert.match(error.message, /2026-11-03T00:00:09\.000Z/, `没带那条的时间：${error.message}`)
             assert.match(error.message, /更早/, `没说不会回头用更早那份：${error.message}`)
             assert.ok(!error.message.includes('1789435222222'), `报错里漏出设备号：${error.message}`)
             return true
         },
     )
+})
+
+test('那条「第几行」得活着走到终端：脱敏器不许把它当路径替掉', () => {
+    // 报错要经过 main().catch → safeMessage，它把「带斜杠的 token」整段换成占位符。
+    // 「第 4/4 行」里的 4/4 正好是这种 token，于是函数里说得再清楚，终端上只剩占位符。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-line-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    const row = identity => `{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":${JSON.stringify(identity)}}`
+    fs.writeFileSync(
+        capture,
+        [
+            row({ deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
+            row({ deviceId: '1789435111111', iid: '1789435111112', fp: '1789435111111' }),
+            row({ deviceId: '1789435222222', iid: '1789435222223', fp: '' }),
+        ].join('\n'),
+    )
+    const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.equal(out.status, 2)
+    assert.match(out.stderr, /第 3 行（共 3 行/, `终端上没看到第几行：${out.stderr}`)
+    assert.ok(!out.stderr.includes('本机路径已省略'), `行号被当路径替掉了：${out.stderr}`)
 })
 
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
@@ -464,7 +484,7 @@ test('读数用的是件里哪一条，启动行就得写出来：手打的那�
     fs.writeFileSync(capture, `${record('2026-11-03T00:00:01.000Z', '1789435000000')}\n${record('2026-11-03T00:00:02.000Z', '1789435111111')}\n`)
 
     const fromFile = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
-    assert.match(fromFile.stderr, /件里第 2\/2 行/, `启动行没报是第几行：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /件里第 2 行（共 2 行）/, `启动行没报是第几行：${fromFile.stderr}`)
     assert.match(fromFile.stderr, /2026-11-03T00:00:02\.000Z/, `启动行没报那条的时间：${fromFile.stderr}`)
     assert.ok(!fromFile.stderr.includes('1789435111111'), `启动行漏出完整设备号：${fromFile.stderr}`)
 
