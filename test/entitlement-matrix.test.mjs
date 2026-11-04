@@ -281,6 +281,21 @@ test('数字身份只在安全整数范围内收：JSON 解析已经把超范围
     assert.equal(captureIdentity(row('1789435000000000')).deviceId, '1789435000000000')
 })
 
+test('看不懂的参数只报形状：16 位设备号手滑成位置参数，报错不许替人复读一遍', () => {
+    // argv 本来就会进 shell 历史与进程列表，是这条链路唯一的泄漏点；报错还要再复读一遍，
+    // 而这份报错正是要贴进票里的。拼错的 flag 仍要点名，不然没法改。
+    const asValue = runMatrix('--arm', 'captured', '1789435999999999')
+    assert.ok(!asValue.stderr.includes('1789435999999999'), `报错把号复读了：${asValue.stderr}`)
+    assert.match(asValue.stderr, /看不懂的参数/)
+
+    const asFlag = runMatrix('--1789435999999999')
+    assert.ok(!asFlag.stderr.includes('1789435999999999'), `报错把号当 flag 复读了：${asFlag.stderr}`)
+    assert.match(asFlag.stderr, /未知参数/)
+
+    const typo = runMatrix('--arrm', 'captured')
+    assert.match(typo.stderr, /--arrm/, '拼错的 flag 还是要点名')
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')

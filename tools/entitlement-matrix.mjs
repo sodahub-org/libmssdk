@@ -403,23 +403,27 @@ const VALUE_FLAGS = new Set(['arm', 'track', 'repeat', 'cookie-from', 'from-capt
 const BOOL_FLAGS = new Set(['list'])
 
 export function parseArgs(argv) {
+    // 报错要能贴进票里：手滑成位置参数的 16 位设备号不能被复读一遍。
+    // 拼错的名字（--arrm）仍原样点名，否则没法改。
+    const describeName = name => (/^[A-Za-z][A-Za-z0-9-]*$/.test(name) ? `--${name}` : `一个 ${name.length} 字符的名字`)
+    const describeToken = token => `一个 ${[...String(token)].length} 字符的值`
     const values = {}
     for (let index = 0; index < argv.length; index += 1) {
         const token = String(argv[index])
         if (!token.startsWith('--') || token === '--') {
-            throw new Error(`看不懂的参数：${token}（参数写成 --名字 值 或 --名字=值）`)
+            throw new Error(`看不懂的参数：${describeToken(token)}（参数写成 --名字 值 或 --名字=值）`)
         }
         const eq = token.indexOf('=')
         const name = eq >= 0 ? token.slice(2, eq) : token.slice(2)
         const inline = eq >= 0 ? token.slice(eq + 1) : null
+        if (!BOOL_FLAGS.has(name) && !VALUE_FLAGS.has(name)) throw new Error(`未知参数：${describeName(name)}`)
         if (BOOL_FLAGS.has(name)) {
             if (inline !== null) throw new Error(`--${name} 不带值`)
             values[name] = true
             continue
         }
-        if (!VALUE_FLAGS.has(name)) throw new Error(`未知参数：--${name}`)
         // 同一个 flag 给两次时，用哪个全凭出现顺序，读的人看不出——不如当场说。
-        if (Object.hasOwn(values, name)) throw new Error(`--${name} 给了两次`)
+        if (Object.hasOwn(values, name)) throw new Error(`${describeName(name)} 给了两次`)
         let value = inline
         if (value === null) {
             const next = argv[index + 1]
