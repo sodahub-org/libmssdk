@@ -316,13 +316,22 @@ function safeParse(text) {
  * 否则「最新那一份」与「回落到的那一份」在读数上无法区分。
  */
 export function captureIdentity(text) {
-    const lines = String(text || '').split(/\r?\n/)
+    // 记事本另存会带 BOM：它让第一行的 JSON.parse 必然失败，那条记录就悄悄没了——
+    // 件里只有一条记录时会报「没有带 device_id 的记录」，文件明明有。
+    const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/)
     let latest = null
     let picked = null
+    let skipped = 0
     for (const [index, line] of lines.entries()) {
         if (!line.trim()) continue
         const record = safeParse(line)
-        const identity = record && record.identity
+        if (!record) {
+            // 尾部半行是正常的（tee 在追加），但读不懂的行数必须报出来：
+            // 「共 3 行」与「件里只有 2 条记录」对不上时，看的人才知道差在哪儿。
+            skipped += 1
+            continue
+        }
+        const identity = record.identity
         if (identity && String(identity.deviceId || '').trim()) {
             latest = identity
             picked = { at: String(record.at || ''), line: index + 1 }
@@ -346,7 +355,7 @@ export function captureIdentity(text) {
                 '——不顶替；更早那一条就算齐也不回头用，读数只认最后一份',
         )
     }
-    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount }
+    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount, skipped }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */
@@ -530,7 +539,13 @@ async function main() {
     // 这份身份从哪儿来的，得跟着读数走：件里那份要报到第几条（坏行被 #32 拦掉之后
     // 读数会回落到更早的一条，只报「抓包里的」看不出回落），手打那份也不能冒充件里那份。
     const capturedSource = capturedFromFile
-        ? { from: 'capture', line: capturedFromFile.line, lineCount: capturedFromFile.lineCount, at: capturedFromFile.at }
+        ? {
+              from: 'capture',
+              line: capturedFromFile.line,
+              lineCount: capturedFromFile.lineCount,
+              at: capturedFromFile.at,
+              skipped: capturedFromFile.skipped,
+          }
         : capturedIdentity.deviceId
           ? { from: 'argv' }
           : null
@@ -560,11 +575,12 @@ async function main() {
     }
 
     const fromCapture = capturedSource?.from === 'capture'
+    const skippedNote = capturedSource?.skipped ? `，跳过 ${capturedSource.skipped} 条读不懂的行` : ''
     const sourceNote = !capturedSource
         ? ''
         : fromCapture
-          ? `抓包身份：件里第 ${capturedSource.line} 行（共 ${capturedSource.lineCount} 行）` +
-            `${capturedSource.at ? `（那条 at ${capturedSource.at}）` : ''}｜`
+          ? `抓包身份：件里第 ${capturedSource.line} 行（共 ${capturedSource.lineCount} 行` +
+            `${capturedSource.at ? `，at ${capturedSource.at}` : ''}${skippedNote}）｜`
           : '抓包身份：命令行给的｜'
     process.stderr.write(
         `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜${sourceNote}` +

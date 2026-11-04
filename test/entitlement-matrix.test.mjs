@@ -194,6 +194,7 @@ test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那
         at: '2026-11-03T00:00:00.000Z',
         line: 4,
         lineCount: 5,
+        skipped: 1,
     })
     assert.throws(() => captureIdentity(''), /device_id/)
     assert.throws(() => captureIdentity('{"at":"2026-11-03T00:00:00.000Z","path":"/x"}'), /device_id/)
@@ -295,6 +296,7 @@ test('line 与 lineCount 都按物理行算：空行也占一个号，所以 lin
         at: '2026-11-03T00:00:00.000Z',
         line: 1,
         lineCount: 1,
+        skipped: 0,
     })
     const two = captureIdentity(`${row}\n${row}\n`)
     assert.equal(two.line, 2, '取的是最后一份')
@@ -304,6 +306,20 @@ test('line 与 lineCount 都按物理行算：空行也占一个号，所以 lin
     const withBlank = captureIdentity(`${row}\n\n`)
     assert.equal(withBlank.lineCount, 2, '空行也占一个号')
     assert.equal(withBlank.line, 1, '取到的还是那一条')
+})
+
+test('件首带 BOM 不许吞掉第一条；读不懂的行要数出来', () => {
+    // 记事本另存就会加 BOM。以前第 1 行 JSON.parse 失败被当成坏行跳过，
+    // 只有一条记录的文件会直接报「没有带 device_id 的记录」——文件明明有。
+    const row = '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const withBom = captureIdentity(`\uFEFF${row}\n`)
+    assert.equal(withBom.deviceId, '1789435000000')
+    assert.equal(withBom.line, 1)
+    assert.equal(withBom.lineCount, 1)
+    assert.equal(withBom.skipped, 0, '好东西不算坏行')
+    const junk = captureIdentity(`\uFEFF${row}\n{"broken":\n${row}\n`)
+    assert.equal(junk.line, 3)
+    assert.equal(junk.skipped, 1, '半个 JSON 要数出来，别悄悄吞掉')
 })
 
 test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {
@@ -481,10 +497,13 @@ test('读数用的是件里哪一条，启动行就得写出来：手打的那�
     const capture = path.join(dir, 'capture.jsonl')
     const record = (at, deviceId) =>
         `{"at":"${at}","path":"/luna/pc/track_v2","identity":{"deviceId":"${deviceId}","iid":"${deviceId}","fp":"${deviceId}"}}`
-    fs.writeFileSync(capture, `${record('2026-11-03T00:00:01.000Z', '1789435000000')}\n${record('2026-11-03T00:00:02.000Z', '1789435111111')}\n`)
+    // 中间夹一条读不懂的行：行号按物理行算，所以选中的是第 3 行；跳过几条也要说，
+    // 否则「共 3 行」和「件里只有 2 条记录」对不上，看的人以为是文件坏了。
+    fs.writeFileSync(capture, `${record('2026-11-03T00:00:01.000Z', '1789435000000')}\n{"broken":\n${record('2026-11-03T00:00:02.000Z', '1789435111111')}\n`)
 
     const fromFile = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
-    assert.match(fromFile.stderr, /件里第 2 行（共 2 行）/, `启动行没报是第几行：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /件里第 3 行（共 3 行/, `启动行没报是第几行：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /跳过 1 条/, `跳过的坏行没报数：${fromFile.stderr}`)
     assert.match(fromFile.stderr, /2026-11-03T00:00:02\.000Z/, `启动行没报那条的时间：${fromFile.stderr}`)
     assert.ok(!fromFile.stderr.includes('1789435111111'), `启动行漏出完整设备号：${fromFile.stderr}`)
 
