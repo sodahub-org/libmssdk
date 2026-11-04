@@ -23,6 +23,7 @@ const {
     captureIdentity,
     encodeSortedParams,
     extractScalars,
+    isKnownCaptureProblem,
     isOffBaseline,
     maskTrackId,
     needsTrack,
@@ -456,6 +457,15 @@ test('空行与「没有 device_id 的记录」各有各的计数，减法才对
             return true
         },
     )
+})
+
+test('只把「数据不成立」的错降级成提示：编程错误要炸出来', () => {
+    // 跑整轮时那个 catch 以前把任何异常都归成「件里的这份身份用不了」，然后继续跑——
+    // TypeError 之类会冒充成数据问题，captured 就被悄悄跳过。
+    assert.equal(isKnownCaptureProblem(new TypeError('x')), false)
+    assert.equal(isKnownCaptureProblem(new Error('x')), false)
+    assert.equal(isKnownCaptureProblem(undefined), false)
+    assert.equal(isKnownCaptureProblem(Object.assign(new Error('x'), { short: '缺 iid' })), true)
 })
 
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {

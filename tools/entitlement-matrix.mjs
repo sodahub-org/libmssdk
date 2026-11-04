@@ -315,6 +315,14 @@ function safeParse(text) {
  * 读数用的是件里哪一份，操作者必须看得见——启动行与 captured 的 row 都带着它，
  * 否则「最新那一份」与「回落到的那一份」在读数上无法区分。
  */
+/**
+ * 这个错是不是「件里的数据本身不成立」。`captureIdentity` 主动判死的错都带 `short`；
+ * 编程错误（TypeError 之类）没有——跑整轮时不能把它降级成一句提示，否则 captured 会被悄悄跳过。
+ */
+export function isKnownCaptureProblem(error) {
+    return Boolean(error && typeof error.short === 'string' && error.short)
+}
+
 /** 行数口径：总行数 + 零计数不打印的细项——空行 / 不是记录的行 / 没有 device_id 的记录。 */
 function lineBreakdown({ lineCount, blank = 0, skipped = 0, noDevice = 0 }) {
     return [
@@ -663,6 +671,8 @@ async function main() {
             // 件读得动、但里面那份身份不能用：跟「压根没给身份」同一个后果——
             // 跑整份矩阵就跳过 captured，明确点名了 captured 才当场报错。
             // 以前这里直接抛，件尾一条不齐就把其余 11 条一起拖停。
+            // 只降级「数据本身不成立」的错；编程错误（TypeError 之类）没有 short，必须炸出来。
+            if (!isKnownCaptureProblem(error)) throw error
             capturedProblem = error.message
             // 转述时只用短原因与坐标：整句塞进括号会变成五层嵌套。
             capturedShort = error.short || error.message
