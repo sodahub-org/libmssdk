@@ -212,10 +212,36 @@ test('手打身份里哪个字段是顶上来的都要说出来：只给 --devic
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
     assert.match(onlyTwo.stderr, /没给 --fp/, `缺 fp 却没出声：${onlyTwo.stderr}`)
     assert.match(onlyTwo.stderr, /顶上/)
+    assert.equal(onlyTwo.status, 2, '提醒归提醒，用例照旧该停在「没有模块」那一步，不去碰网络')
     const onlyOne = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099')
     assert.match(onlyOne.stderr, /没给 --iid \/ --fp/, '两个都缺时仍要说，且说清缺的是哪两个')
     const allThree = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101')
     assert.ok(!/顶上/.test(allThree.stderr), `三个号都给全了还被提醒：${allThree.stderr}`)
+})
+
+test('跑 CLI 用例时真模块进不来：外层塞一份能加载的，也不许被拿去签名', () => {
+    // 这条是给文件头「全部不打网络、不需要真实 bdms.node」站的岗。
+    // 提醒打完之后参数校验就算过了，代码接着 loadConfig()：显式给的模块路径不查存在性
+    // （src/config.mjs:66 原样返回），所以外面漏进来的 env 会被直接采用——机器上放着真的
+    // bdms.node 也一样会被找到，然后 runArm 真的去打官方接口。CI 里恰好没模块，看不见这件事。
+    // 判据：这里从外层塞一份「能加载」的 mock，runMatrix 没把自己钉死的话，
+    // 它的文件名就会出现在读数里，并且真的发出去一条请求。
+    const previous = process.env.LIBMSSDK_BDMS_MODULE
+    const previousTimeout = process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS
+    process.env.LIBMSSDK_BDMS_MODULE = mockBdms
+    // 红的时候这条会真的走到 fetch：超时压到 1 毫秒，请求出不了门，判据不受影响。
+    process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS = '1'
+    try {
+        const out = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099')
+        assert.ok(!out.stderr.includes('mock-bdms'), `用了外面那份能加载的模块：${out.stderr}`)
+        assert.ok(!out.stdout.includes('"arm"'), `居然拿到了回包，说明请求发出去了：${out.stdout}`)
+        assert.equal(out.status, 2, '该停在拿不到模块那一步，而不是跑完')
+    } finally {
+        if (previous === undefined) delete process.env.LIBMSSDK_BDMS_MODULE
+        else process.env.LIBMSSDK_BDMS_MODULE = previous
+        if (previousTimeout === undefined) delete process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS
+        else process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS = previousTimeout
+    }
 })
 
 test('件尾那个换行不算一行：lineCount 是记录数，不是切出来的段数', () => {
@@ -259,7 +285,13 @@ test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 con
 })
 
 const matrixCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'entitlement-matrix.mjs')
-/** 跑一次矩阵命令行。这两条都在参数校验阶段就退出，所以不起网络、不碰真模块。 */
+/**
+ * 跑一次矩阵命令行。这里必须把模块路径钉到一个不存在的位置：
+ * 参数校验之后就是 loadConfig()，而显式给的模块路径不查存在性——外面漏进来的 env 会被原样采用，
+ * 机器上放着真的 bdms.node 时它照样被找到，接着 runArm 直接 fetch 官方接口。
+ * 离线约定不能靠「这台机器恰好没装模块」成立。不签名的 arm（seo 那条）拿到模块也用不上，
+ * 所以再压一道超时：真发出去也只会立刻断掉，拿不回任何读数。
+ */
 function runMatrix(...args) {
     return spawnSync(process.execPath, [matrixCli, ...args], {
         encoding: 'utf8',
@@ -267,6 +299,8 @@ function runMatrix(...args) {
             ...process.env,
             LIBMSSDK_COOKIE: 'sessionid_ss=test',
             LIBMSSDK_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-')),
+            LIBMSSDK_BDMS_MODULE: path.join(os.tmpdir(), 'libmssdk-matrix-offline-guard', 'bdms.node'),
+            LIBMSSDK_UPSTREAM_TIMEOUT_MS: '1',
         },
     })
 }
