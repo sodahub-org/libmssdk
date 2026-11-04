@@ -269,16 +269,15 @@ test('不齐的件只跳过 captured，不许把整轮矩阵拖停；明确点�
     assert.ok(!onlyCaptured.stderr.includes('签名器：'), '点了名还往下走')
 })
 
-test('数字身份只在安全整数范围内收：JSON 解析已经把超范围的值改写过了', () => {
-    // 16 位设备号本来就压在 2^53 这条线上，而 9007199254740993 解析完就是 …992：
-    // 静默差 1，再拿去请求就是「文件里根本没有的那个号」。
-    const row = n => `{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":${n},"iid":${n},"fp":${n}}}`
-    assert.throws(() => captureIdentity(row('9007199254740993')), /2\^53|安全整数/)
-    assert.throws(() => captureIdentity(row('9999999999999999')), /2\^53|安全整数/)
-    assert.throws(() => captureIdentity(row('1e21')), /2\^53|安全整数/)
-    assert.throws(() => captureIdentity(row('0.5')), /整数/)
-    // 落在安全范围内的数字照收（JSON 能原样表示，不是改写后的值）
-    assert.equal(captureIdentity(row('1789435000000000')).deviceId, '1789435000000000')
+test('身份字段只收字符串：数字保不住件里的字面，1e15 与 …0 都会被 JSON 改写', () => {
+    // 9007199254740993 解析完是 …992；1e15 变 1000000000000000；1789435000000.0 的小数写法没了。
+    // 只要收数字，就等于收下一个「文件里没这么写、解析器又改写过」的值——干脆只收字符串。
+    const row = n => `{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":${n},"iid":"1","fp":"1"}}`
+    for (const n of ['9007199254740993', '9999999999999999', '1e15', '1e21', '1789435000000.0', '0.5']) {
+        assert.throws(() => captureIdentity(row(n)), /写成字符串/, `${n} 竟被当身份收下`)
+    }
+    // 字符串写法照收（tee 写出来的就是字符串）
+    assert.equal(captureIdentity(row('"1789435000000"')).deviceId, '1789435000000')
 })
 
 test('看不懂的参数只报形状：16 位设备号手滑成位置参数，报错不许替人复读一遍', () => {
@@ -475,11 +474,6 @@ test('身份字段不是字符串或数字就拒：别把 [object Object] 当设
     assert.throws(() => captureIdentity(row({ deviceId: { a: 1 }, iid: '2', fp: '3' })), /identity\.deviceId 是对象/)
     assert.throws(() => captureIdentity(row({ deviceId: '1', iid: [2], fp: '3' })), /identity\.iid 是数组/)
     assert.throws(() => captureIdentity(row({ deviceId: '1', iid: '2', fp: true })), /identity\.fp 是布尔值/)
-    // 件里没引号时数字就是数字：这条是合法写法，不许误杀
-    const numeric = captureIdentity(row({ deviceId: 1789435000000, iid: 1789435000001, fp: 1789435000000 }))
-    assert.equal(numeric.deviceId, '1789435000000')
-    assert.equal(numeric.iid, '1789435000001')
-
     // 走一遍 CLI：报错要能在终端看见，且 stdout 里不许出现编出来的值
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-type-'))
     const capture = path.join(dir, 'capture.jsonl')

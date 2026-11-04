@@ -353,25 +353,18 @@ export function captureIdentity(text) {
         }
     }
     if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
-    // 只收字符串与安全整数：`String({})` 出来的 `[object Object]` 是工具自己编的值，
-    // 会真的进请求，比顶替更糟——读取侧的职责是「不自己编」。
+    // 只收字符串：数字的字面在 JSON.parse 那一步就没了——9007199254740993 变 …992、
+    // 1e15 变 1000000000000000、0.5 原样留着但写成 1e-1 也行。保不住「件里写的那个串」，就不收。
     const asText = field => {
         const value = latest[field]
         if (value === undefined || value === null) return ''
-        if (typeof value === 'string') return value.trim()
-        // 数字支只收安全整数：JSON.parse 已经把 9007199254740993 改写成 …992、
-        // 把 1e21 写成 1e+21、把 0.5 保留成 0.5——这些都不是文件里写的那个值。
-        if (typeof value === 'number') {
-            if (Number.isSafeInteger(value) && value >= 0) return String(value)
+        if (typeof value !== 'string') {
             throw new Error(
-                `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是数字，` +
-                    '但不是 0 到 2^53-1 之间的整数（JSON 解析可能已经改写过它）——件里请写成字符串',
+                `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是${typeName(value)}，` +
+                    '不是字符串——数字的字面保不住，件里请写成字符串',
             )
         }
-        throw new Error(
-            `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是${typeName(value)}，` +
-                '不是字符串或数字——那不是一份身份',
-        )
+        return value.trim()
     }
     const deviceId = asText('deviceId')
     const iid = asText('iid')
