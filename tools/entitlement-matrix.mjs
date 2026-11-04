@@ -433,11 +433,12 @@ const BOOL_FLAGS = new Set(['list'])
 
 export function parseArgs(argv) {
     // 报错要能贴进票里：手滑成位置参数的 16 位设备号不能被复读一遍。
-    // 名字的判据看内容而不是看首字符：下划线（--from_capture）也算名字，要能点名；
-    // 名字里拖着连续 ≥8 位数字（多半是把号贴了上去）就先遮住再打。
+    // 名字默认照原样点名（白名单式判据会把点号、冒号那类拼错整片匿名）；只有两种收起来：
+    // 超长 token（防刷屏），以及名字里连续 ≥8 位数字（多半是手滑贴上的设备号，本项目是 13–16 位）。
     const describeName = name => {
-        if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) return `一个 ${name.length} 字符的名字`
-        return `--${name.replace(/\d{8,}/g, digits => maskDeviceId(digits))}`
+        const text = String(name)
+        if (text.length > 40) return `一个 ${text.length} 字符的名字`
+        return `--${text.replace(/\d{8,}/g, digits => maskDeviceId(digits))}`
     }
     const describeToken = token => `一个 ${[...String(token)].length} 字符的值`
     const values = {}

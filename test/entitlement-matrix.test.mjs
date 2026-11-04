@@ -415,6 +415,19 @@ test('类型报错要分得清：数字是「字面保不住」，对象/布尔�
     assert.throws(() => captureIdentity(row('[1]')), /是数组，不是字符串——那不是一份身份/)
 })
 
+test('名字默认照原样点名：点号、冒号那类拼错也要看得见；只有长数字与超长才遮', () => {
+    // 白名单式判据（只认字母数字下划线连字符）会把点号、冒号这类拼错整片匿名，最该看见的时候看不见。
+    for (const typo of ['--from.capture', '--arm:x', '--from_capture', '--Track']) {
+        const out = runMatrix(typo, 'x')
+        assert.ok(out.stderr.includes(typo), `${typo} 被匿名了：${out.stderr}`)
+    }
+    const longDigits = runMatrix('--x1789435999999999')
+    assert.ok(!longDigits.stderr.includes('1789435999999999'), `长串号被复读：${longDigits.stderr}`)
+    assert.match(longDigits.stderr, /--x178\*\*\*999/)
+    const huge = runMatrix(`--${'a'.repeat(60)}`)
+    assert.match(huge.stderr, /一个 60 字符的名字/, `超长 token 没被截住：${huge.stderr}`)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
