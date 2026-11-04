@@ -561,12 +561,12 @@ async function main() {
         process.stdout.write(`${JSON.stringify(ARMS.map(({ name, expect, changes }) => ({ name, expect, changes })), null, 2)}\n`)
         return
     }
-    // 跑几轮必须是正整数：`--repeat abc` / `--repeat 0` 以前一次都不进循环，
-    // 只吐一份 `{"verdict": []}` + exit 1，读起来像「每条 arm 都失败了」。
+    // 跑几轮必须是 1–100 的整数：下界防 `--repeat 0` 一次不进循环、吐空 verdict；
+    // 上界防手滑成 `1e9`——真能跑通的机器上一次就是十二亿条上游请求。
     const repeatArg = argValue('repeat')
     const repeat = repeatArg ? Number(repeatArg) : 1
-    if (!Number.isInteger(repeat) || repeat < 1) {
-        throw new Error(`--repeat 要给正整数（收到 ${repeatArg || '(空)'}）`)
+    if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) {
+        throw new Error(`--repeat 要给 1 到 100 的整数（收到 ${repeatArg || '(空)'}）`)
     }
     const arms = only ? ARMS.filter(item => item.name === only) : ARMS
     if (!arms.length) throw new Error(`未知 arm：${only}（可选：${ARMS.map(item => item.name).join(' / ')}）`)

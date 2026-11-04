@@ -296,6 +296,23 @@ test('看不懂的参数只报形状：16 位设备号手滑成位置参数，�
     assert.match(typo.stderr, /--arrm/, '拼错的 flag 还是要点名')
 })
 
+test('--repeat 还要有上限：十亿轮手滑就是十亿次上游请求', () => {
+    // 在一台真能跑通的机器上（真模块 + 真 cookie），上限就是「会不会把服务器打封」那条线。
+    for (const bad of ['1000', '1e9', '999999999999']) {
+        const out = runMatrix(
+            '--arm', 'captured', '--track', '123',
+            '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101',
+            '--repeat', bad,
+        )
+        assert.equal(out.status, 2, `--repeat ${bad} 没被拒（exit ${out.status}）`)
+        assert.match(out.stderr, /--repeat .*1 到 100/, `报错没说上限：${out.stderr}`)
+        assert.ok(!out.stderr.includes('签名器：'), `超上限还往下走：${out.stderr}`)
+    }
+    // 上限内照走：停在「拿不到模块」那一步，说明参数校验放行了
+    const ok = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101', '--repeat', '2')
+    assert.match(ok.stderr, /签名器：/, `上限内的值被误杀：${ok.stderr}`)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
