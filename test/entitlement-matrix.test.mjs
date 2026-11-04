@@ -322,6 +322,21 @@ test('件首带 BOM 不许吞掉第一条；读不懂的行要数出来', () => 
     assert.equal(junk.skipped, 1, '半个 JSON 要数出来，别悄悄吞掉')
 })
 
+test('--repeat 不是正整数就当场报错，别跑出一份空的 verdict', () => {
+    // 以前 `--repeat abc` / `--repeat 0` → rounds 循环一次都不进 → `{"verdict": []}` + exit 1，
+    // 读起来像「每条 arm 都失败了」，实际是一条都没跑。
+    for (const bad of ['abc', '0', '-2', '1.5']) {
+        const out = runMatrix(
+            '--arm', 'captured', '--track', '123',
+            '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101',
+            '--repeat', bad,
+        )
+        assert.equal(out.status, 2, `--repeat ${bad} 没被拒（exit ${out.status}）：${out.stdout.slice(0, 200)}`)
+        assert.match(out.stderr, /--repeat/, `报错没点名 --repeat：${out.stderr}`)
+        assert.ok(!out.stdout.includes('verdict'), `还在往外吐空 verdict：${out.stdout}`)
+    }
+})
+
 test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {
     const identity = buildIdentity('ts', { now: FIXED_NOW })
     const spec = buildPcMeRequest({ identity, app: APP_PROFILES.luna330, cookie: 'sessionid_ss=fixed' })

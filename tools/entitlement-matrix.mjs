@@ -485,11 +485,17 @@ export async function runArm(arm, context) {
 async function main() {
     const only = argValue('arm')
     const trackId = argValue('track') || process.env.LIBMSSDK_PROBE_TRACK_ID || ''
-    const repeat = Number(argValue('repeat') || 1)
     const cookieSource = argValue('cookie-from') || (process.env.LIBMSSDK_COOKIE ? 'env' : 'sodam')
     if (process.argv.includes('--list')) {
         process.stdout.write(`${JSON.stringify(ARMS.map(({ name, expect, changes }) => ({ name, expect, changes })), null, 2)}\n`)
         return
+    }
+    // 跑几轮必须是正整数：`--repeat abc` / `--repeat 0` 以前一次都不进循环，
+    // 只吐一份 `{"verdict": []}` + exit 1，读起来像「每条 arm 都失败了」。
+    const repeatArg = argValue('repeat')
+    const repeat = repeatArg ? Number(repeatArg) : 1
+    if (!Number.isInteger(repeat) || repeat < 1) {
+        throw new Error(`--repeat 要给正整数（收到 ${repeatArg || '(空)'}）`)
     }
     const arms = only ? ARMS.filter(item => item.name === only) : ARMS
     if (!arms.length) throw new Error(`未知 arm：${only}（可选：${ARMS.map(item => item.name).join(' / ')}）`)
