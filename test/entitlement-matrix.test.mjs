@@ -377,7 +377,8 @@ function runMatrix(...args) {
             ...process.env,
             LIBMSSDK_COOKIE: 'sessionid_ss=test',
             LIBMSSDK_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-')),
-            LIBMSSDK_BDMS_MODULE: path.join(os.tmpdir(), 'libmssdk-matrix-offline-guard', 'bdms.node'),
+            // 目录名要不可预测：固定名字的共享路径上，别人可以预先放一个 bdms.node 等着被加载。
+            LIBMSSDK_BDMS_MODULE: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-guard-')), 'bdms.node'),
             LIBMSSDK_UPSTREAM_TIMEOUT_MS: '1',
         },
     })
