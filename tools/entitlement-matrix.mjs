@@ -352,7 +352,13 @@ export function captureIdentity(text) {
             picked = { at: asMoment(record.at), line: index + 1 }
         }
     }
-    if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
+    // 一条都没有时，最少要能分清「件是空的」与「件里的行都不是记录」：总行数与跳过数都带上。
+    if (!latest) {
+        throw new Error(
+            `抓包件里没有带 device_id 的记录（共 ${lineCount} 行，跳过 ${skipped} 条不是记录的行；` +
+                '只记 PC 客户端的业务请求）',
+        )
+    }
     // 只收字符串：数字的字面在 JSON.parse 那一步就没了——9007199254740993 变 …992、
     // 1e15 变 1000000000000000、0.5 原样留着但写成 1e-1 也行。保不住「件里写的那个串」，就不收。
     const asText = field => {

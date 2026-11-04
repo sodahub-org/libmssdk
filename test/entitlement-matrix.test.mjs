@@ -390,6 +390,19 @@ test('拼错的名字要能看见，拖着长串号的要遮住：下划线也�
     assert.match(withDigits.stderr, /--x178\*\*\*999/, '前缀与尾三位要留着，好认是哪个参数')
 })
 
+test('件里一条身份都没有时，要说清一共几行、几行不是记录', () => {
+    // 只有一句「没有带 device_id 的记录」时，看不出是件空、还是件里的行全都不是记录。
+    const text = ['{"broken":', 'null', '{"at":"x"}'].join('\n')
+    assert.throws(
+        () => captureIdentity(text),
+        error => {
+            assert.match(error.message, /共 3 行/, `没报总行数：${error.message}`)
+            assert.match(error.message, /跳过 3 条不是记录的行/, `没报跳过的条数：${error.message}`)
+            return true
+        },
+    )
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
