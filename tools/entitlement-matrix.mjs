@@ -322,6 +322,9 @@ export function captureIdentity(text) {
     // 件尾那个换行会被切出一个空段，它不是一行记录。
     const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
     const absent = value => value === undefined || value === null || (typeof value === 'string' && !value.trim())
+    // at 是件里的原文，会进启动行、报错与读数。只认 tee 写的那种 ISO 时刻；
+    // 其它内容（控制字符、转义序列、长标识符）一律当「没记」——脱敏口径不能从这儿漏。
+    const asMoment = value => (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value.trim()) ? value.trim() : '')
     const typeName = value =>
         Array.isArray(value) ? '数组' : typeof value === 'boolean' ? '布尔值' : value && typeof value === 'object' ? '对象' : typeof value
     let latest = null
@@ -339,7 +342,7 @@ export function captureIdentity(text) {
         const identity = record.identity
         if (identity && !absent(identity.deviceId)) {
             latest = identity
-            picked = { at: String(record.at || ''), line: index + 1 }
+            picked = { at: asMoment(record.at), line: index + 1 }
         }
     }
     if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
@@ -641,8 +644,7 @@ async function main() {
     const sourceNote = !capturedSource
         ? ''
         : fromCapture
-          ? `抓包身份：件里第 ${capturedSource.line} 行（共 ${capturedSource.lineCount} 行` +
-            `${capturedSource.at ? `，at ${capturedSource.at}` : ''}${skippedNote}）｜`
+          ? `抓包身份：件里第 ${capturedSource.line} 行（共 ${capturedSource.lineCount} 行，at ${capturedSource.at || '未记时间'}${skippedNote}）｜`
           : '抓包身份：命令行给的｜'
     process.stderr.write(
         `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜${sourceNote}` +

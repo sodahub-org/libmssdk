@@ -322,6 +322,23 @@ test('件首带 BOM 不许吞掉第一条；读不懂的行要数出来', () => 
     assert.equal(junk.skipped, 1, '半个 JSON 要数出来，别悄悄吞掉')
 })
 
+test('件里的 at 只在像 ISO 时间时才露出来：转义序列与长标识符不许进终端和读数', () => {
+    // at 是件里的原文，之前不经任何判据就进启动行、报错与 row。写一份带转义序列的：
+    // 一个完整标识符 + 终端控制字符都原样出去，等于绕开了本仓库的脱敏口径（设备号全走 maskDeviceId）。
+    const row = at => JSON.stringify({ at, path: '/luna/pc/track_v2', identity: { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' } })
+    const evil = '1789435999999 \u001b[31mLEAKME\u001b[0m'
+    assert.equal(captureIdentity(`${row(evil)}\n`).at, '', '不像时间的 at 不该原样回出来')
+    assert.equal(captureIdentity(`${row('2026-11-03T00:00:01.000Z')}\n`).at, '2026-11-03T00:00:01.000Z')
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-at-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(capture, `${row(evil)}\n`)
+    const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.ok(!out.stderr.includes('\u001b'), `终端控制字符漏出去了：${JSON.stringify(out.stderr)}`)
+    assert.ok(!out.stderr.includes('LEAKME'), `at 里的标识符原样打出来了：${out.stderr}`)
+    assert.match(out.stderr, /未记时间/, `没说明 at 不可用：${out.stderr}`)
+})
+
 test('身份字段不是字符串或数字就拒：别把 [object Object] 当设备号发出去', () => {
     // 读取侧的责任是「不自己编」：`String({})` 出来的 `[object Object]` 就是工具自己编的值，
     // 而启动行还会自信地报「件里第 1 行」——比顶替更糟，因为那玩意儿会真的进请求。
