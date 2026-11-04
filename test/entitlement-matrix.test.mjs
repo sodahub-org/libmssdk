@@ -378,6 +378,18 @@ test('identity 是字符串或数组的行也算「不是记录的行」，不�
     assert.equal(got.line, 4)
 })
 
+test('拼错的名字要能看见，拖着长串号的要遮住：下划线也算名字', () => {
+    // 下划线是常见拼错形态，旧尺子（只认字母数字与连字符）恰好把它挡在外头；
+    // 反过来「字母开头 + 16 位号」又被原样复读。判据看内容：名字里出现连续 ≥8 位数字就遮住。
+    for (const typo of ['--from_capture', '--cookie_from', '--track_id']) {
+        const out = runMatrix(typo, 'x')
+        assert.ok(out.stderr.includes(typo), `拼错的 ${typo} 没点名：${out.stderr}`)
+    }
+    const withDigits = runMatrix('--x1789435999999999')
+    assert.ok(!withDigits.stderr.includes('1789435999999999'), `长串号被原样复读：${withDigits.stderr}`)
+    assert.match(withDigits.stderr, /--x178\*\*\*999/, '前缀与尾三位要留着，好认是哪个参数')
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')

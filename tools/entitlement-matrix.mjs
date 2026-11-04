@@ -404,8 +404,12 @@ const BOOL_FLAGS = new Set(['list'])
 
 export function parseArgs(argv) {
     // 报错要能贴进票里：手滑成位置参数的 16 位设备号不能被复读一遍。
-    // 拼错的名字（--arrm）仍原样点名，否则没法改。
-    const describeName = name => (/^[A-Za-z][A-Za-z0-9-]*$/.test(name) ? `--${name}` : `一个 ${name.length} 字符的名字`)
+    // 名字的判据看内容而不是看首字符：下划线（--from_capture）也算名字，要能点名；
+    // 名字里拖着连续 ≥8 位数字（多半是把号贴了上去）就先遮住再打。
+    const describeName = name => {
+        if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) return `一个 ${name.length} 字符的名字`
+        return `--${name.replace(/\d{8,}/g, digits => maskDeviceId(digits))}`
+    }
     const describeToken = token => `一个 ${[...String(token)].length} 字符的值`
     const values = {}
     for (let index = 0; index < argv.length; index += 1) {
