@@ -483,7 +483,8 @@ test('带路径分隔符的拼错：主语要活着，路径原话不进终端',
     // 连「未知参数：」都没了。点名时就得把带分隔符的部分收起来。
     const posix = runMatrix('--from-capture:/a')
     assert.match(posix.stderr, /未知参数/, `整句被脱敏器吞掉了：${JSON.stringify(posix.stderr)}`)
-    assert.match(posix.stderr, /--from-capture 后面跟着路径分隔符/)
+    assert.match(posix.stderr, /未知参数：--from-capture/, `没点名拼错的参数：${posix.stderr}`)
+    assert.match(posix.stderr, /路径分隔符/)
     assert.ok(!posix.stderr.includes('/a'), `路径原话进终端了：${posix.stderr}`)
     const win = runMatrix('--cap:C:\\x\\y')
     assert.match(win.stderr, /未知参数/)

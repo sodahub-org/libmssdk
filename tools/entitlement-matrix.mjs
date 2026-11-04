@@ -467,9 +467,18 @@ export function parseArgs(argv) {
     // 超长 token（防刷屏），以及名字里连续 ≥8 位数字（多半是手滑贴上的设备号，本项目是 13–16 位）。
     const describeName = name => {
         const text = String(name)
+        if (!text) return '一个空名字'
         if (text.length > 40) return `一个 ${text.length} 字符的名字`
         // 控制字符不进终端：名字里出现就只报形状（件里的 at 也是这个口径）。
         if (/[\u0000-\u001f\u007f]/.test(text)) return `一个含控制字符的 ${text.length} 字符名字`
+        // 带路径分隔符的拼错（--from-capture:/a）：整串回显会被 safeMessage 当成路径换成占位符，
+        // 连「未知参数：」都没了。只报分隔符前的名字，既看得见拼错，也不把路径交给通用脱敏器。
+        if (/[\\/]/.test(text)) {
+            const head = text.split(/[\\/]/)[0].replace(/\d{8,}/g, digits => maskDeviceId(digits))
+            return head
+                ? `--${head} 后面跟着路径分隔符（整串 ${text.length} 字符）`
+                : `一个带路径分隔符的 ${text.length} 字符名字`
+        }
         return `--${text.replace(/\d{8,}/g, digits => maskDeviceId(digits))}`
     }
     const describeToken = token => `一个 ${[...String(token)].length} 字符的值`
