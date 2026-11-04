@@ -59,6 +59,11 @@
 node tools/entitlement-matrix.mjs --track <曲目> --arm captured --from-capture <抓包件>
 ```
 
+用的是件里哪一份，启动行与 `captured` 的读数都会报出来（`第 x 行`、那条的 `at`，
+`at` 不像 ISO 时刻时写「未记时间」；行号按文件里的物理行算，空行也占一个号）。
+行数口径是「共 N 行，空行 B 条，不是记录的行 S 条，没有 `device_id` 的记录 D 条」，为 0 的段不打印——
+「共 N 行」是文件的行数，不是能当记录用的条数，两边的差只有把这些数报出来才对得上。
+
 先说这一格量到了什么：抓回来的 `device_id` 本身就是每请求一个毫秒时间戳，所以 `captured`
 与 `good-ts` 同形，**它对「绑定说」没有新的区分力**；有分量的是抓包这件事本身——
 这个登录态没有一份可称作「登录设备」的稳定身份（第三节第一条）。
@@ -104,7 +109,10 @@ node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --arm good-
 # 账号自己是什么档位（免签名，不需要 --track）
 node tools/entitlement-matrix.mjs --arm account-me
 # 上面那条的匿名对照：这条回包解析不出用户 id，才说明上一条认的是登录态
-node tools/entitlement-matrix.mjs --arm account-me --cookie-from <一个空文件>
+# 实测读数：HTTP 200、157 字节、status_code 1000016、hasUser=false，退出码 1
+# ——这条「跑对了」就是以非零码退出，别把它当成工具坏了
+node tools/entitlement-matrix.mjs --arm account-me --cookie-from <一个空的文本文件>
+# 别把这个文件命名成 .json：空内容过不了 JSON.parse，会被报成「--cookie-from 指定的文件读不到」（退出码 2）
 
 # 一次跑完（不给 --from-capture 时自动跳过 captured：每轮 11 条上游请求 × 轮数）
 node tools/entitlement-matrix.mjs --track <拿到过整曲的曲目> --repeat 2
@@ -255,7 +263,8 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
 
 同一台机器、同一个签名器、同一份 Cookie，2026-11-03。曲目是从本机播放器缓存里另挑的三首
 （缓存里播放器自己的 `preview` 标记与本次回包判定一致），曲目号仍不入库。
-`captured` 用的是上面那份抓包件里最后一条记录的真实值（`--from-capture`，设备号不上命令行）。
+`captured` 用的是上面那份抓包件里最后一条带 `device_id` 的记录（它三个号必须齐全：不齐就不采用，
+也不回头用更早那份）；走 `--from-capture`，设备号不上命令行，启动行报的是件里第几行与那条 `at`。
 
 | 曲目 | 曲长 | `captured`（真机那份）的读数 |
 | --- | --- | --- |
@@ -448,8 +457,13 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
   或填了 `SODA_DEVICE_ID` 的）才能给「固定 vs 变化」这组对照补上真实主语；
   而「成套」那条要求要测出区分力，还得有一首「只有成套才给整曲」的曲目（第四节末），也没找到。
 - 「Cookie 字段不全」这个具体形态没测（两轮都只测了有无）。
-- `captured` 只给 `--device` 时 `iid` / `fp` 会被 `device_id` 顶上（脚本会打一行提醒）——
-  那不是一份完整的抓包身份。默认走 `--from-capture` 就没这个问题：那份文件里三样都是真机原值。
+- 顶替只发生在**手打那份**上：只给 `--device`、不给 `--iid` / `--fp` 时，缺哪个就拿 `device_id` 顶哪个
+  （脚本按缺的字段逐个提醒）——那不是一份完整的抓包身份。`--from-capture` 这条路既顶不了也不将就：
+  件里那条三样都得是真机原值，缺一个就不采用，并报出是第几行、那条 `at` 何时。只跑 `captured` 时当场
+  `exit 2`；跑整份矩阵时只跳过这一条 arm、打同一句理由，其余照跑（与「压根没给身份」同一个后果）。
+  身份字段只收字符串（数字的字面在 JSON 解析时就被改写过，`1e15` 与 `…0` 都保不住），`at` 只认 ISO 时刻——都是「不把工具自己编的值发出去」。
+  `--device` / `--iid` / `--fp` 与 `--from-capture` 也不能同时给，同时给在参数校验阶段就拒，
+  报错只点名这次真给了的那几个号；`--名字=值` 与 `--名字 值` 两种写法等价。
 - `probe-shape` 没带上 shipped `probe` 多发的 `x-tt-trace-id` 与 `accept-encoding`。补跑给出的
   新事实是：**真机这两个头都不发**，所以这一条只是「arm 与 shipped probe 不同形」，
   不是「arm 与真机不同形」。要替 `probe` 本身背书，得再补一条带这两个头的 arm。

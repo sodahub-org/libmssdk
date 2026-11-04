@@ -308,23 +308,138 @@ function safeParse(text) {
 /**
  * 抓包件（`tools/signer-tee.mjs` 产的 JSONL，POSIX 上 0600，只在本机）里取最后一份带 device_id 的身份。
  * 设备号走文件而不是命令行参数：argv 会进 shell 历史与进程列表，那是本机里唯一一处
- * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错。
+ * 会把真实设备号顺手留给别人的地方。坏行跳过（尾部可能是半行），一份都读不出就报错；
+ * 那份带 device_id 的记录本身必须三个号齐全，缺一个也报错——不回落到更早那一条。
+ * 回包里带上选中那一条的 `at`，以及它在文件里的行号（`line` / `lineCount` 都按物理行算，
+ * 空行与坏行也占号：这一对要能直接翻到那一行去核，改成记录数就和 `line` 对不上了）。
+ * 读数用的是件里哪一份，操作者必须看得见——启动行与 captured 的 row 都带着它，
+ * 否则「最新那一份」与「回落到的那一份」在读数上无法区分。
  */
+/**
+ * 这个错是不是「件里的数据本身不成立」。`captureIdentity` 主动判死的错都带 `short`；
+ * 编程错误（TypeError 之类）没有——跑整轮时不能把它降级成一句提示，否则 captured 会被悄悄跳过。
+ */
+export function isKnownCaptureProblem(error) {
+    return Boolean(error && typeof error.short === 'string' && error.short)
+}
+
+/** 行数口径：总行数 + 零计数不打印的细项——空行 / 不是记录的行 / 没有 device_id 的记录。 */
+function lineBreakdown({ lineCount, blank = 0, skipped = 0, noDevice = 0 }) {
+    return [
+        `共 ${lineCount} 行`,
+        blank ? `空行 ${blank} 条` : '',
+        skipped ? `不是记录的行 ${skipped} 条` : '',
+        noDevice ? `没有 device_id 的记录 ${noDevice} 条` : '',
+    ]
+        .filter(Boolean)
+        .join('，')
+}
+
 export function captureIdentity(text) {
+    // 记事本另存会带 BOM：它让第一行的 JSON.parse 必然失败，那条记录就悄悄没了——
+    // 件里只有一条记录时会报「没有带 device_id 的记录」，文件明明有。
+    const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/)
+    // 件尾那个换行会被切出一个空段，它不是一行记录。
+    const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+    const absent = value => value === undefined || value === null || (typeof value === 'string' && !value.trim())
+    // at 是件里的原文，会进启动行、报错与读数。只认 ISO 8601 时刻（tee 写 Z 形式，
+    // 带偏移的也是合法 ISO）；其它内容（控制字符、转义序列、长标识符）一律当「没记」。
+    const asMoment = value => {
+        const text = typeof value === 'string' ? value.trim() : ''
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) return ''
+        return Number.isNaN(Date.parse(text)) ? '' : text
+    }
+    const typeName = value =>
+        Array.isArray(value)
+            ? '数组'
+            : typeof value === 'boolean'
+              ? '布尔值'
+              : typeof value === 'number'
+                ? '数字'
+                : value && typeof value === 'object'
+                  ? '对象'
+                  : typeof value
+    // 报错同时带一句短原因与坐标：调用方要转述时（「本次没用它」那行），
+    // 整句塞进括号会变成五层嵌套，只有短句才读得顺。
+    const fail = (message, short, extra = {}) => {
+        const error = new Error(message)
+        error.short = short
+        Object.assign(error, extra)
+        throw error
+    }
     let latest = null
-    for (const line of String(text || '').split(/\r?\n/)) {
-        if (!line.trim()) continue
+    let picked = null
+    let blank = 0
+    let skipped = 0
+    let noDevice = 0
+    // 只数「文件里的行」：件尾那个换行切出来的空段不算（lineCount 已经扣掉它）。
+    for (const [index, line] of lines.slice(0, lineCount).entries()) {
+        if (!line.trim()) {
+            blank += 1
+            continue
+        }
         const record = safeParse(line)
-        const identity = record && record.identity
-        if (identity && String(identity.deviceId || '').trim()) latest = identity
+        const identity = record && typeof record === 'object' && !Array.isArray(record) ? record.identity : null
+        const usable = identity && typeof identity === 'object' && !Array.isArray(identity)
+        if (!usable) {
+            // 尾部半行是正常的（tee 在追加），但不是记录的行数必须报出来：
+            // 「共 3 行」与「件里只有 2 条记录」对不上时，看的人才知道差在哪儿。
+            // 判据是「是不是一条带 identity 对象的记录」，不是「JSON.parse 出来是不是真值」——
+            // 否则 null / 0 / false 被数成坏行，而 identity 是字符串的行反而不算。
+            skipped += 1
+            continue
+        }
+        if (!absent(identity.deviceId)) {
+            latest = identity
+            picked = { at: asMoment(record.at), line: index + 1 }
+        } else {
+            // 有记录、但没有 device_id：既不进「不是记录」，也不进「可用记录」。
+            // 不单独数出来的话，「跳过 0 条」会和「没有记录」并排，读起来像文件没问题。
+            noDevice += 1
+        }
     }
-    if (!latest) throw new Error('抓包件里没有带 device_id 的记录（只记 PC 客户端的业务请求）')
-    const trim = value => String(value || '').trim()
-    return {
-        deviceId: trim(latest.deviceId),
-        iid: trim(latest.iid) || trim(latest.deviceId),
-        fp: trim(latest.fp) || trim(latest.deviceId),
+    // 一条都没有时，最少要能分清「件是空的」与「件里的行都不是记录」：行数口径都带上。
+    if (!latest) {
+        fail(
+            `抓包件里没有带 device_id 的记录（${lineBreakdown({ lineCount, blank, skipped, noDevice })}；` +
+                '只记 PC 客户端的业务请求）',
+            '没有带 device_id 的记录',
+        )
     }
+    // 只收字符串：数字的字面在 JSON.parse 那一步就没了——9007199254740993 变 …992、
+    // 1e15 变 1000000000000000、0.5 原样留着但写成 1e-1 也行。保不住「件里写的那个串」，就不收。
+    const asText = field => {
+        const value = latest[field]
+        if (value === undefined || value === null) return ''
+        if (typeof value !== 'string') {
+            fail(
+                `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是${typeName(value)}，` +
+                    `不是字符串——${
+                        typeof value === 'number' ? '数字的字面保不住，件里请写成字符串' : '那不是一份身份'
+                    }`,
+                `identity.${field} 是${typeName(value)}`,
+                { line: picked.line, lineCount },
+            )
+        }
+        return value.trim()
+    }
+    const deviceId = asText('deviceId')
+    const iid = asText('iid')
+    const fp = asText('fp')
+    // 不拿 device_id 顶空缺：真机本来就满足 fp = device_id，顶完之后单看读数与真的逐字节相同，
+    // 那份身份就不再是「文件里的原值」了。齐不齐由 #32 那道门口拦，这里只负责不再自己编。
+    if (!iid || !fp) {
+        const missing = [!iid && 'iid', !fp && 'fp'].filter(Boolean).join(' / ')
+        // 报的行号与 at 是文件里那条的坐标，不是设备号：操作者据此能直接翻到那一行核对，
+        // 也不会把「这份不齐」读成「程序回头用了早前那份齐的」。
+        fail(
+            `抓包件里第 ${picked.line} 行（共 ${lineCount} 行，at ${picked.at || '未记时间'}）身份不齐（缺 ${missing}）` +
+                '——不顶替；更早那一条就算齐也不回头用，读数只认最后一份',
+            `缺 ${missing}`,
+            { line: picked.line, lineCount },
+        )
+    }
+    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount, blank, skipped, noDevice }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */
@@ -341,9 +456,77 @@ function readCookie(source) {
     return source.endsWith('.json') ? String(JSON.parse(text).cookie || '').trim() : text
 }
 
+// 参数一律写成 `--名字 值` 或 `--名字=值`，两种等价。以前只做 indexOf('--名字')，于是 `=` 写法
+// 整条落空：互斥判据被绕过、抓包件被静默忽略、`--arm=captured` 悄悄变成跑整矩阵。
+const VALUE_FLAGS = new Set(['arm', 'track', 'repeat', 'cookie-from', 'from-capture', 'device', 'iid', 'fp'])
+const BOOL_FLAGS = new Set(['list'])
+
+export function parseArgs(argv) {
+    // 报错要能贴进票里：手滑成位置参数的 16 位设备号不能被复读一遍。
+    // 名字默认照原样点名（白名单式判据会把点号、冒号那类拼错整片匿名）；只有两种收起来：
+    // 超长 token（防刷屏），以及名字里连续 ≥8 位数字（多半是手滑贴上的设备号，本项目是 13–16 位）。
+    const describeName = name => {
+        const text = String(name)
+        if (!text) return '一个空名字'
+        if (text.length > 40) return `一个 ${text.length} 字符的名字`
+        // 控制字符不进终端：名字里出现就只报形状（件里的 at 也是这个口径）。
+        if (/[\u0000-\u001f\u007f]/.test(text)) return `一个含控制字符的 ${text.length} 字符名字`
+        // 带路径分隔符的拼错（--from-capture:/a）：整串回显会被 safeMessage 当成路径换成占位符，
+        // 连「未知参数：」都没了。只报分隔符前的名字，既看得见拼错，也不把路径交给通用脱敏器。
+        if (/[\\/]/.test(text)) {
+            const head = text.split(/[\\/]/)[0].replace(/\d{8,}/g, digits => maskDeviceId(digits))
+            return head
+                ? `--${head} 后面跟着路径分隔符（整串 ${text.length} 字符）`
+                : `一个带路径分隔符的 ${text.length} 字符名字`
+        }
+        return `--${text.replace(/\d{8,}/g, digits => maskDeviceId(digits))}`
+    }
+    const describeToken = token => `一个 ${[...String(token)].length} 字符的值`
+    const values = {}
+    for (let index = 0; index < argv.length; index += 1) {
+        const token = String(argv[index])
+        if (token === '--') {
+            // POSIX 的「参数到此为止」：本工具不收位置参数，后面还有东西就只说个数。
+            const rest = argv.length - index - 1
+            if (rest > 0) throw new Error(`-- 后面还有 ${rest} 个参数，本工具不收位置参数`)
+            break
+        }
+        if (!token.startsWith('--')) {
+            throw new Error(`看不懂的参数：${describeToken(token)}（参数写成 --名字 值 或 --名字=值）`)
+        }
+        const eq = token.indexOf('=')
+        const name = eq >= 0 ? token.slice(2, eq) : token.slice(2)
+        const inline = eq >= 0 ? token.slice(eq + 1) : null
+        if (!BOOL_FLAGS.has(name) && !VALUE_FLAGS.has(name)) throw new Error(`未知参数：${describeName(name)}`)
+        // 同一个 flag 给两次时，用哪个全凭出现顺序，读的人看不出——不如当场说。布尔 flag 同样算。
+        if (Object.hasOwn(values, name)) throw new Error(`${describeName(name)} 给了两次`)
+        if (BOOL_FLAGS.has(name)) {
+            if (inline !== null) throw new Error(`--${name} 不带值`)
+            values[name] = true
+            continue
+        }
+        let value = inline
+        if (value === null) {
+            const next = argv[index + 1]
+            // 下一个 token 也是个 flag，就当这次没给值：把 `--device` 吞成 `--iid` 的值更糟。
+            if (next === undefined || String(next).startsWith('--')) throw new Error(`--${name} 后面没给值`)
+            value = String(next)
+            index += 1
+        }
+        if (!value) throw new Error(`--${name} 后面没给值`)
+        values[name] = value
+    }
+    return values
+}
+
+let parsedArgs = null
+function args() {
+    parsedArgs ||= parseArgs(process.argv.slice(2))
+    return parsedArgs
+}
+
 function argValue(name, fallback = '') {
-    const index = process.argv.indexOf(`--${name}`)
-    return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
+    return args()[name] ?? fallback
 }
 
 /** 曲目号只留末四位：日志和读数可以直接贴进票里，不会反出个人收听记录。 */
@@ -441,6 +624,8 @@ export async function runArm(arm, context) {
     return rowFrom(base, response, await response.text(), context, {
         signed: !arm.request.skipSign,
         deviceId: maskDeviceId(identity.deviceId),
+        // 只有 captured 那条带来源：其余 arm 的身份都是本仓库现造的，没有「哪一条」可报。
+        ...(arm.request.identity === 'captured' && context.capturedSource ? { identitySource: context.capturedSource } : {}),
         signDeviceId: maskDeviceId(signDevice),
         signedHeaders: Object.keys(signed.headers).length,
         signatureLengths: Object.fromEntries(
@@ -452,18 +637,37 @@ export async function runArm(arm, context) {
 async function main() {
     const only = argValue('arm')
     const trackId = argValue('track') || process.env.LIBMSSDK_PROBE_TRACK_ID || ''
-    const repeat = Number(argValue('repeat') || 1)
     const cookieSource = argValue('cookie-from') || (process.env.LIBMSSDK_COOKIE ? 'env' : 'sodam')
-    if (process.argv.includes('--list')) {
+    if (args().list) {
         process.stdout.write(`${JSON.stringify(ARMS.map(({ name, expect, changes }) => ({ name, expect, changes })), null, 2)}\n`)
         return
+    }
+    // 跑几轮必须是 1–100 的整数：下界防 `--repeat 0` 一次不进循环、吐空 verdict；
+    // 上界防手滑成 `1e9`——真能跑通的机器上一次就是十二亿条上游请求。
+    const repeatArg = argValue('repeat')
+    const repeat = repeatArg ? Number(repeatArg) : 1
+    if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) {
+        throw new Error(`--repeat 要给 1 到 100 的整数（收到 ${repeatArg || '(空)'}）`)
     }
     const arms = only ? ARMS.filter(item => item.name === only) : ARMS
     if (!arms.length) throw new Error(`未知 arm：${only}（可选：${ARMS.map(item => item.name).join(' / ')}）`)
     // 先把参数验完，再碰任何凭据与网络：缺身份时要么跳过 captured（跑整份矩阵），
     // 要么直接报错（明确点名了它），不存在「跑到一半才炸」那条路径。
     const captureFile = argValue('from-capture')
+    // 两个来源同时给，会拼出一份「谁都不是」的身份：device 取命令行，iid/fp 取文件。
+    // 反过来也一样——只给 --iid 或只给 --fp，设备号仍来自文件，那条读数就不再是抓包里那份。
+    // 判据不看 --arm：跑 good-ts 时同时给这两个参数，同样是在拼一份没人认领的身份，
+    // 只是它这次不进读数而已——参数写错了就该当场说，不该等 arm 决定要不要拦。
+    const fromCommandLine = ['device', 'iid', 'fp'].filter(name => argValue(name)).map(name => `--${name}`)
+    if (captureFile && fromCommandLine.length) {
+        throw new Error(
+            `${fromCommandLine.join(' / ')} 与 --from-capture 只能给一个：混出来的那份既不是抓包里的，也不是你手上给的`,
+        )
+    }
     let capturedFromFile = null
+    let capturedProblem = ''
+    let capturedShort = ''
+    let capturedWhere = ''
     if (captureFile) {
         let text = ''
         try {
@@ -472,7 +676,19 @@ async function main() {
             // 不把路径写进错误里：这份日志是要被人贴进票里的，而路径里就带着本机用户名。
             throw new Error('--from-capture 指定的抓包件读不到（路径不打印）')
         }
-        capturedFromFile = captureIdentity(text)
+        try {
+            capturedFromFile = captureIdentity(text)
+        } catch (error) {
+            // 件读得动、但里面那份身份不能用：跟「压根没给身份」同一个后果——
+            // 跑整份矩阵就跳过 captured，明确点名了 captured 才当场报错。
+            // 以前这里直接抛，件尾一条不齐就把其余 11 条一起拖停。
+            // 只降级「数据本身不成立」的错；编程错误（TypeError 之类）没有 short，必须炸出来。
+            if (!isKnownCaptureProblem(error)) throw error
+            capturedProblem = error.message
+            // 转述时只用短原因与坐标：整句塞进括号会变成五层嵌套。
+            capturedShort = error.short || error.message
+            capturedWhere = error.line ? `第 ${error.line} 行（共 ${error.lineCount} 行）` : ''
+        }
     }
     const capturedIdentity = {
         deviceId: argValue('device') || (capturedFromFile || {}).deviceId || '',
@@ -480,15 +696,42 @@ async function main() {
         fp: argValue('fp') || (capturedFromFile || {}).fp || '',
     }
     const wantsCaptured = arms.some(item => item.name === 'captured')
-    const missingDevice = wantsCaptured && !capturedIdentity.deviceId
-    if (missingDevice && only) throw new Error('captured 需要 --from-capture <抓包件>，或直接给 --device <抓包 device_id>')
-    const runnable = missingDevice && !only ? arms.filter(item => item.name !== 'captured') : arms
-    if (missingDevice && !only) {
-        process.stderr.write('跳过 captured：这条需要 --from-capture <抓包件> 或 --device（其余 arm 照跑）\n')
+    const whyNotCaptured = !wantsCaptured
+        ? ''
+        : capturedProblem ||
+          (capturedIdentity.deviceId ? '' : '这条需要 --from-capture <抓包件>，或直接给 --device <抓包 device_id>')
+    if (whyNotCaptured && only) throw new Error(whyNotCaptured)
+    const runnable = whyNotCaptured && !only ? arms.filter(item => item.name !== 'captured') : arms
+    if (whyNotCaptured && !only) process.stderr.write(`跳过 captured：${whyNotCaptured}（其余 arm 照跑）\n`)
+    // 件是给了的，只是这份身份用不了：本次连 captured 都不在跑，也得知会一声。
+    if (capturedProblem && !wantsCaptured) {
+        const note = capturedWhere
+            ? `注意：抓包件里${capturedWhere}${capturedShort}，本次没用它`
+            : `注意：抓包件里那份身份用不了（${capturedShort}），本次没用它`
+        process.stderr.write(`${note}\n`)
     }
-    if (capturedIdentity.deviceId && !argValue('iid') && !capturedFromFile) {
-        process.stderr.write('注意：captured 没给 --iid / --fp，会拿 device_id 顶上——那不是一份完整的抓包身份\n')
+    if (capturedIdentity.deviceId && !capturedFromFile) {
+        // 「哪个字段是顶上来的」只有本仓库说得出：上游对身份齐不齐没有信号（真跑实测缺 --fp 照样 200/ok）。
+        const missing = ['iid', 'fp'].filter(name => !argValue(name)).map(name => `--${name}`)
+        if (missing.length) {
+            process.stderr.write(`注意：captured 没给 ${missing.join(' / ')}，会拿 device_id 顶上——那不是一份完整的抓包身份\n`)
+        }
     }
+    // 这份身份从哪儿来的，得跟着读数走：件里那份要报到第几条（坏行被 #32 拦掉之后
+    // 读数会回落到更早的一条，只报「抓包里的」看不出回落），手打那份也不能冒充件里那份。
+    const capturedSource = capturedFromFile
+        ? {
+              from: 'capture',
+              line: capturedFromFile.line,
+              lineCount: capturedFromFile.lineCount,
+              at: capturedFromFile.at,
+              blank: capturedFromFile.blank,
+              skipped: capturedFromFile.skipped,
+              noDevice: capturedFromFile.noDevice,
+          }
+        : capturedIdentity.deviceId
+          ? { from: 'argv' }
+          : null
     // account-me 打的是账号自己的档位端点，与曲目无关，所以它不需要 --track。
     if (!trackId && runnable.some(needsTrack)) throw new Error('需要 --track <track_id>（或 --list）')
 
@@ -510,11 +753,18 @@ async function main() {
         timeoutMs: config.requestTimeoutMs,
         service: { deviceId: config.deviceId, iid: config.iid, fp: config.fp },
         captured: capturedIdentity,
+        capturedSource,
         signer,
     }
 
+    const breakdown = lineBreakdown(capturedSource || {})
+    const sourceNote = !capturedSource
+        ? ''
+        : capturedSource.from === 'capture'
+          ? `抓包身份：件里第 ${capturedSource.line} 行（${breakdown}，at ${capturedSource.at || '未记时间'}）｜`
+          : '抓包身份：命令行给的｜'
     process.stderr.write(
-        `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜` +
+        `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜${sourceNote}` +
             `cookie：${cookie ? `${cookie.split(';').length} 个字段` : '无'}｜曲目：${maskTrackId(trackId)}\n`,
     )
     const rows = []

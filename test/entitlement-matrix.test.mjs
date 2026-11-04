@@ -23,6 +23,7 @@ const {
     captureIdentity,
     encodeSortedParams,
     extractScalars,
+    isKnownCaptureProblem,
     isOffBaseline,
     maskTrackId,
     needsTrack,
@@ -178,18 +179,443 @@ test('免基线的 arm 只有那两条打别端点的，加一条就要在这里
     )
 })
 
-test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，iid/fp 缺了拿 device_id 顶上', () => {
-    const line = (item, identity) => JSON.stringify({ path: item, identity })
-    const text = [
+test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那份不齐就报错，不拿 device_id 顶', () => {
+    const line = (item, identity) => JSON.stringify({ at: '2026-11-03T00:00:00.000Z', path: item, identity })
+    const good = [
         '{"broken":',
         '',
         line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }),
-        line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '' }),
+        line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
         line('/luna/pc/me', { deviceId: '' }),
     ].join('\n')
-    assert.deepEqual(captureIdentity(text), { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' })
+    assert.deepEqual(captureIdentity(good), {
+        deviceId: '1789435000000',
+        iid: '1789435000001',
+        fp: '1789435000000',
+        at: '2026-11-03T00:00:00.000Z',
+        line: 4,
+        lineCount: 5,
+        blank: 1,
+        skipped: 1,
+        noDevice: 1,
+    })
     assert.throws(() => captureIdentity(''), /device_id/)
     assert.throws(() => captureIdentity('{"at":"2026-11-03T00:00:00.000Z","path":"/x"}'), /device_id/)
+    // 三个号缺一个就是那份不齐：报错，不顶替，也不回落到更早那一条
+    const noFp = line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '1789435000001', fp: '' })
+    const noIid = line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '', fp: '1789435000000' })
+    const neither = line('/luna/pc/track_v2', { deviceId: '1789435000000', iid: '', fp: '' })
+    assert.throws(() => captureIdentity(noFp), /不齐/)
+    assert.throws(() => captureIdentity(noIid), /不齐/)
+    assert.throws(() => captureIdentity(neither), /不齐/)
+    assert.throws(() => captureIdentity([line('/luna/pc/playlist', { deviceId: '1111111111111111', iid: '2222222222222', fp: '3333333333333333' }), noFp].join('\n')), /不齐/)
+})
+
+test('不齐那条报错要说中是哪一条：第几行、那条 at 何时，并说明为什么不回头用更早那份', () => {
+    const row = (at, identity) => JSON.stringify({ at, path: '/luna/pc/track_v2', identity })
+    const text = [
+        row('2026-11-03T00:00:01.000Z', { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
+        row('2026-11-03T00:00:09.000Z', { deviceId: '1789435222222', iid: '1789435222223', fp: '' }),
+    ].join('\n')
+    // 只说「不齐」，操作者还得自己数文件才知道是哪一条；早先那份是齐的，
+    // 不写清楚就会被读成「程序自己挑了一份好的」。
+    assert.throws(
+        () => captureIdentity(text),
+        error => {
+            assert.match(error.message, /不齐/)
+            assert.match(error.message, /缺 fp/)
+            assert.match(error.message, /第 2 行（共 2 行/, `没说是第几行：${error.message}`)
+            assert.match(error.message, /2026-11-03T00:00:09\.000Z/, `没带那条的时间：${error.message}`)
+            assert.match(error.message, /更早/, `没说不会回头用更早那份：${error.message}`)
+            assert.ok(!error.message.includes('1789435222222'), `报错里漏出设备号：${error.message}`)
+            return true
+        },
+    )
+})
+
+test('那条「第几行」得活着走到终端：脱敏器不许把它当路径替掉', () => {
+    // 报错要经过 main().catch → safeMessage，它把「带斜杠的 token」整段换成占位符。
+    // 「第 4/4 行」里的 4/4 正好是这种 token，于是函数里说得再清楚，终端上只剩占位符。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-line-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    const row = identity => `{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":${JSON.stringify(identity)}}`
+    fs.writeFileSync(
+        capture,
+        [
+            row({ deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' }),
+            row({ deviceId: '1789435111111', iid: '1789435111112', fp: '1789435111111' }),
+            row({ deviceId: '1789435222222', iid: '1789435222223', fp: '' }),
+        ].join('\n'),
+    )
+    const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.equal(out.status, 2)
+    assert.match(out.stderr, /第 3 行（共 3 行/, `终端上没看到第几行：${out.stderr}`)
+    assert.ok(!out.stderr.includes('本机路径已省略'), `行号被当路径替掉了：${out.stderr}`)
+})
+
+test('不齐的件只跳过 captured，不许把整轮矩阵拖停；明确点名 captured 时才报错', () => {
+    // 以前件尾那条不齐 → 整轮在参数校验阶段 exit 2，其余 11 条一条不跑；
+    // 而「完全没身份」却只跳过 captured。同一个「captured 跑不了」被分成了两种后果。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-skip-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    const good = '{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const broken = '{"at":"2026-11-03T00:00:09.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435222222","iid":"1789435222223","fp":""}}'
+    fs.writeFileSync(capture, `${good}\n${good}\n${broken}\n`)
+
+    const full = runMatrix('--track', '123', '--from-capture', capture)
+    assert.match(full.stderr, /跳过 captured：.*不齐/, `整轮没跳过、直接停了：${full.stderr}`)
+    assert.match(full.stderr, /签名器：/, '跳过之后没有继续往下跑其余 arm')
+
+    const onlyCaptured = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.equal(onlyCaptured.status, 2)
+    assert.match(onlyCaptured.stderr, /不齐/)
+    assert.ok(!onlyCaptured.stderr.includes('签名器：'), '点了名还往下走')
+})
+
+test('身份字段只收字符串：数字保不住件里的字面，1e15 与 …0 都会被 JSON 改写', () => {
+    // 9007199254740993 解析完是 …992；1e15 变 1000000000000000；1789435000000.0 的小数写法没了。
+    // 只要收数字，就等于收下一个「文件里没这么写、解析器又改写过」的值——干脆只收字符串。
+    const row = n => `{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":${n},"iid":"1","fp":"1"}}`
+    for (const n of ['9007199254740993', '9999999999999999', '1e15', '1e21', '1789435000000.0', '0.5']) {
+        assert.throws(() => captureIdentity(row(n)), /写成字符串/, `${n} 竟被当身份收下`)
+    }
+    // 字符串写法照收（tee 写出来的就是字符串）
+    assert.equal(captureIdentity(row('"1789435000000"')).deviceId, '1789435000000')
+})
+
+test('看不懂的参数只报形状：16 位设备号手滑成位置参数，报错不许替人复读一遍', () => {
+    // argv 本来就会进 shell 历史与进程列表，是这条链路唯一的泄漏点；报错还要再复读一遍，
+    // 而这份报错正是要贴进票里的。拼错的 flag 仍要点名，不然没法改。
+    const asValue = runMatrix('--arm', 'captured', '1789435999999999')
+    assert.ok(!asValue.stderr.includes('1789435999999999'), `报错把号复读了：${asValue.stderr}`)
+    assert.match(asValue.stderr, /看不懂的参数/)
+
+    const asFlag = runMatrix('--1789435999999999')
+    assert.ok(!asFlag.stderr.includes('1789435999999999'), `报错把号当 flag 复读了：${asFlag.stderr}`)
+    assert.match(asFlag.stderr, /未知参数/)
+
+    const typo = runMatrix('--arrm', 'captured')
+    assert.match(typo.stderr, /--arrm/, '拼错的 flag 还是要点名')
+})
+
+test('--repeat 还要有上限：十亿轮手滑就是十亿次上游请求', () => {
+    // 在一台真能跑通的机器上（真模块 + 真 cookie），上限就是「会不会把服务器打封」那条线。
+    for (const bad of ['1000', '1e9', '999999999999']) {
+        const out = runMatrix(
+            '--arm', 'captured', '--track', '123',
+            '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101',
+            '--repeat', bad,
+        )
+        assert.equal(out.status, 2, `--repeat ${bad} 没被拒（exit ${out.status}）`)
+        assert.match(out.stderr, /--repeat .*1 到 100/, `报错没说上限：${out.stderr}`)
+        assert.ok(!out.stderr.includes('签名器：'), `超上限还往下走：${out.stderr}`)
+    }
+    // 上限内照走：停在「拿不到模块」那一步，说明参数校验放行了
+    const ok = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101', '--repeat', '2')
+    assert.match(ok.stderr, /签名器：/, `上限内的值被误杀：${ok.stderr}`)
+})
+
+test('布尔 flag 也不能重复：--list --list 不许静默收下', () => {
+    // 「重复一律当场报错」这句得对两种 flag 都成立，否则脚本拼参数时看不出自己拼了两遍。
+    const out = runMatrix('--list', '--list')
+    assert.equal(out.status, 2)
+    assert.match(out.stderr, /--list 给了两次/, `重复的 --list 被放过了：${out.stdout.slice(0, 40)}`)
+})
+
+test('裸 -- 按「参数到此为止」处理：后面还有东西就只说个数，不复读', () => {
+    // POSIX 惯例；本工具不收位置参数，所以后面还有东西仍要报错，但别把号再复读一遍。
+    const after = runMatrix('--arm', 'captured', '--', '1789435999999999')
+    assert.equal(after.status, 2)
+    assert.match(after.stderr, /-- 后面还有 1 个参数/, `裸 -- 没按惯例处理：${after.stderr}`)
+    assert.ok(!after.stderr.includes('1789435999999999'), `报错复读了后面的值：${after.stderr}`)
+    const trailing = runMatrix('--list', '--')
+    assert.equal(trailing.status, 0, `结尾的裸 -- 不该报错：${trailing.stderr}`)
+    assert.ok(Array.isArray(JSON.parse(trailing.stdout)))
+})
+
+test('给了坏件却没跑 captured：也要出声，不能一声不吭', () => {
+    // 同一个「参数写错了」以前有两种后果：跑整轮会打「跳过 captured」，只跑别的 arm 则一句不提。
+    // 互斥那条给出的理由是「参数写错了就该当场说，不该等 arm 决定要不要拦」——这里拉平。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-quiet-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(capture, '{"at":"2026-11-03T00:00:09.000Z","identity":{"deviceId":"1789435222222","iid":"","fp":"1789435222222"}}\n')
+
+    const other = runMatrix('--arm', 'good-ts', '--track', '123', '--from-capture', capture)
+    assert.match(other.stderr, /注意：抓包件里第 1 行（共 1 行）缺 iid，本次没用它/, `一声不吭或读不顺：${other.stderr}`)
+    // 这行是给人读、要贴进票的：只带短原因，别把整句塞进括号（那会变成五层嵌套）
+    const note = other.stderr.split(/\r?\n/).find(line => line.startsWith('注意：'))
+    assert.equal(note.split('（').length, 2, `转述套了多层括号：${note}`)
+    assert.ok(!note.includes('不顶替'), '完整原因留给点名 captured 那条报错')
+
+    // 整轮里已经有一句「跳过 captured」，不要再说一遍
+    const full = runMatrix('--track', '123', '--from-capture', capture)
+    assert.match(full.stderr, /跳过 captured/)
+    assert.ok(!full.stderr.includes('本次没用它'), `同一件事说了两遍：${full.stderr}`)
+})
+
+test('skipped 数的是「不是记录的行」：合法 JSON 的 null / 0 / false 与没有 identity 的行都算', () => {
+    // 以前用 `!record` 判：null/0/false 这类合法 JSON 被数成坏行，而没有 identity 的行反而不算，
+    // 于是「共 6 行」与「跳过 3 条」对不上现场。
+    const good = '{"at":"2026-11-03T00:00:00.000Z","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const text = ['null', '0', 'false', '"just a string"', '[]', '{"at":"2026-11-03T00:00:00.000Z"}', good].join('\n')
+    const got = captureIdentity(text)
+    assert.equal(got.skipped, 6, '不是记录的行要数全')
+    assert.equal(got.line, 7)
+    // 有 identity、只是 device_id 为空的那条仍算记录，不算跳过
+    const withEmpty = captureIdentity(['{"identity":{"deviceId":""}}', good].join('\n'))
+    assert.equal(withEmpty.skipped, 0)
+})
+
+test('at 是合法 ISO 就收：带时区偏移的也认，不是只认 tee 写的 Z', () => {
+    const row = at => JSON.stringify({ at, path: '/luna/pc/track_v2', identity: { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' } })
+    assert.equal(captureIdentity(row('2026-11-03T08:00:00+08:00')).at, '2026-11-03T08:00:00+08:00')
+    assert.equal(captureIdentity(row('2026-11-03T00:00:00.123Z')).at, '2026-11-03T00:00:00.123Z')
+    // 仍然只放行「像时刻」的东西
+    assert.equal(captureIdentity(row('1789435999999 \u001b[31mX\u001b[0m')).at, '')
+    assert.equal(captureIdentity(row('2026-11-03')).at, '')
+})
+
+test('identity 是字符串或数组的行也算「不是记录的行」，不能当记录数', () => {
+    // 判据只看「有没有 identity」，于是 {"identity":"abc"} 被当成一条记录：3 行的件里
+    // 两行不可用，启动行只报「跳过 1 条」，现场对不上。
+    const good = '{"at":"2026-11-03T00:00:00.000Z","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const got = captureIdentity(['{"identity":"abc"}', '{"identity":[]}', '{"broken":', good].join('\n'))
+    assert.equal(got.skipped, 3, 'identity 不是对象的那两行也要算')
+    assert.equal(got.line, 4)
+})
+
+test('拼错的名字要能看见，拖着长串号的要遮住：下划线也算名字', () => {
+    // 下划线是常见拼错形态，旧尺子（只认字母数字与连字符）恰好把它挡在外头；
+    // 反过来「字母开头 + 16 位号」又被原样复读。判据看内容：名字里出现连续 ≥8 位数字就遮住。
+    for (const typo of ['--from_capture', '--cookie_from', '--track_id']) {
+        const out = runMatrix(typo, 'x')
+        assert.ok(out.stderr.includes(typo), `拼错的 ${typo} 没点名：${out.stderr}`)
+    }
+    const withDigits = runMatrix('--x1789435999999999')
+    assert.ok(!withDigits.stderr.includes('1789435999999999'), `长串号被原样复读：${withDigits.stderr}`)
+    assert.match(withDigits.stderr, /--x178\*\*\*999/, '前缀与尾三位要留着，好认是哪个参数')
+})
+
+test('件里一条身份都没有时，要说清一共几行、几行不是记录', () => {
+    // 只有一句「没有带 device_id 的记录」时，看不出是件空、还是件里的行全都不是记录。
+    const text = ['{"broken":', 'null', '{"at":"x"}'].join('\n')
+    assert.throws(
+        () => captureIdentity(text),
+        error => {
+            assert.match(error.message, /共 3 行/, `没报总行数：${error.message}`)
+            assert.match(error.message, /不是记录的行 3 条/, `没报跳过的条数：${error.message}`)
+            return true
+        },
+    )
+})
+
+test('类型报错要分得清：数字是「字面保不住」，对象/布尔是「不是一份身份」', () => {
+    // 以前 typeName 对 number 落到 typeof，报出「是number」；而对象那条还带着「数字的字面保不住」。
+    const row = v => `{"at":"2026-11-03T00:00:01.000Z","identity":{"deviceId":${v},"iid":"1","fp":"1"}}`
+    assert.throws(() => captureIdentity(row('1789435000000')), /是数字，不是字符串——数字的字面保不住/)
+    assert.throws(() => captureIdentity(row('{}')), /是对象，不是字符串——那不是一份身份/)
+    assert.throws(() => captureIdentity(row('true')), /是布尔值，不是字符串——那不是一份身份/)
+    assert.throws(() => captureIdentity(row('[1]')), /是数组，不是字符串——那不是一份身份/)
+})
+
+test('名字默认照原样点名：点号、冒号那类拼错也要看得见；只有长数字与超长才遮', () => {
+    // 白名单式判据（只认字母数字下划线连字符）会把点号、冒号这类拼错整片匿名，最该看见的时候看不见。
+    for (const typo of ['--from.capture', '--arm:x', '--from_capture', '--Track']) {
+        const out = runMatrix(typo, 'x')
+        assert.ok(out.stderr.includes(typo), `${typo} 被匿名了：${out.stderr}`)
+    }
+    const longDigits = runMatrix('--x1789435999999999')
+    assert.ok(!longDigits.stderr.includes('1789435999999999'), `长串号被复读：${longDigits.stderr}`)
+    assert.match(longDigits.stderr, /--x178\*\*\*999/)
+    const huge = runMatrix(`--${'a'.repeat(60)}`)
+    assert.match(huge.stderr, /一个 60 字符的名字/, `超长 token 没被截住：${huge.stderr}`)
+})
+
+test('空行与「没有 device_id 的记录」各有各的计数，减法才对得上', () => {
+    // 以前空行既不进行数口径也不进 skipped，而「有记录但 device_id 为空」也不计数：
+    // 「共 4 行 − 跳过 0 条 = 4」却只有 2 条能用；「跳过 0 条」和「没有记录」并排出现。
+    const rec = at => `{"at":"${at}","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}`
+    const got = captureIdentity([rec('2026-11-03T00:00:01.000Z'), '', '   ', rec('2026-11-03T00:00:02.000Z')].join('\n'))
+    assert.equal(got.lineCount, 4)
+    assert.equal(got.blank, 2, '空行与只有空格的行都要数')
+    assert.equal(got.skipped, 0)
+    assert.equal(got.line, 4)
+
+    assert.throws(
+        () => captureIdentity(['{"identity":{"deviceId":""}}', '{"identity":{"deviceId":""}}', '{"identity":{"deviceId":""}}'].join('\n')),
+        error => {
+            assert.match(error.message, /没有 device_id 的记录 3 条/, `没数没有 device_id 的记录：${error.message}`)
+            assert.ok(!/跳过 0 条/.test(error.message), `零计数还在打：${error.message}`)
+            return true
+        },
+    )
+    // 空行以外的零计数也不许出现
+    assert.throws(
+        () => captureIdentity(''),
+        error => {
+            assert.ok(!/空行 0 条|不是记录的行 0 条|没有 device_id 的记录 0 条/.test(error.message), `零计数还在打：${error.message}`)
+            return true
+        },
+    )
+})
+
+test('只把「数据不成立」的错降级成提示：编程错误要炸出来', () => {
+    // 跑整轮时那个 catch 以前把任何异常都归成「件里的这份身份用不了」，然后继续跑——
+    // TypeError 之类会冒充成数据问题，captured 就被悄悄跳过。
+    assert.equal(isKnownCaptureProblem(new TypeError('x')), false)
+    assert.equal(isKnownCaptureProblem(new Error('x')), false)
+    assert.equal(isKnownCaptureProblem(undefined), false)
+    assert.equal(isKnownCaptureProblem(Object.assign(new Error('x'), { short: '缺 iid' })), true)
+})
+
+test('名字里带控制字符时只报形状，原话不进终端', () => {
+    // 默认点名之后，只要名字够短、不带长数字就原样回显——控制字符也算。
+    // 件里的 at 走的是白名单，argv 这一侧不能敞着。
+    const esc = runMatrix('--a\u001b[31mb')
+    assert.ok(!esc.stderr.includes('\u001b'), `控制字符进终端了：${JSON.stringify(esc.stderr)}`)
+    assert.match(esc.stderr, /控制字符/, `没说明是控制字符：${esc.stderr}`)
+    const bel = runMatrix('--a\u0007b')
+    assert.ok(!bel.stderr.includes('\u0007'), `BEL 进终端了：${JSON.stringify(bel.stderr)}`)
+})
+
+test('带路径分隔符的拼错：主语要活着，路径原话不进终端', () => {
+    // safeMessage 按空白切 token，`未知参数：--from-capture:/a` 中间没空格 → 整串被换成占位符，
+    // 连「未知参数：」都没了。点名时就得把带分隔符的部分收起来。
+    const posix = runMatrix('--from-capture:/a')
+    assert.match(posix.stderr, /未知参数/, `整句被脱敏器吞掉了：${JSON.stringify(posix.stderr)}`)
+    assert.match(posix.stderr, /未知参数：--from-capture/, `没点名拼错的参数：${posix.stderr}`)
+    assert.match(posix.stderr, /路径分隔符/)
+    assert.ok(!posix.stderr.includes('/a'), `路径原话进终端了：${posix.stderr}`)
+    const win = runMatrix('--cap:C:\\x\\y')
+    assert.match(win.stderr, /未知参数/)
+    assert.ok(!win.stderr.includes('x\\y'), `Windows 路径原话进终端了：${win.stderr}`)
+    // 空名字别打成「--」：看着像被吞了
+    const empty = runMatrix('--=x')
+    assert.match(empty.stderr, /一个空名字/, `空名字没说明：${empty.stderr}`)
+})
+
+test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
+    // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
+    const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
+    assert.match(onlyTwo.stderr, /没给 --fp/, `缺 fp 却没出声：${onlyTwo.stderr}`)
+    assert.match(onlyTwo.stderr, /顶上/)
+    assert.equal(onlyTwo.status, 2, '提醒归提醒，用例照旧该停在「没有模块」那一步，不去碰网络')
+    const onlyOne = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099')
+    assert.match(onlyOne.stderr, /没给 --iid \/ --fp/, '两个都缺时仍要说，且说清缺的是哪两个')
+    const allThree = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101')
+    assert.ok(!/顶上/.test(allThree.stderr), `三个号都给全了还被提醒：${allThree.stderr}`)
+})
+
+test('跑 CLI 用例时真模块进不来：外层塞一份能加载的，也不许被拿去签名', () => {
+    // 这条是给文件头「全部不打网络、不需要真实 bdms.node」站的岗。
+    // 提醒打完之后参数校验就算过了，代码接着 loadConfig()：显式给的模块路径不查存在性
+    // （src/config.mjs:66 原样返回），所以外面漏进来的 env 会被直接采用——机器上放着真的
+    // bdms.node 也一样会被找到，然后 runArm 真的去打官方接口。CI 里恰好没模块，看不见这件事。
+    // 判据：这里从外层塞一份「能加载」的 mock，runMatrix 没把自己钉死的话，
+    // 它的文件名就会出现在读数里，并且真的发出去一条请求。
+    const previous = process.env.LIBMSSDK_BDMS_MODULE
+    const previousTimeout = process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS
+    process.env.LIBMSSDK_BDMS_MODULE = mockBdms
+    // 红的时候这条会真的走到 fetch：超时压到 1 毫秒，请求出不了门，判据不受影响。
+    process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS = '1'
+    try {
+        const out = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099')
+        assert.ok(!out.stderr.includes('mock-bdms'), `用了外面那份能加载的模块：${out.stderr}`)
+        assert.ok(!out.stdout.includes('"arm"'), `居然拿到了回包，说明请求发出去了：${out.stdout}`)
+        assert.equal(out.status, 2, '该停在拿不到模块那一步，而不是跑完')
+    } finally {
+        if (previous === undefined) delete process.env.LIBMSSDK_BDMS_MODULE
+        else process.env.LIBMSSDK_BDMS_MODULE = previous
+        if (previousTimeout === undefined) delete process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS
+        else process.env.LIBMSSDK_UPSTREAM_TIMEOUT_MS = previousTimeout
+    }
+})
+
+test('line 与 lineCount 都按物理行算：空行也占一个号，所以 lineCount 报不出件里有几条记录', () => {
+    const row = '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    assert.deepEqual(captureIdentity(`${row}\n`), {
+        deviceId: '1789435000000',
+        iid: '1789435000001',
+        fp: '1789435000000',
+        at: '2026-11-03T00:00:00.000Z',
+        line: 1,
+        lineCount: 1,
+        blank: 0,
+        skipped: 0,
+        noDevice: 0,
+    })
+    const two = captureIdentity(`${row}\n${row}\n`)
+    assert.equal(two.line, 2, '取的是最后一份')
+    assert.equal(two.lineCount, 2, '两条记录就是两行')
+    // 件尾多一个空行，报的就不是「两条记录」而是「文件有两行」：读数是第几行/共几行这一对，
+    // 两边同一口径，能直接翻到那一行去核。改成记录数反而和 line 对不上。
+    const withBlank = captureIdentity(`${row}\n\n`)
+    assert.equal(withBlank.lineCount, 2, '空行也占一个号')
+    assert.equal(withBlank.line, 1, '取到的还是那一条')
+})
+
+test('件首带 BOM 不许吞掉第一条；读不懂的行要数出来', () => {
+    // 记事本另存就会加 BOM。以前第 1 行 JSON.parse 失败被当成坏行跳过，
+    // 只有一条记录的文件会直接报「没有带 device_id 的记录」——文件明明有。
+    const row = '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const withBom = captureIdentity(`\uFEFF${row}\n`)
+    assert.equal(withBom.deviceId, '1789435000000')
+    assert.equal(withBom.line, 1)
+    assert.equal(withBom.lineCount, 1)
+    assert.equal(withBom.skipped, 0, '好东西不算坏行')
+    const junk = captureIdentity(`\uFEFF${row}\n{"broken":\n${row}\n`)
+    assert.equal(junk.line, 3)
+    assert.equal(junk.skipped, 1, '半个 JSON 要数出来，别悄悄吞掉')
+})
+
+test('件里的 at 只在像 ISO 时间时才露出来：转义序列与长标识符不许进终端和读数', () => {
+    // at 是件里的原文，之前不经任何判据就进启动行、报错与 row。写一份带转义序列的：
+    // 一个完整标识符 + 终端控制字符都原样出去，等于绕开了本仓库的脱敏口径（设备号全走 maskDeviceId）。
+    const row = at => JSON.stringify({ at, path: '/luna/pc/track_v2', identity: { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' } })
+    const evil = '1789435999999 \u001b[31mLEAKME\u001b[0m'
+    assert.equal(captureIdentity(`${row(evil)}\n`).at, '', '不像时间的 at 不该原样回出来')
+    assert.equal(captureIdentity(`${row('2026-11-03T00:00:01.000Z')}\n`).at, '2026-11-03T00:00:01.000Z')
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-at-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(capture, `${row(evil)}\n`)
+    const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.ok(!out.stderr.includes('\u001b'), `终端控制字符漏出去了：${JSON.stringify(out.stderr)}`)
+    assert.ok(!out.stderr.includes('LEAKME'), `at 里的标识符原样打出来了：${out.stderr}`)
+    assert.match(out.stderr, /未记时间/, `没说明 at 不可用：${out.stderr}`)
+})
+
+test('身份字段不是字符串或数字就拒：别把 [object Object] 当设备号发出去', () => {
+    // 读取侧的责任是「不自己编」：`String({})` 出来的 `[object Object]` 就是工具自己编的值，
+    // 而启动行还会自信地报「件里第 1 行」——比顶替更糟，因为那玩意儿会真的进请求。
+    const row = identity => JSON.stringify({ at: '2026-11-03T00:00:00.000Z', path: '/luna/pc/track_v2', identity })
+    assert.throws(() => captureIdentity(row({ deviceId: { a: 1 }, iid: '2', fp: '3' })), /identity\.deviceId 是对象/)
+    assert.throws(() => captureIdentity(row({ deviceId: '1', iid: [2], fp: '3' })), /identity\.iid 是数组/)
+    assert.throws(() => captureIdentity(row({ deviceId: '1', iid: '2', fp: true })), /identity\.fp 是布尔值/)
+    // 走一遍 CLI：报错要能在终端看见，且 stdout 里不许出现编出来的值
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-type-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(capture, `${row({ deviceId: { a: 1 }, iid: '2', fp: '3' })}\n`)
+    const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.equal(out.status, 2)
+    assert.match(out.stderr, /identity\.deviceId 是对象/)
+    assert.ok(!out.stdout.includes('[object Object]'), `编出来的值进了读数：${out.stdout}`)
+    assert.ok(!out.stderr.includes('签名器：'), `报错后还在往下走：${out.stderr}`)
+})
+
+test('--repeat 不是正整数就当场报错，别跑出一份空的 verdict', () => {
+    // 以前 `--repeat abc` / `--repeat 0` → rounds 循环一次都不进 → `{"verdict": []}` + exit 1，
+    // 读起来像「每条 arm 都失败了」，实际是一条都没跑。
+    for (const bad of ['abc', '0', '-2', '1.5']) {
+        const out = runMatrix(
+            '--arm', 'captured', '--track', '123',
+            '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101',
+            '--repeat', bad,
+        )
+        assert.equal(out.status, 2, `--repeat ${bad} 没被拒（exit ${out.status}）：${out.stdout.slice(0, 200)}`)
+        assert.match(out.stderr, /--repeat/, `报错没点名 --repeat：${out.stderr}`)
+        assert.ok(!out.stdout.includes('verdict'), `还在往外吐空 verdict：${out.stdout}`)
+    }
 })
 
 test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 content-type 与 x-ss-stub', () => {
@@ -218,7 +644,13 @@ test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 con
 })
 
 const matrixCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'entitlement-matrix.mjs')
-/** 跑一次矩阵命令行。这两条都在参数校验阶段就退出，所以不起网络、不碰真模块。 */
+/**
+ * 跑一次矩阵命令行。这里必须把模块路径钉到一个不存在的位置：
+ * 参数校验之后就是 loadConfig()，而显式给的模块路径不查存在性——外面漏进来的 env 会被原样采用，
+ * 机器上放着真的 bdms.node 时它照样被找到，接着 runArm 直接 fetch 官方接口。
+ * 离线约定不能靠「这台机器恰好没装模块」成立。不签名的 arm（seo 那条）拿到模块也用不上，
+ * 所以再压一道超时：真发出去也只会立刻断掉，拿不回任何读数。
+ */
 function runMatrix(...args) {
     return spawnSync(process.execPath, [matrixCli, ...args], {
         encoding: 'utf8',
@@ -226,6 +658,9 @@ function runMatrix(...args) {
             ...process.env,
             LIBMSSDK_COOKIE: 'sessionid_ss=test',
             LIBMSSDK_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-')),
+            // 目录名要不可预测：固定名字的共享路径上，别人可以预先放一个 bdms.node 等着被加载。
+            LIBMSSDK_BDMS_MODULE: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-matrix-guard-')), 'bdms.node'),
+            LIBMSSDK_UPSTREAM_TIMEOUT_MS: '1',
         },
     })
 }
@@ -276,6 +711,72 @@ test('抓包件读不到、或里面没有身份：都在碰凭据之前停下�
     const empty = runMatrix(...argv, noIdentity)
     assert.notEqual(empty.status, 0)
     assert.match(empty.stderr, /没有带 device_id/)
+})
+
+test('命令行给的号与 --from-capture 只能给一个，报错点名实际撞的那几个，且发生在碰凭据之前', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-mixed-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(
+        capture,
+        '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}\n',
+    )
+    // 只给一个号时，报错不许把另外两个也一并点进去：那才是「看不出到底撞了哪个」。
+    const check = (extra, given, notGiven) => {
+        const out = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture, ...extra)
+        assert.notEqual(out.status, 0, `${extra[0] || '--device'} 与 --from-capture 同时给竟然走通了`)
+        assert.match(out.stderr, /只能给一个/)
+        for (const name of given) assert.ok(out.stderr.includes(name), `报错没点名 ${name}：${out.stderr}`)
+        for (const name of notGiven) assert.ok(!out.stderr.includes(name), `报错点了一个没给的 ${name}：${out.stderr}`)
+        assert.ok(!out.stderr.includes('签名器：'), `报错后还在往下走：${out.stderr}`)
+    }
+    check(['--device', '1730000000099'], ['--device'], ['--iid', '--fp'])
+    check(['--iid', '1730000000088'], ['--iid'], ['--device', '--fp'])
+    check(['--fp', '1730000000077'], ['--fp'], ['--device', '--iid'])
+    check(['--iid', '1730000000088', '--fp', '1730000000077'], ['--iid', '--fp'], ['--device'])
+    // 只给其中一种来源的，照旧能走完参数校验（这条守住了互斥没误杀合法用法）
+    const fileOnly = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', path.join(dir, 'nope.jsonl'))
+    assert.match(fileOnly.stderr, /读不到/, '只给 --from-capture 仍走原来那条报错')
+})
+
+test('参数写法收紧：--名字=值 也认，缺值 / 重复 / 未知 / 多余 token 一律当场报错', () => {
+    // 以前 argValue 只做 indexOf('--名字')：`--from-capture=<件>` 是 -1，互斥判据整条被绕过，
+    // 件被完全忽略、身份静默换成命令行那份；`--arm=captured` 还会悄悄变成跑整矩阵。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-args-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(
+        capture,
+        '{"at":"2026-11-03T00:00:00.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}\n',
+    )
+
+    const equals = runMatrix('--arm=captured', '--track=123', `--from-capture=${capture}`, '--device=1730000000099')
+    assert.equal(equals.status, 2, `--名字=值 没被解析：${equals.stderr}`)
+    assert.match(equals.stderr, /只能给一个/, `= 写法绕过了互斥：${equals.stderr}`)
+    assert.match(equals.stderr, /--device/)
+
+    // --arm=captured 要真的只跑 captured：没身份就该报错，而不是悄悄跑整矩阵
+    const onlyCaptured = runMatrix('--arm=captured', '--track', '123')
+    assert.match(onlyCaptured.stderr, /需要 --from-capture/, `--arm= 写法没生效：${onlyCaptured.stderr}`)
+
+    const missing = runMatrix('--arm', 'captured', '--track', '123', '--from-capture')
+    assert.match(missing.stderr, /--from-capture 后面没给值/, `缺值没报：${missing.stderr}`)
+
+    const duplicate = runMatrix('--arm', 'captured', '--track', '123', '--track', '456')
+    assert.match(duplicate.stderr, /--track 给了两次/, `重复没报：${duplicate.stderr}`)
+
+    const unknown = runMatrix('--arrm', 'captured')
+    assert.match(unknown.stderr, /未知参数：--arrm/, `未知参数没报：${unknown.stderr}`)
+
+    // 值的位置上是另一个 flag：以前会把 --device 当 iid 的值吞掉
+    const swallowed = runMatrix('--arm', 'captured', '--track', '123', '--iid', '--device', '1730000000099')
+    assert.match(swallowed.stderr, /--iid 后面没给值/, `吞值没报：${swallowed.stderr}`)
+
+    const stray = runMatrix('captured')
+    assert.match(stray.stderr, /看不懂的参数/, `多余 token 没报：${stray.stderr}`)
+
+    // --list 照旧：不碰凭据、不读配置
+    const list = runMatrix('--list')
+    assert.equal(list.status, 0)
+    assert.ok(Array.isArray(JSON.parse(list.stdout)), `--list 的输出坏了：${list.stdout.slice(0, 80)}`)
 })
 
 test('报错信息里的路径整段隐掉，带空格的用户名/目录也算 (#10 日志要能贴进票里)', () => {
@@ -329,6 +830,26 @@ test('CLI 直接跑 captured 而不给身份时，报错要说清缺什么（不
     assert.match(result.stderr, /--device/)
 })
 
+test('读数用的是件里哪一条，启动行就得写出来：手打的那份也要说明来源', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-source-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    const record = (at, deviceId) =>
+        `{"at":"${at}","path":"/luna/pc/track_v2","identity":{"deviceId":"${deviceId}","iid":"${deviceId}","fp":"${deviceId}"}}`
+    // 中间夹一条读不懂的行：行号按物理行算，所以选中的是第 3 行；跳过几条也要说，
+    // 否则「共 3 行」和「件里只有 2 条记录」对不上，看的人以为是文件坏了。
+    fs.writeFileSync(capture, `${record('2026-11-03T00:00:01.000Z', '1789435000000')}\n{"broken":\n${record('2026-11-03T00:00:02.000Z', '1789435111111')}\n`)
+
+    const fromFile = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.match(fromFile.stderr, /件里第 3 行（共 3 行/, `启动行没报是第几行：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /不是记录的行 1 条/, `跳过的坏行没报数：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /2026-11-03T00:00:02\.000Z/, `启动行没报那条的时间：${fromFile.stderr}`)
+    assert.ok(!fromFile.stderr.includes('1789435111111'), `启动行漏出完整设备号：${fromFile.stderr}`)
+
+    // 顶替那件事已经由 #32 那道门拦住了，但「这条读数来自命令行还是来自件里」还是得看得见
+    const fromArgv = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101')
+    assert.match(fromArgv.stderr, /命令行给的/, `手打那份没标来源：${fromArgv.stderr}`)
+})
+
 test('真实那条路径（stub fetch，不打网络）：签名头在最后、读数脱敏到底', async () => {
     const { BdmsSigner } = await import('../src/bdms.mjs')
     const context = {
@@ -337,6 +858,7 @@ test('真实那条路径（stub fetch，不打网络）：签名头在最后、�
         timeoutMs: 5000,
         service: { deviceId: '1000000000000001', iid: '2000000000000002', fp: '1000000000000001' },
         captured: { deviceId: '5000000000000005', iid: '6000000000000006', fp: '5000000000000005' },
+        capturedSource: { from: 'capture', line: 4, lineCount: 7, at: '2026-11-03T00:00:07.000Z' },
     }
     context.signer = new BdmsSigner({ modulePath: mockBdms, deviceId: context.service.deviceId })
     const payload = JSON.stringify({
@@ -360,6 +882,7 @@ test('真实那条路径（stub fetch，不打网络）：签名头在最后、�
         assert.equal(row.fullTrack, true)
         assert.equal(row.deviceId, '500***005')
         assert.equal(row.track, '***0001')
+        assert.deepEqual(row.identitySource, { from: 'capture', line: 4, lineCount: 7, at: '2026-11-03T00:00:07.000Z' }, '读数里要能看出这份身份是件里哪一条')
         const reading = JSON.stringify(row)
         assert.ok(!reading.includes('SECRET-COOKIE'), 'cookie 不得进读数')
         assert.ok(!reading.includes('SECRET-URL'), '播放地址不得进读数')
