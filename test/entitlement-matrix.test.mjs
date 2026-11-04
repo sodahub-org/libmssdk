@@ -427,6 +427,23 @@ test('CLI 直接跑 captured 而不给身份时，报错要说清缺什么（不
     assert.match(result.stderr, /--device/)
 })
 
+test('读数用的是件里哪一条，启动行就得写出来：手打的那份也要说明来源', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-source-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    const record = (at, deviceId) =>
+        `{"at":"${at}","path":"/luna/pc/track_v2","identity":{"deviceId":"${deviceId}","iid":"${deviceId}","fp":"${deviceId}"}}`
+    fs.writeFileSync(capture, `${record('2026-11-03T00:00:01.000Z', '1789435000000')}\n${record('2026-11-03T00:00:02.000Z', '1789435111111')}\n`)
+
+    const fromFile = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.match(fromFile.stderr, /件里第 2\/2 行/, `启动行没报是第几行：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /2026-11-03T00:00:02\.000Z/, `启动行没报那条的时间：${fromFile.stderr}`)
+    assert.ok(!fromFile.stderr.includes('1789435111111'), `启动行漏出完整设备号：${fromFile.stderr}`)
+
+    // 顶替那件事已经由 #32 那道门拦住了，但「这条读数来自命令行还是来自件里」还是得看得见
+    const fromArgv = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100', '--fp', '1730000000101')
+    assert.match(fromArgv.stderr, /命令行给的/, `手打那份没标来源：${fromArgv.stderr}`)
+})
+
 test('真实那条路径（stub fetch，不打网络）：签名头在最后、读数脱敏到底', async () => {
     const { BdmsSigner } = await import('../src/bdms.mjs')
     const context = {
@@ -435,6 +452,7 @@ test('真实那条路径（stub fetch，不打网络）：签名头在最后、�
         timeoutMs: 5000,
         service: { deviceId: '1000000000000001', iid: '2000000000000002', fp: '1000000000000001' },
         captured: { deviceId: '5000000000000005', iid: '6000000000000006', fp: '5000000000000005' },
+        capturedSource: { from: 'capture', line: 4, lineCount: 7, at: '2026-11-03T00:00:07.000Z' },
     }
     context.signer = new BdmsSigner({ modulePath: mockBdms, deviceId: context.service.deviceId })
     const payload = JSON.stringify({
@@ -458,6 +476,7 @@ test('真实那条路径（stub fetch，不打网络）：签名头在最后、�
         assert.equal(row.fullTrack, true)
         assert.equal(row.deviceId, '500***005')
         assert.equal(row.track, '***0001')
+        assert.deepEqual(row.identitySource, { from: 'capture', line: 4, lineCount: 7, at: '2026-11-03T00:00:07.000Z' }, '读数里要能看出这份身份是件里哪一条')
         const reading = JSON.stringify(row)
         assert.ok(!reading.includes('SECRET-COOKIE'), 'cookie 不得进读数')
         assert.ok(!reading.includes('SECRET-URL'), '播放地址不得进读数')

@@ -456,6 +456,8 @@ export async function runArm(arm, context) {
     return rowFrom(base, response, await response.text(), context, {
         signed: !arm.request.skipSign,
         deviceId: maskDeviceId(identity.deviceId),
+        // 只有 captured 那条带来源：其余 arm 的身份都是本仓库现造的，没有「哪一条」可报。
+        ...(arm.request.identity === 'captured' && context.capturedSource ? { identitySource: context.capturedSource } : {}),
         signDeviceId: maskDeviceId(signDevice),
         signedHeaders: Object.keys(signed.headers).length,
         signatureLengths: Object.fromEntries(
@@ -513,6 +515,13 @@ async function main() {
             process.stderr.write(`注意：captured 没给 ${missing.join(' / ')}，会拿 device_id 顶上——那不是一份完整的抓包身份\n`)
         }
     }
+    // 这份身份从哪儿来的，得跟着读数走：件里那份要报到第几条（坏行被 #32 拦掉之后
+    // 读数会回落到更早的一条，只报「抓包里的」看不出回落），手打那份也不能冒充件里那份。
+    const capturedSource = capturedFromFile
+        ? { from: 'capture', line: capturedFromFile.line, lineCount: capturedFromFile.lineCount, at: capturedFromFile.at }
+        : capturedIdentity.deviceId
+          ? { from: 'argv' }
+          : null
     // account-me 打的是账号自己的档位端点，与曲目无关，所以它不需要 --track。
     if (!trackId && runnable.some(needsTrack)) throw new Error('需要 --track <track_id>（或 --list）')
 
@@ -534,11 +543,19 @@ async function main() {
         timeoutMs: config.requestTimeoutMs,
         service: { deviceId: config.deviceId, iid: config.iid, fp: config.fp },
         captured: capturedIdentity,
+        capturedSource,
         signer,
     }
 
+    const fromCapture = capturedSource?.from === 'capture'
+    const sourceNote = !capturedSource
+        ? ''
+        : fromCapture
+          ? `抓包身份：件里第 ${capturedSource.line}/${capturedSource.lineCount} 行` +
+            `${capturedSource.at ? `（那条 at ${capturedSource.at}）` : ''}｜`
+          : '抓包身份：命令行给的｜'
     process.stderr.write(
-        `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜` +
+        `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜${sourceNote}` +
             `cookie：${cookie ? `${cookie.split(';').length} 个字段` : '无'}｜曲目：${maskTrackId(trackId)}\n`,
     )
     const rows = []
