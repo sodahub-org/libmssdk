@@ -269,6 +269,18 @@ test('不齐的件只跳过 captured，不许把整轮矩阵拖停；明确点�
     assert.ok(!onlyCaptured.stderr.includes('签名器：'), '点了名还往下走')
 })
 
+test('数字身份只在安全整数范围内收：JSON 解析已经把超范围的值改写过了', () => {
+    // 16 位设备号本来就压在 2^53 这条线上，而 9007199254740993 解析完就是 …992：
+    // 静默差 1，再拿去请求就是「文件里根本没有的那个号」。
+    const row = n => `{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":${n},"iid":${n},"fp":${n}}}`
+    assert.throws(() => captureIdentity(row('9007199254740993')), /2\^53|安全整数/)
+    assert.throws(() => captureIdentity(row('9999999999999999')), /2\^53|安全整数/)
+    assert.throws(() => captureIdentity(row('1e21')), /2\^53|安全整数/)
+    assert.throws(() => captureIdentity(row('0.5')), /整数/)
+    // 落在安全范围内的数字照收（JSON 能原样表示，不是改写后的值）
+    assert.equal(captureIdentity(row('1789435000000000')).deviceId, '1789435000000000')
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
