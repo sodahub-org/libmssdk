@@ -330,7 +330,15 @@ export function captureIdentity(text) {
         return Number.isNaN(Date.parse(text)) ? '' : text
     }
     const typeName = value =>
-        Array.isArray(value) ? '数组' : typeof value === 'boolean' ? '布尔值' : value && typeof value === 'object' ? '对象' : typeof value
+        Array.isArray(value)
+            ? '数组'
+            : typeof value === 'boolean'
+              ? '布尔值'
+              : typeof value === 'number'
+                ? '数字'
+                : value && typeof value === 'object'
+                  ? '对象'
+                  : typeof value
     // 报错同时带一句短原因与坐标：调用方要转述时（「本次没用它」那行），
     // 整句塞进括号会变成五层嵌套，只有短句才读得顺。
     const fail = (message, short, extra = {}) => {
@@ -376,7 +384,9 @@ export function captureIdentity(text) {
         if (typeof value !== 'string') {
             fail(
                 `抓包件里第 ${picked.line} 行（共 ${lineCount} 行）的 identity.${field} 是${typeName(value)}，` +
-                    '不是字符串——数字的字面保不住，件里请写成字符串',
+                    `不是字符串——${
+                        typeof value === 'number' ? '数字的字面保不住，件里请写成字符串' : '那不是一份身份'
+                    }`,
                 `identity.${field} 是${typeName(value)}`,
                 { line: picked.line, lineCount },
             )

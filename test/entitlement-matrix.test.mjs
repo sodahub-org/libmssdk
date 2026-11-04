@@ -406,6 +406,15 @@ test('件里一条身份都没有时，要说清一共几行、几行不是记�
     )
 })
 
+test('类型报错要分得清：数字是「字面保不住」，对象/布尔是「不是一份身份」', () => {
+    // 以前 typeName 对 number 落到 typeof，报出「是number」；而对象那条还带着「数字的字面保不住」。
+    const row = v => `{"at":"2026-11-03T00:00:01.000Z","identity":{"deviceId":${v},"iid":"1","fp":"1"}}`
+    assert.throws(() => captureIdentity(row('1789435000000')), /是数字，不是字符串——数字的字面保不住/)
+    assert.throws(() => captureIdentity(row('{}')), /是对象，不是字符串——那不是一份身份/)
+    assert.throws(() => captureIdentity(row('true')), /是布尔值，不是字符串——那不是一份身份/)
+    assert.throws(() => captureIdentity(row('[1]')), /是数组，不是字符串——那不是一份身份/)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
