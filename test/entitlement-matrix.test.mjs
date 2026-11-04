@@ -468,6 +468,31 @@ test('只把「数据不成立」的错降级成提示：编程错误要炸出�
     assert.equal(isKnownCaptureProblem(Object.assign(new Error('x'), { short: '缺 iid' })), true)
 })
 
+test('名字里带控制字符时只报形状，原话不进终端', () => {
+    // 默认点名之后，只要名字够短、不带长数字就原样回显——控制字符也算。
+    // 件里的 at 走的是白名单，argv 这一侧不能敞着。
+    const esc = runMatrix('--a\u001b[31mb')
+    assert.ok(!esc.stderr.includes('\u001b'), `控制字符进终端了：${JSON.stringify(esc.stderr)}`)
+    assert.match(esc.stderr, /控制字符/, `没说明是控制字符：${esc.stderr}`)
+    const bel = runMatrix('--a\u0007b')
+    assert.ok(!bel.stderr.includes('\u0007'), `BEL 进终端了：${JSON.stringify(bel.stderr)}`)
+})
+
+test('带路径分隔符的拼错：主语要活着，路径原话不进终端', () => {
+    // safeMessage 按空白切 token，`未知参数：--from-capture:/a` 中间没空格 → 整串被换成占位符，
+    // 连「未知参数：」都没了。点名时就得把带分隔符的部分收起来。
+    const posix = runMatrix('--from-capture:/a')
+    assert.match(posix.stderr, /未知参数/, `整句被脱敏器吞掉了：${JSON.stringify(posix.stderr)}`)
+    assert.match(posix.stderr, /--from-capture 后面跟着路径分隔符/)
+    assert.ok(!posix.stderr.includes('/a'), `路径原话进终端了：${posix.stderr}`)
+    const win = runMatrix('--cap:C:\\x\\y')
+    assert.match(win.stderr, /未知参数/)
+    assert.ok(!win.stderr.includes('x\\y'), `Windows 路径原话进终端了：${win.stderr}`)
+    // 空名字别打成「--」：看着像被吞了
+    const empty = runMatrix('--=x')
+    assert.match(empty.stderr, /一个空名字/, `空名字没说明：${empty.stderr}`)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')

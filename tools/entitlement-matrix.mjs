@@ -468,6 +468,8 @@ export function parseArgs(argv) {
     const describeName = name => {
         const text = String(name)
         if (text.length > 40) return `一个 ${text.length} 字符的名字`
+        // 控制字符不进终端：名字里出现就只报形状（件里的 at 也是这个口径）。
+        if (/[\u0000-\u001f\u007f]/.test(text)) return `一个含控制字符的 ${text.length} 字符名字`
         return `--${text.replace(/\d{8,}/g, digits => maskDeviceId(digits))}`
     }
     const describeToken = token => `一个 ${[...String(token)].length} 字符的值`
