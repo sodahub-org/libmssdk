@@ -331,6 +331,23 @@ test('裸 -- 按「参数到此为止」处理：后面还有东西就只说个�
     assert.ok(Array.isArray(JSON.parse(trailing.stdout)))
 })
 
+test('给了坏件却没跑 captured：也要出声，不能一声不吭', () => {
+    // 同一个「参数写错了」以前有两种后果：跑整轮会打「跳过 captured」，只跑别的 arm 则一句不提。
+    // 互斥那条给出的理由是「参数写错了就该当场说，不该等 arm 决定要不要拦」——这里拉平。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-quiet-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(capture, '{"at":"2026-11-03T00:00:09.000Z","identity":{"deviceId":"1789435222222","iid":"","fp":"1789435222222"}}\n')
+
+    const other = runMatrix('--arm', 'good-ts', '--track', '123', '--from-capture', capture)
+    assert.match(other.stderr, /抓包件里那份身份用不了/, `一声不吭：${other.stderr}`)
+    assert.match(other.stderr, /不齐/, '原因要带上')
+
+    // 整轮里已经有一句「跳过 captured」，不要再说一遍
+    const full = runMatrix('--track', '123', '--from-capture', capture)
+    assert.match(full.stderr, /跳过 captured/)
+    assert.ok(!full.stderr.includes('身份用不了'), `同一件事说了两遍：${full.stderr}`)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')

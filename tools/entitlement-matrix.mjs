@@ -621,6 +621,10 @@ async function main() {
     if (whyNotCaptured && only) throw new Error(whyNotCaptured)
     const runnable = whyNotCaptured && !only ? arms.filter(item => item.name !== 'captured') : arms
     if (whyNotCaptured && !only) process.stderr.write(`跳过 captured：${whyNotCaptured}（其余 arm 照跑）\n`)
+    // 件是给了的，只是这份身份用不了：本次连 captured 都不在跑，也得知会一声。
+    if (capturedProblem && !wantsCaptured) {
+        process.stderr.write(`注意：抓包件里那份身份用不了（${capturedProblem}），本次没用它\n`)
+    }
     if (capturedIdentity.deviceId && !capturedFromFile) {
         // 「哪个字段是顶上来的」只有本仓库说得出：上游对身份齐不齐没有信号（真跑实测缺 --fp 照样 200/ok）。
         const missing = ['iid', 'fp'].filter(name => !argValue(name)).map(name => `--${name}`)
