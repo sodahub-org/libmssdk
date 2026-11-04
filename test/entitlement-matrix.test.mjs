@@ -194,7 +194,9 @@ test('抓包件读身份：取最后一份带 device_id 的，坏行跳过，那
         at: '2026-11-03T00:00:00.000Z',
         line: 4,
         lineCount: 5,
+        blank: 1,
         skipped: 1,
+        noDevice: 1,
     })
     assert.throws(() => captureIdentity(''), /device_id/)
     assert.throws(() => captureIdentity('{"at":"2026-11-03T00:00:00.000Z","path":"/x"}'), /device_id/)
@@ -400,7 +402,7 @@ test('件里一条身份都没有时，要说清一共几行、几行不是记�
         () => captureIdentity(text),
         error => {
             assert.match(error.message, /共 3 行/, `没报总行数：${error.message}`)
-            assert.match(error.message, /跳过 3 条不是记录的行/, `没报跳过的条数：${error.message}`)
+            assert.match(error.message, /不是记录的行 3 条/, `没报跳过的条数：${error.message}`)
             return true
         },
     )
@@ -426,6 +428,34 @@ test('名字默认照原样点名：点号、冒号那类拼错也要看得见�
     assert.match(longDigits.stderr, /--x178\*\*\*999/)
     const huge = runMatrix(`--${'a'.repeat(60)}`)
     assert.match(huge.stderr, /一个 60 字符的名字/, `超长 token 没被截住：${huge.stderr}`)
+})
+
+test('空行与「没有 device_id 的记录」各有各的计数，减法才对得上', () => {
+    // 以前空行既不进行数口径也不进 skipped，而「有记录但 device_id 为空」也不计数：
+    // 「共 4 行 − 跳过 0 条 = 4」却只有 2 条能用；「跳过 0 条」和「没有记录」并排出现。
+    const rec = at => `{"at":"${at}","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}`
+    const got = captureIdentity([rec('2026-11-03T00:00:01.000Z'), '', '   ', rec('2026-11-03T00:00:02.000Z')].join('\n'))
+    assert.equal(got.lineCount, 4)
+    assert.equal(got.blank, 2, '空行与只有空格的行都要数')
+    assert.equal(got.skipped, 0)
+    assert.equal(got.line, 4)
+
+    assert.throws(
+        () => captureIdentity(['{"identity":{"deviceId":""}}', '{"identity":{"deviceId":""}}', '{"identity":{"deviceId":""}}'].join('\n')),
+        error => {
+            assert.match(error.message, /没有 device_id 的记录 3 条/, `没数没有 device_id 的记录：${error.message}`)
+            assert.ok(!/跳过 0 条/.test(error.message), `零计数还在打：${error.message}`)
+            return true
+        },
+    )
+    // 空行以外的零计数也不许出现
+    assert.throws(
+        () => captureIdentity(''),
+        error => {
+            assert.ok(!/空行 0 条|不是记录的行 0 条|没有 device_id 的记录 0 条/.test(error.message), `零计数还在打：${error.message}`)
+            return true
+        },
+    )
 })
 
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
@@ -474,7 +504,9 @@ test('line 与 lineCount 都按物理行算：空行也占一个号，所以 lin
         at: '2026-11-03T00:00:00.000Z',
         line: 1,
         lineCount: 1,
+        blank: 0,
         skipped: 0,
+        noDevice: 0,
     })
     const two = captureIdentity(`${row}\n${row}\n`)
     assert.equal(two.line, 2, '取的是最后一份')
@@ -773,7 +805,7 @@ test('读数用的是件里哪一条，启动行就得写出来：手打的那�
 
     const fromFile = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
     assert.match(fromFile.stderr, /件里第 3 行（共 3 行/, `启动行没报是第几行：${fromFile.stderr}`)
-    assert.match(fromFile.stderr, /跳过 1 条/, `跳过的坏行没报数：${fromFile.stderr}`)
+    assert.match(fromFile.stderr, /不是记录的行 1 条/, `跳过的坏行没报数：${fromFile.stderr}`)
     assert.match(fromFile.stderr, /2026-11-03T00:00:02\.000Z/, `启动行没报那条的时间：${fromFile.stderr}`)
     assert.ok(!fromFile.stderr.includes('1789435111111'), `启动行漏出完整设备号：${fromFile.stderr}`)
 

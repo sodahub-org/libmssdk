@@ -315,6 +315,18 @@ function safeParse(text) {
  * 读数用的是件里哪一份，操作者必须看得见——启动行与 captured 的 row 都带着它，
  * 否则「最新那一份」与「回落到的那一份」在读数上无法区分。
  */
+/** 行数口径：总行数 + 零计数不打印的细项——空行 / 不是记录的行 / 没有 device_id 的记录。 */
+function lineBreakdown({ lineCount, blank = 0, skipped = 0, noDevice = 0 }) {
+    return [
+        `共 ${lineCount} 行`,
+        blank ? `空行 ${blank} 条` : '',
+        skipped ? `不是记录的行 ${skipped} 条` : '',
+        noDevice ? `没有 device_id 的记录 ${noDevice} 条` : '',
+    ]
+        .filter(Boolean)
+        .join('，')
+}
+
 export function captureIdentity(text) {
     // 记事本另存会带 BOM：它让第一行的 JSON.parse 必然失败，那条记录就悄悄没了——
     // 件里只有一条记录时会报「没有带 device_id 的记录」，文件明明有。
@@ -349,9 +361,15 @@ export function captureIdentity(text) {
     }
     let latest = null
     let picked = null
+    let blank = 0
     let skipped = 0
-    for (const [index, line] of lines.entries()) {
-        if (!line.trim()) continue
+    let noDevice = 0
+    // 只数「文件里的行」：件尾那个换行切出来的空段不算（lineCount 已经扣掉它）。
+    for (const [index, line] of lines.slice(0, lineCount).entries()) {
+        if (!line.trim()) {
+            blank += 1
+            continue
+        }
         const record = safeParse(line)
         const identity = record && typeof record === 'object' && !Array.isArray(record) ? record.identity : null
         const usable = identity && typeof identity === 'object' && !Array.isArray(identity)
@@ -366,12 +384,16 @@ export function captureIdentity(text) {
         if (!absent(identity.deviceId)) {
             latest = identity
             picked = { at: asMoment(record.at), line: index + 1 }
+        } else {
+            // 有记录、但没有 device_id：既不进「不是记录」，也不进「可用记录」。
+            // 不单独数出来的话，「跳过 0 条」会和「没有记录」并排，读起来像文件没问题。
+            noDevice += 1
         }
     }
-    // 一条都没有时，最少要能分清「件是空的」与「件里的行都不是记录」：总行数与跳过数都带上。
+    // 一条都没有时，最少要能分清「件是空的」与「件里的行都不是记录」：行数口径都带上。
     if (!latest) {
         fail(
-            `抓包件里没有带 device_id 的记录（共 ${lineCount} 行，跳过 ${skipped} 条不是记录的行；` +
+            `抓包件里没有带 device_id 的记录（${lineBreakdown({ lineCount, blank, skipped, noDevice })}；` +
                 '只记 PC 客户端的业务请求）',
             '没有带 device_id 的记录',
         )
@@ -409,7 +431,7 @@ export function captureIdentity(text) {
             { line: picked.line, lineCount },
         )
     }
-    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount, skipped }
+    return { deviceId, iid, fp, at: picked.at, line: picked.line, lineCount, blank, skipped, noDevice }
 }
 
 /** cookie 只从本机读：`env` 取环境变量，`sodam` 取本机播放器配置，其余按文件路径读。 */
@@ -682,7 +704,9 @@ async function main() {
               line: capturedFromFile.line,
               lineCount: capturedFromFile.lineCount,
               at: capturedFromFile.at,
+              blank: capturedFromFile.blank,
               skipped: capturedFromFile.skipped,
+              noDevice: capturedFromFile.noDevice,
           }
         : capturedIdentity.deviceId
           ? { from: 'argv' }
@@ -712,12 +736,11 @@ async function main() {
         signer,
     }
 
-    const fromCapture = capturedSource?.from === 'capture'
-    const skippedNote = capturedSource?.skipped ? `，跳过 ${capturedSource.skipped} 条不是记录的行` : ''
+    const breakdown = lineBreakdown(capturedSource || {})
     const sourceNote = !capturedSource
         ? ''
-        : fromCapture
-          ? `抓包身份：件里第 ${capturedSource.line} 行（共 ${capturedSource.lineCount} 行，at ${capturedSource.at || '未记时间'}${skippedNote}）｜`
+        : capturedSource.from === 'capture'
+          ? `抓包身份：件里第 ${capturedSource.line} 行（${breakdown}，at ${capturedSource.at || '未记时间'}）｜`
           : '抓包身份：命令行给的｜'
     process.stderr.write(
         `签名器：${path.basename(config.bdmsModule || '(无)')}｜本机身份：${maskDeviceId(config.deviceId)}｜${sourceNote}` +
