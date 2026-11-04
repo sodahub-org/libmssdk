@@ -370,6 +370,15 @@ test('at 是合法 ISO 就收：带时区偏移的也认，不是只认 tee 写�
     assert.equal(captureIdentity(row('2026-11-03')).at, '')
 })
 
+test('identity 是字符串或数组的行也算「不是记录的行」，不能当记录数', () => {
+    // 判据只看「有没有 identity」，于是 {"identity":"abc"} 被当成一条记录：3 行的件里
+    // 两行不可用，启动行只报「跳过 1 条」，现场对不上。
+    const good = '{"at":"2026-11-03T00:00:00.000Z","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const got = captureIdentity(['{"identity":"abc"}', '{"identity":[]}', '{"broken":', good].join('\n'))
+    assert.equal(got.skipped, 3, 'identity 不是对象的那两行也要算')
+    assert.equal(got.line, 4)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')

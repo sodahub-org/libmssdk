@@ -337,16 +337,17 @@ export function captureIdentity(text) {
     for (const [index, line] of lines.entries()) {
         if (!line.trim()) continue
         const record = safeParse(line)
-        if (!record || typeof record !== 'object' || Array.isArray(record) || !record.identity) {
+        const identity = record && typeof record === 'object' && !Array.isArray(record) ? record.identity : null
+        const usable = identity && typeof identity === 'object' && !Array.isArray(identity)
+        if (!usable) {
             // 尾部半行是正常的（tee 在追加），但不是记录的行数必须报出来：
             // 「共 3 行」与「件里只有 2 条记录」对不上时，看的人才知道差在哪儿。
-            // 判据是「是不是一条带 identity 的记录」，不是「JSON.parse 出来是不是真值」——
-            // 否则 null / 0 / false 被数成坏行，而没有 identity 的行反而不算。
+            // 判据是「是不是一条带 identity 对象的记录」，不是「JSON.parse 出来是不是真值」——
+            // 否则 null / 0 / false 被数成坏行，而 identity 是字符串的行反而不算。
             skipped += 1
             continue
         }
-        const identity = record.identity
-        if (identity && !absent(identity.deviceId)) {
+        if (!absent(identity.deviceId)) {
             latest = identity
             picked = { at: asMoment(record.at), line: index + 1 }
         }
