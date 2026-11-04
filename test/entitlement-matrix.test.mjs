@@ -250,6 +250,25 @@ test('那条「第几行」得活着走到终端：脱敏器不许把它当路�
     assert.ok(!out.stderr.includes('本机路径已省略'), `行号被当路径替掉了：${out.stderr}`)
 })
 
+test('不齐的件只跳过 captured，不许把整轮矩阵拖停；明确点名 captured 时才报错', () => {
+    // 以前件尾那条不齐 → 整轮在参数校验阶段 exit 2，其余 11 条一条不跑；
+    // 而「完全没身份」却只跳过 captured。同一个「captured 跑不了」被分成了两种后果。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-skip-'))
+    const capture = path.join(dir, 'capture.jsonl')
+    const good = '{"at":"2026-11-03T00:00:01.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const broken = '{"at":"2026-11-03T00:00:09.000Z","path":"/luna/pc/track_v2","identity":{"deviceId":"1789435222222","iid":"1789435222223","fp":""}}'
+    fs.writeFileSync(capture, `${good}\n${good}\n${broken}\n`)
+
+    const full = runMatrix('--track', '123', '--from-capture', capture)
+    assert.match(full.stderr, /跳过 captured：.*不齐/, `整轮没跳过、直接停了：${full.stderr}`)
+    assert.match(full.stderr, /签名器：/, '跳过之后没有继续往下跑其余 arm')
+
+    const onlyCaptured = runMatrix('--arm', 'captured', '--track', '123', '--from-capture', capture)
+    assert.equal(onlyCaptured.status, 2)
+    assert.match(onlyCaptured.stderr, /不齐/)
+    assert.ok(!onlyCaptured.stderr.includes('签名器：'), '点了名还往下走')
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
@@ -514,7 +533,7 @@ test('参数写法收紧：--名字=值 也认，缺值 / 重复 / 未知 / 多�
 
     // --arm=captured 要真的只跑 captured：没身份就该报错，而不是悄悄跑整矩阵
     const onlyCaptured = runMatrix('--arm=captured', '--track', '123')
-    assert.match(onlyCaptured.stderr, /captured 需要/, `--arm= 写法没生效：${onlyCaptured.stderr}`)
+    assert.match(onlyCaptured.stderr, /需要 --from-capture/, `--arm= 写法没生效：${onlyCaptured.stderr}`)
 
     const missing = runMatrix('--arm', 'captured', '--track', '123', '--from-capture')
     assert.match(missing.stderr, /--from-capture 后面没给值/, `缺值没报：${missing.stderr}`)

@@ -572,6 +572,7 @@ async function main() {
         )
     }
     let capturedFromFile = null
+    let capturedProblem = ''
     if (captureFile) {
         let text = ''
         try {
@@ -580,7 +581,14 @@ async function main() {
             // 不把路径写进错误里：这份日志是要被人贴进票里的，而路径里就带着本机用户名。
             throw new Error('--from-capture 指定的抓包件读不到（路径不打印）')
         }
-        capturedFromFile = captureIdentity(text)
+        try {
+            capturedFromFile = captureIdentity(text)
+        } catch (error) {
+            // 件读得动、但里面那份身份不能用：跟「压根没给身份」同一个后果——
+            // 跑整份矩阵就跳过 captured，明确点名了 captured 才当场报错。
+            // 以前这里直接抛，件尾一条不齐就把其余 11 条一起拖停。
+            capturedProblem = error.message
+        }
     }
     const capturedIdentity = {
         deviceId: argValue('device') || (capturedFromFile || {}).deviceId || '',
@@ -588,12 +596,13 @@ async function main() {
         fp: argValue('fp') || (capturedFromFile || {}).fp || '',
     }
     const wantsCaptured = arms.some(item => item.name === 'captured')
-    const missingDevice = wantsCaptured && !capturedIdentity.deviceId
-    if (missingDevice && only) throw new Error('captured 需要 --from-capture <抓包件>，或直接给 --device <抓包 device_id>')
-    const runnable = missingDevice && !only ? arms.filter(item => item.name !== 'captured') : arms
-    if (missingDevice && !only) {
-        process.stderr.write('跳过 captured：这条需要 --from-capture <抓包件> 或 --device（其余 arm 照跑）\n')
-    }
+    const whyNotCaptured = !wantsCaptured
+        ? ''
+        : capturedProblem ||
+          (capturedIdentity.deviceId ? '' : '这条需要 --from-capture <抓包件>，或直接给 --device <抓包 device_id>')
+    if (whyNotCaptured && only) throw new Error(whyNotCaptured)
+    const runnable = whyNotCaptured && !only ? arms.filter(item => item.name !== 'captured') : arms
+    if (whyNotCaptured && !only) process.stderr.write(`跳过 captured：${whyNotCaptured}（其余 arm 照跑）\n`)
     if (capturedIdentity.deviceId && !capturedFromFile) {
         // 「哪个字段是顶上来的」只有本仓库说得出：上游对身份齐不齐没有信号（真跑实测缺 --fp 照样 200/ok）。
         const missing = ['iid', 'fp'].filter(name => !argValue(name)).map(name => `--${name}`)
