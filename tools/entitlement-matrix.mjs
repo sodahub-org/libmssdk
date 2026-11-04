@@ -333,9 +333,11 @@ export function captureIdentity(text) {
     for (const [index, line] of lines.entries()) {
         if (!line.trim()) continue
         const record = safeParse(line)
-        if (!record) {
-            // 尾部半行是正常的（tee 在追加），但读不懂的行数必须报出来：
+        if (!record || typeof record !== 'object' || Array.isArray(record) || !record.identity) {
+            // 尾部半行是正常的（tee 在追加），但不是记录的行数必须报出来：
             // 「共 3 行」与「件里只有 2 条记录」对不上时，看的人才知道差在哪儿。
+            // 判据是「是不是一条带 identity 的记录」，不是「JSON.parse 出来是不是真值」——
+            // 否则 null / 0 / false 被数成坏行，而没有 identity 的行反而不算。
             skipped += 1
             continue
         }
@@ -671,7 +673,7 @@ async function main() {
     }
 
     const fromCapture = capturedSource?.from === 'capture'
-    const skippedNote = capturedSource?.skipped ? `，跳过 ${capturedSource.skipped} 条读不懂的行` : ''
+    const skippedNote = capturedSource?.skipped ? `，跳过 ${capturedSource.skipped} 条不是记录的行` : ''
     const sourceNote = !capturedSource
         ? ''
         : fromCapture

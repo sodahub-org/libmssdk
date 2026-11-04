@@ -348,6 +348,19 @@ test('给了坏件却没跑 captured：也要出声，不能一声不吭', () =>
     assert.ok(!full.stderr.includes('身份用不了'), `同一件事说了两遍：${full.stderr}`)
 })
 
+test('skipped 数的是「不是记录的行」：合法 JSON 的 null / 0 / false 与没有 identity 的行都算', () => {
+    // 以前用 `!record` 判：null/0/false 这类合法 JSON 被数成坏行，而没有 identity 的行反而不算，
+    // 于是「共 6 行」与「跳过 3 条」对不上现场。
+    const good = '{"at":"2026-11-03T00:00:00.000Z","identity":{"deviceId":"1789435000000","iid":"1789435000001","fp":"1789435000000"}}'
+    const text = ['null', '0', 'false', '"just a string"', '[]', '{"at":"2026-11-03T00:00:00.000Z"}', good].join('\n')
+    const got = captureIdentity(text)
+    assert.equal(got.skipped, 6, '不是记录的行要数全')
+    assert.equal(got.line, 7)
+    // 有 identity、只是 device_id 为空的那条仍算记录，不算跳过
+    const withEmpty = captureIdentity(['{"identity":{"deviceId":""}}', good].join('\n'))
+    assert.equal(withEmpty.skipped, 0)
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
