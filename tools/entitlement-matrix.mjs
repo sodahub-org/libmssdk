@@ -322,9 +322,13 @@ export function captureIdentity(text) {
     // 件尾那个换行会被切出一个空段，它不是一行记录。
     const lineCount = lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
     const absent = value => value === undefined || value === null || (typeof value === 'string' && !value.trim())
-    // at 是件里的原文，会进启动行、报错与读数。只认 tee 写的那种 ISO 时刻；
-    // 其它内容（控制字符、转义序列、长标识符）一律当「没记」——脱敏口径不能从这儿漏。
-    const asMoment = value => (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value.trim()) ? value.trim() : '')
+    // at 是件里的原文，会进启动行、报错与读数。只认 ISO 8601 时刻（tee 写 Z 形式，
+    // 带偏移的也是合法 ISO）；其它内容（控制字符、转义序列、长标识符）一律当「没记」。
+    const asMoment = value => {
+        const text = typeof value === 'string' ? value.trim() : ''
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) return ''
+        return Number.isNaN(Date.parse(text)) ? '' : text
+    }
     const typeName = value =>
         Array.isArray(value) ? '数组' : typeof value === 'boolean' ? '布尔值' : value && typeof value === 'object' ? '对象' : typeof value
     let latest = null

@@ -361,6 +361,15 @@ test('skipped 数的是「不是记录的行」：合法 JSON 的 null / 0 / fal
     assert.equal(withEmpty.skipped, 0)
 })
 
+test('at 是合法 ISO 就收：带时区偏移的也认，不是只认 tee 写的 Z', () => {
+    const row = at => JSON.stringify({ at, path: '/luna/pc/track_v2', identity: { deviceId: '1789435000000', iid: '1789435000001', fp: '1789435000000' } })
+    assert.equal(captureIdentity(row('2026-11-03T08:00:00+08:00')).at, '2026-11-03T08:00:00+08:00')
+    assert.equal(captureIdentity(row('2026-11-03T00:00:00.123Z')).at, '2026-11-03T00:00:00.123Z')
+    // 仍然只放行「像时刻」的东西
+    assert.equal(captureIdentity(row('1789435999999 \u001b[31mX\u001b[0m')).at, '')
+    assert.equal(captureIdentity(row('2026-11-03')).at, '')
+})
+
 test('手打身份里哪个字段是顶上来的都要说出来：只给 --device 与 --iid 也照样提醒', () => {
     // 上游对这份身份没有信号（真跑实测 200/ok），所以「顶上」这件事只能由本仓库自己说。
     const onlyTwo = runMatrix('--arm', 'captured', '--track', '123', '--device', '1730000000099', '--iid', '1730000000100')
