@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-const { redactHeaders, redactMachinePaths } = await import('../src/log.mjs')
+const { redactHeaders, redactMachinePaths, redactMachinePathsDeep } = await import('../src/log.mjs')
 
 test('脱敏的是凭据本身，长度留着（排查要靠它）', () => {
     const redacted = redactHeaders({
@@ -34,4 +34,20 @@ test('报错原文里的本机路径一律换掉，包括依赖目录与 home', 
 test('没给路径候选时原样返回，不吞掉信息', () => {
     assert.equal(redactMachinePaths('签名不完整：只拿到 0 个头（）', []), '签名不完整：只拿到 0 个头（）')
     assert.equal(redactMachinePaths(undefined, ['/nope']), '')
+})
+
+test('对象里的字符串逐个脱敏，嵌套字段也不漏', () => {
+    const dir = 'C:\\Users\\dev\\AppData\\Local\\Programs\\Soda Music\\3.7.0'
+    const value = {
+        bdmsModule: `${dir}\\bdms.node`,
+        nested: { identity: `state (${dir}\\data\\identity.json)` },
+        count: 3,
+        ok: true,
+        list: [`${dir}\\metasecml.dll`],
+    }
+    const redacted = redactMachinePathsDeep(value, [dir])
+    assert.equal(JSON.stringify(redacted).includes('C:\\\\'), false, `还是漏了：${JSON.stringify(redacted)}`)
+    assert.equal(redacted.count, 3, '非字符串原样保留')
+    assert.equal(redacted.ok, true)
+    assert.deepEqual(redacted.list, ['(本机路径)\\metasecml.dll'])
 })

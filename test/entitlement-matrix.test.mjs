@@ -508,8 +508,8 @@ test('手打身份里哪个字段是顶上来的都要说出来：只给 --devic
 
 test('跑 CLI 用例时真模块进不来：外层塞一份能加载的，也不许被拿去签名', () => {
     // 这条是给文件头「全部不打网络、不需要真实 bdms.node」站的岗。
-    // 提醒打完之后参数校验就算过了，代码接着 loadConfig()：显式给的模块路径不查存在性
-    // （src/config.mjs:66 原样返回），所以外面漏进来的 env 会被直接采用——机器上放着真的
+    // 提醒打完之后参数校验就算过了，代码接着 loadConfig()：loadConfig 本身不查显式模块路径
+    // （只有 serve 入口在监听前查存在性），所以外面漏进来的 env 会被直接采用——机器上放着真的
     // bdms.node 也一样会被找到，然后 runArm 真的去打官方接口。CI 里恰好没模块，看不见这件事。
     // 判据：这里从外层塞一份「能加载」的 mock，runMatrix 没把自己钉死的话，
     // 它的文件名就会出现在读数里，并且真的发出去一条请求。
@@ -646,8 +646,8 @@ test('账号档位那条走 GET /luna/pc/me：没有请求体，也就不发 con
 const matrixCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'entitlement-matrix.mjs')
 /**
  * 跑一次矩阵命令行。这里必须把模块路径钉到一个不存在的位置：
- * 参数校验之后就是 loadConfig()，而显式给的模块路径不查存在性——外面漏进来的 env 会被原样采用，
- * 机器上放着真的 bdms.node 时它照样被找到，接着 runArm 直接 fetch 官方接口。
+ * 参数校验之后就是 loadConfig()，而 loadConfig 本身不查显式模块路径（只有 serve 入口查存在性）——
+ * 外面漏进来的 env 会被原样采用，机器上放着真的 bdms.node 时它照样被找到，接着 runArm 直接 fetch 官方接口。
  * 离线约定不能靠「这台机器恰好没装模块」成立。不签名的 arm（seo 那条）拿到模块也用不上，
  * 所以再压一道超时：真发出去也只会立刻断掉，拿不回任何读数。
  */

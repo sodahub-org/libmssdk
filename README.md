@@ -84,6 +84,10 @@ node src/index.mjs selftest
 node src/index.mjs serve
 ```
 
+`selftest` / `config` 的输出默认把本机路径换成 `(本机路径)`，可以直接贴进求助帖；要排查具体是哪个文件时加
+`--verbose` 打原文。显式 `LIBMSSDK_BDMS_MODULE` 拼错时，`serve` 会在监听前退出，不会起来后让每条
+`/sign` 都回 500。
+
 默认监听 `127.0.0.1:8899`。跨机访问请使用 SSH 隧道或反代，并始终设置强 Token。
 
 ## Docker 部署

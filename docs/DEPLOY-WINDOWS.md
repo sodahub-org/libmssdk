@@ -23,19 +23,19 @@ cd C:\libmssdk
 
 $env:LIBMSSDK_TOKEN = "<随机串>"     # 唯一建议设置的变量
 
-node src/index.mjs config      # 打印配置摘要（设备号脱敏）
+node src/index.mjs config      # 打印配置摘要（设备号与路径都脱敏）
 node src/index.mjs selftest    # bdms.node 是否可加载、能否出签名
 ```
 
-`selftest` 期望：
+`selftest` 期望（路径默认隐掉；要排查「找的是哪个文件」时加 `--verbose` 打原文，`config --verbose` 同理）：
 
 ```json
 {
-  "bdmsModule": "C:\\libmssdk\\vendor\\soda-music\\bdms.node",
-  "bundledBdms": "C:\\libmssdk\\vendor\\soda-music\\bdms.node",
+  "bdmsModule": "(本机路径)",
+  "bundledBdms": true,
   "clientDir": "(未找到)",
   "deviceId": "512***907",
-  "identity": "state (C:\\libmssdk\\data\\identity.json)",
+  "identity": "state (本机路径)",
   "signOk": true,
   "signatureLengths": { "X-Helios": 48, "X-Medusa": 872 }
 }
@@ -43,6 +43,10 @@ node src/index.mjs selftest    # bdms.node 是否可加载、能否出签名
 
 `clientDir: "(未找到)"` 是正常的 —— 说明这台机器没装客户端，签名模块来自用户提供的 vendor 目录。
 设备号只在首次运行时生成，之后一直复用；换机器/删掉 `data/` 才会换。
+
+显式 `LIBMSSDK_BDMS_MODULE` 指向的文件不存在时，`serve` 会在监听前直接退出（只查存在性，不查能否加载）。
+默认探测（客户端目录 / vendor）找不到模块时仍按原行为启动：`/readyz` 保持 503，`/sign` 回
+500 `SIGNER_UNAVAILABLE`。错误里的路径同样默认隐掉，用 `node src/index.mjs config --verbose` 看原文。
 
 ## 2. 真机自检（关键一步）
 

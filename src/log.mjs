@@ -44,6 +44,23 @@ export function redactMachinePaths(text, locations = []) {
     return redacted
 }
 
+/**
+ * 对对象里的每个字符串跑一次 redactMachinePaths，供命令行输出（selftest / config）使用。
+ *
+ * 为什么不在 JSON.stringify 之后做：Windows 路径在 JSON 文本里是 `C:\\Users\\…`，
+ * 拿原始路径去 split 对不上，结果会把整条原文原样留下。
+ */
+export function redactMachinePathsDeep(value, locations = []) {
+    if (typeof value === 'string') return redactMachinePaths(value, locations)
+    if (Array.isArray(value)) return value.map(item => redactMachinePathsDeep(item, locations))
+    if (value && typeof value === 'object') {
+        const result = {}
+        for (const [key, item] of Object.entries(value)) result[key] = redactMachinePathsDeep(item, locations)
+        return result
+    }
+    return value
+}
+
 export function logEvent(event, detail = {}) {
     const line = { at: new Date().toISOString(), event, ...detail }
     process.stdout.write(`${JSON.stringify(line)}\n`)
