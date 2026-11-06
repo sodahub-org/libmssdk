@@ -13,6 +13,7 @@
 //   node tools/signer-tee.mjs --upstream http://127.0.0.1:8899/sign --out <仓库外的路径>
 //   node tools/signer-tee.mjs --upstream https://signer.example/sign --port 18899 --out <路径>
 //   然后把播放器的 signer_url 指到 http://127.0.0.1:<port>/sign，随便播一首，Ctrl+C。
+//   上游走明文 http 时只认字面回环（127/8 与 [::1]）：`localhost` 连到哪儿由 hosts 与解析器决定，不算。
 
 import fs from 'node:fs'
 import http from 'node:http'
@@ -108,18 +109,20 @@ function resolveRealPath(resolved) {
             // 只有「这一段还不存在」才是预期内的：抓包件还没建出来。
             // EACCES / ELOOP / ENAMETOOLONG 说明路径本身不成立，往上退只会把护栏降级成
             // 只判字面路径——那正是它要防的那一格，所以直接拒，不猜。
-            if (error.code !== 'ENOENT') throw unverifiablePath(error)
+            if (error.code !== 'ENOENT') throw unverifiablePathError(error)
             const parent = path.dirname(cursor)
             // 退到根还解析不了，同样拒：宁可误杀，也不退回字面判断。
-            if (parent === cursor) throw unverifiablePath(error)
+            if (parent === cursor) throw unverifiablePathError(error)
             tail.push(path.basename(cursor))
             cursor = parent
         }
     }
 }
 
-function unverifiablePath(error) {
-    return new Error(`无法确认 --out 的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
+function unverifiablePathError(error) {
+    const wrapped = new Error(`无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
+    wrapped.code = 'EUNVERIFIABLEPATH'
+    return wrapped
 }
 
 function insideRepo(candidate, root) {
@@ -137,7 +140,10 @@ function insideRepo(candidate, root) {
 export function assertOutsideRepo(target) {
     const resolved = path.resolve(target)
     if (insideRepo(resolved, REPO_ROOT) || insideRepo(resolveRealPath(resolved), REAL_REPO_ROOT)) {
-        throw new Error('--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
+        const error = new Error('--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
+        // 带上自己的码：写入口复用这条判据时，调用方要能把它和磁盘失败分开报。
+        error.code = 'EOUTSIDEREPO'
+        throw error
     }
     return resolved
 }
@@ -148,7 +154,7 @@ export function assertOutsideRepo(target) {
  * 由 hosts 与解析器决定，明文 cookie 会跟着那个解析结果走。所以这里只认字面回环：
  * 127/8 整段与 `[::1]`。
  */
-function isLiteralLoopback(hostname) {
+function isLoopbackConnectTarget(hostname) {
     const value = String(hostname || '').trim().toLowerCase()
     const bare = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value
     return bare === '::1' || (net.isIPv4(bare) && bare.startsWith('127.'))
@@ -167,7 +173,7 @@ export function assertUpstreamUrl(upstream) {
         throw new Error('--upstream 必须是 http(s) 绝对地址')
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('--upstream 必须是 http(s) 绝对地址')
-    if (parsed.protocol === 'http:' && !isLiteralLoopback(parsed.hostname)) {
+    if (parsed.protocol === 'http:' && !isLoopbackConnectTarget(parsed.hostname)) {
         throw new Error('--upstream 走明文 http 时只认字面回环地址（127.0.0.1 / ::1）：转发出去那份请求体里带着 cookie；远端只能 https')
     }
     return parsed.toString()
@@ -215,7 +221,14 @@ export function start({
     port,
     out,
     log = text => process.stdout.write(text),
-    warn = text => log(text),
+    // 兜底读取端默认回落到 log；log 自己坏了就退回 stderr——报不出声不能把一次成功的转发升级成 502。
+    warn = text => {
+        try {
+            log(text)
+        } catch {
+            process.stderr.write(text)
+        }
+    },
     format = formatCapture,
 }) {
     // 判据放在入口本身，不放调用方身上：这台中转会把请求原样转发，绑到非回环就等于对外提供服务。
@@ -275,21 +288,35 @@ export function start({
                 // 带着设备号却缺 iid / fp：是业务请求，只是身份不齐。不出声就等于悄悄少记一条。
                 if (reason) log(`event=skip ${reason}，这条只转发不落盘\n`)
                 if (record) {
-                    // 拼终端那一行与落盘是两种失败：格式坏了不能报成「抓包件写不进去」，
-                    // 那一行其实会进件。先拼出来，后面那段 try 里就只剩落盘这一个可能。
+                    // 拼终端那一行与落盘是两种失败：格式坏了不能报成「抓包件写不进去」。
                     let line = null
+                    let formatError = null
                     try {
                         line = format(record)
                     } catch (error) {
-                        log(`event=error 终端行拼不出来（code=${error.code || error.name}），这一条照原样落盘\n`)
+                        formatError = error
                     }
                     // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
+                    let written = false
                     try {
                         appendRecord(captureFile, record)
+                        written = true
                     } catch (error) {
-                        log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
+                        // 落笔前被护栏拒了不是 I/O 故障：把「被谁挡了、为什么」说出来，别伪装成磁盘问题。
+                        if (error.code === 'EOUTSIDEREPO' || error.code === 'EUNVERIFIABLEPATH') {
+                            log(`event=error 落笔前被护栏拒了（${error.message}），这条只转发没记录\n`)
+                        } else {
+                            log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
+                        }
                         // 没落盘就不打「已记录」那一行。
                         line = null
+                    }
+                    // 格式失败这一句放在落盘之后说：先说的那句不能替后面那次尝试打包票。
+                    if (formatError) {
+                        log(
+                            `event=error 终端行拼不出来（code=${formatError.code || formatError.name}），` +
+                                `这一条${written ? '已照原样落盘（读数没打出来）' : '只转发没记录'}\n`,
+                        )
                     }
                     // 落盘成功之后才写终端：这一步失败不能改口说「抓包件写不进去」——那一行确实进件了。
                     if (line) {

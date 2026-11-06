@@ -326,7 +326,9 @@ test('启动后父目录被换成指进仓库的链接：落笔前再判一次�
             body: signRequest(),
         })
         assert.equal(fs.existsSync(inRepo), false, '完整设备号被写进了仓库目录')
-        assert.match(logged.join(''), /event=error/, '落笔前拦下了，但没出声')
+        const text = logged.join('')
+        assert.match(text, /event=error 落笔前被护栏拒了/, `落笔前拦下了，但没说是护栏挡的：${text}`)
+        assert.match(text, /不入库/, '护栏拒绝了却不给原因，操作者会当成磁盘故障')
     } finally {
         fs.rmSync(inRepo, { force: true })
         fs.rmSync(dir, { force: true })
@@ -483,9 +485,35 @@ test('落盘、终端、格式三种失败要各报各的：谁都不能混成�
     const textC = loggedC.join('')
     assert.match(textC, /event=error 终端行拼不出来/, `格式失败没单独报：${JSON.stringify(textC)}`)
     assert.ok(!textC.includes('抓包件写不进去'), `格式失败被报成了写不进去：${JSON.stringify(textC)}`)
+    assert.match(textC, /已照原样落盘/, '格式坏了但这一条其实进了件，结果要说准——不能只喊「失败」')
     const captured = fs.readFileSync(outC, 'utf8').trim()
     assert.equal(captured.split(/\r?\n/).length, 1, '格式失败不该连累落盘：这一条确实进件了')
     assert.deepEqual(JSON.parse(captured).identity, CAPTURED_ID)
+})
+
+test('默认 warn 回落：log 坏了也不能把一次成功的转发变成 502', async () => {
+    const upstream = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => response.end('{"ok":true}'))
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
+    // 不注入 warn：默认回落先走 log，log 抛错时退回 stderr。退回那一下会把一行 event=warn 打到
+    // 测试进程的 stderr 上——这是真实行为，不在这里 patch 全局就能看见。
+    const tee = await startTee({
+        upstream: upstream.url,
+        out,
+        log: text => {
+            if (String(text).startsWith('event=tee')) throw new Error('stdout 坏了')
+            return true
+        },
+    })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 200, '终端写坏了不该把调用方晾成 502')
+    assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1, '这一条其实落盘了')
 })
 
 test('上游是非回环地址时不许走明文 http：入站拦得住，出站那一跳也得管', () => {
