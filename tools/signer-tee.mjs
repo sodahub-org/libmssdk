@@ -99,7 +99,11 @@ const REAL_REPO_ROOT = (() => {
     }
 })()
 
-/** 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。 */
+/**
+ * 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。
+ * 只有 ENOENT 算「这一段还不存在」；其它错误（EACCES / ELOOP / ENAMETOOLONG）或退到根仍失败都拒——
+ * 护栏宁可误杀，也不降级成只判字面路径。
+ */
 function resolveRealPath(resolved) {
     const tail = []
     let cursor = resolved
@@ -183,6 +187,10 @@ export function assertUpstreamUrl(upstream) {
     return parsed.toString()
 }
 
+/**
+ * 把一条记录追加进抓包件。这是唯一的写入口：落笔前再判一次「不在仓库里」，
+ * 启动时判过的那一次挡不住开了几十分钟里被换掉的父目录。
+ */
 function appendRecord(file, record) {
     // 判据写进写入口本身（与 AGENTS 约定 5 同一个思路）：启动时判过一次，但这台中转可能开着
     // 几十分钟，父目录在这段时间里被换成指进仓库的链接时，只有落笔前这次能拦住。
@@ -202,9 +210,13 @@ function appendRecord(file, record) {
     }
 }
 
-/** 回显「收到的事实」时压成一行：对端能塞进请求行/头里的控制字符不能借日志插图或换行。 */
+/**
+ * 回显「收到的事实」时压成一行：对端能塞进请求行/头里的控制字符不能借日志插图或换行。
+ * Node 的头值是 latin1，0x80–0x9f 的 C1 会原样进来（例如 U+009B 就是 CSI）；DEL 与
+ * Unicode 行分隔符 U+2028 / U+2029 同样会破坏「一行一条」的口径，一起换成 `?`。
+ */
 function received(value, limit = 80) {
-    const text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, '?')
+    const text = String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '?')
     return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
@@ -219,6 +231,11 @@ async function readBody(request) {
     return Buffer.concat(chunks).toString('utf8')
 }
 
+/**
+ * 起一台取证中转，Promise 解析为 server。判据都在这里复查，而不是只写在命令行：
+ * host 必须是回环；上游只许 https 或字面回环 http；抓包件不在仓库目录里。
+ * `log` / `warn` / `format` 是注入接缝：终端读数、兜底警告、终端行拼装，默认值即生产行为。
+ */
 export function start({
     upstream,
     host,

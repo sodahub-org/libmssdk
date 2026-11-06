@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -650,6 +651,36 @@ test('门口拒掉的四种请求各出一行声，并带上收到的值：护�
     assert.match(text, /Origin=http:\/\/evil\.example/, `403 没带收到的 Origin：${JSON.stringify(text)}`)
     assert.ok(!text.includes('SECRET-COOKIE-VALUE'), '出声也不得带出报文内容')
     assert.equal(fs.existsSync(out), false, '四条都不该落盘')
+})
+
+test('deny 行把 C1 控制字符压平：Origin 里的 CSI 不能原样进终端', async () => {
+    const logged = []
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-c1-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
+    const port = tee.address().port
+    // fetch 不会把 0x9b 原样发出去；用裸 socket 发一条带 C1 的 Origin（latin1），
+    // 模拟「能连到这台中转的任意本机客户端」。0x9b 就是 CSI，有的终端会当转义序列解释。
+    await new Promise((resolve, reject) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+            socket.write(
+                Buffer.concat([
+                    Buffer.from(
+                        'POST /sign HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nOrigin: ',
+                        'latin1',
+                    ),
+                    Buffer.from([0x9b, 0x33, 0x31, 0x6d]),
+                    Buffer.from('\r\nContent-Length: 0\r\nConnection: close\r\n\r\n', 'latin1'),
+                ]),
+            )
+        })
+        socket.on('close', resolve)
+        socket.on('error', reject)
+        socket.resume()
+    })
+    const text = logged.join('')
+    assert.match(text, /event=deny 403/, `带 C1 的 Origin 没被门口挡下或没出声：${JSON.stringify(text)}`)
+    assert.ok(!text.includes('\u009b'), `C1 控制字符原样进了终端：${JSON.stringify(text)}`)
+    assert.match(text, /Origin=\?31m/, '只该替换控制字符，收到的其余字节要保留')
 })
 
 test('复用一份权限更宽的既有抓包件时，写着设备号的那一笔不该以旧权限落地', async t => {
