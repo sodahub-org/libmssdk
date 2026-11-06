@@ -65,6 +65,12 @@ export function explicitBdmsModule() {
     return env('LIBMSSDK_BDMS_MODULE') || env('QISHUI_BDMS_PATH')
 }
 
+/** 显式路径写错了没有：只查存在性，不查能否加载。没给显式路径时不算错。 */
+export function missingExplicitBdmsModule() {
+    const explicit = explicitBdmsModule()
+    return Boolean(explicit) && !fs.existsSync(explicit)
+}
+
 /** bdms.node 路径：客户端里真正干签名的原生模块。worker 侧也要用它，但别顺带调 loadConfig()。 */
 export function resolveBdmsModule() {
     const explicit = explicitBdmsModule()

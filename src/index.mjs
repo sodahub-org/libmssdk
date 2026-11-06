@@ -8,9 +8,8 @@
 //                       （上游自检只有这一个入口，HTTP 层不再提供 /probe）
 //   libmssdk config     打印当前配置摘要（设备号脱敏）
 
-import fs from 'node:fs'
 import path from 'node:path'
-import { explicitBdmsModule, loadConfig, maskDeviceId, VERSION } from './config.mjs'
+import { loadConfig, maskDeviceId, missingExplicitBdmsModule, VERSION } from './config.mjs'
 import { BdmsSigner } from './bdms.mjs'
 import { startServe, stopPoolQuietly } from './serve.mjs'
 import { probeTrack } from './probe.mjs'
@@ -72,7 +71,7 @@ function identitySummary() {
  * selftest / config 不走这条检查：它们的工作正是把「找不到模块」如实报出来。
  */
 function assertExplicitBdmsModule() {
-    if (!explicitBdmsModule() || fs.existsSync(config.bdmsModule)) return
+    if (!missingExplicitBdmsModule()) return
     const shown = displayPath(config.bdmsModule)
     throw new Error(
         `显式指定的 bdms.node 不存在（LIBMSSDK_BDMS_MODULE / QISHUI_BDMS_PATH）：${shown}` +
