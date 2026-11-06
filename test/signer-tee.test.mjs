@@ -544,7 +544,7 @@ test('start() 自己就拒非回环上传与仓库内落盘：两条直调路径
     )
 })
 
-test('门口拒掉的三种请求各出一行声：护栏不出声就等于没有护栏', async () => {
+test('门口拒掉的四种请求各出一行声，并带上收到的值：护栏不出声就等于没有护栏', async () => {
     const logged = []
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-deny-')), 'capture.jsonl')
     const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
@@ -552,12 +552,24 @@ test('门口拒掉的三种请求各出一行声：护栏不出声就等于没�
     await fetch(`http://127.0.0.1:${port}/whatever-not-sign`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: signRequest() })
     await fetch(`http://127.0.0.1:${port}/sign`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: signRequest() })
     await fetch(`http://127.0.0.1:${port}/sign`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: signRequest() })
+    const oversized = await fetch(`http://127.0.0.1:${port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: `"${'x'.repeat(256 * 1024)}"`,
+    })
+    assert.equal(oversized.status, 413, '超过上限的请求体要回 413')
+
     const text = logged.join('')
     assert.match(text, /event=deny 404/, `路径不符没出声：${JSON.stringify(text)}`)
     assert.match(text, /event=deny 415/, 'content-type 不符没出声')
     assert.match(text, /event=deny 403/, '带 Origin 没出声')
+    assert.match(text, /event=deny 413/, '请求体超限没出声——这一格最容易被误读成「中转挂了」')
+    // 出声要带上「收到的事实」，否则下一次窗口还是只能猜谁被挡了。
+    assert.match(text, /收到 POST \/whatever-not-sign/, `404 没带收到的请求行：${JSON.stringify(text)}`)
+    assert.match(text, /收到 text\/plain/, `415 没带收到的 content-type：${JSON.stringify(text)}`)
+    assert.match(text, /Origin=http:\/\/evil\.example/, `403 没带收到的 Origin：${JSON.stringify(text)}`)
     assert.ok(!text.includes('SECRET-COOKIE-VALUE'), '出声也不得带出报文内容')
-    assert.equal(fs.existsSync(out), false, '三条都不该落盘')
+    assert.equal(fs.existsSync(out), false, '四条都不该落盘')
 })
 
 test('复用一份权限更宽的既有抓包件时，写着设备号的那一笔不该以旧权限落地', async t => {

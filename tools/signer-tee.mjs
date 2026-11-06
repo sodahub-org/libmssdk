@@ -192,6 +192,12 @@ function appendRecord(file, record) {
     }
 }
 
+/** 回显「收到的事实」时压成一行：对端能塞进请求行/头里的控制字符不能借日志插图或换行。 */
+function received(value, limit = 80) {
+    const text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, '?')
+    return text.length > limit ? `${text.slice(0, limit)}…` : text
+}
+
 async function readBody(request) {
     const chunks = []
     let size = 0
@@ -217,25 +223,30 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
         }
         // 只从请求行取路径，Host 不参与：这台中转认的就只有 /sign 这一个入口。
         const requestPath = String(request.url || '').split('?')[0]
-        // 三道拒绝都要出声：操作者只看得见终端，悄悄回 4xx 等于「护栏有，但没人知道它挡了什么」。
+        // 每一道拒绝都要出声，并带上「收到的事实」：操作者只看得见终端，悄悄回 4xx 等于
+        // 「护栏有，但没人知道它挡了什么」；带上收到的值，下一次窗口才能自己回答「谁被挡了」。
         if (request.method !== 'POST' || requestPath !== '/sign') {
-            log('event=deny 404 不是 POST /sign，这条不收\n')
+            log(`event=deny 404 不是 POST /sign（收到 ${received(request.method)} ${received(requestPath)}）\n`)
             return reply(404, { ok: false, error: '只转发 POST /sign' })
         }
         // 只认 JSON：浏览器 no-cors 的 simple POST 能送 text/plain 而不必预检，这一道就是拦它的。
         const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
         if (contentType !== 'application/json') {
-            log('event=deny 415 请求体不是 application/json，这条不收\n')
+            log(`event=deny 415 请求体不是 application/json（收到 ${received(contentType || '(没有)')}）\n`)
             return reply(415, { ok: false, error: '请求体必须是 application/json' })
         }
         // 这台机器没有跨源调用方：桌面签名客户端不发 Origin，浏览器页面才发。带 Origin 就不是该收的那种请求。
         if (request.headers.origin) {
-            log('event=deny 403 带 Origin 的请求不收\n')
+            log(`event=deny 403 带 Origin 的请求不收（Origin=${received(request.headers.origin)}）\n`)
             return reply(403, { ok: false, error: '不收跨源请求' })
         }
         readBody(request)
             .then(async text => {
-                if (text === null) return reply(413, { ok: false, error: '请求体超出上限' })
+                if (text === null) {
+                    // 413 最容易被误读成「中转挂了」：调用方拿到一个它没预期的状态码，这里必须留一行。
+                    log(`event=deny 413 请求体超出上限（上限 ${MAX_BODY_BYTES} 字节），这条不收\n`)
+                    return reply(413, { ok: false, error: '请求体超出上限' })
+                }
                 let record = null
                 let reason = null
                 try {
