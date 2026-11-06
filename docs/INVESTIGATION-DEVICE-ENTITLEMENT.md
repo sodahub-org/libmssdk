@@ -298,7 +298,7 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
 
 读数都走 `node tools/entitlement-matrix.mjs --track <整曲曲目> --arm captured --from-capture <抓包件>`；
 `fullTrack` 与 `node src/index.mjs probe` 用的是同一条判据（`src/probe.mjs` 的 `summarizeTrackV2Response`）。
-下面不重复命令。启动行只打印非零的计数；表里的三个计数来自 `captured` 行 JSON 的
+下面不重复命令。启动行只打印非零的计数；表里的三个计数来自 `captured` 行 `identitySource` 里的
 `blank` / `skipped` / `noDevice`，两者对得上。
 
 | 形态 | 读数（启动行；`captured` 行） | 判定 |
@@ -307,18 +307,17 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
 | 同一件连跑两次·第 2 次 | 第 5 行（共 5 行；`blank=0` / `skipped=0` / `noDevice=0`），`at 2026-11-06T18:06:47.020Z`；`fullTrack=true` | 两次坐标逐项相同 |
 | 边抓边读·自然抓包期间 | 第 5 行（共 5 行；`blank=0` / `skipped=0` / `noDevice=0`），`at 2026-11-06T18:06:47.020Z`；`fullTrack=true` | 这次没撞上尾部半行：tee 每条记录一次 `writeSync`，窗口很窄；不能把这一次当成「半行没问题」的证据 |
 | 边抓边读·人为拉长追加窗口 | 第 5 行（共 6 行；`blank=0` / `skipped=1` / `noDevice=0`），`at 2026-11-06T18:06:47.020Z`；`fullTrack=true` | 尾部半行被计入「不是记录的行」，不参与选行；半行里那份合成设备号没有被采用 |
-| 末条不齐·读侧（人为构造） | `exit 2`：第 2 行（共 2 行，`at 2026-11-06T18:10:01.000Z`）身份不齐（缺 iid / fp）——不顶替；更早那一条就算齐也不回头用；没有跑 probe | 不回落 |
+| 末条不齐·读侧（人为构造） | `exit 2`：第 2 行（共 2 行；`blank=0` / `skipped=0` / `noDevice=0`，错误信息只报行号与 `at 2026-11-06T18:10:01.000Z`）身份不齐（缺 iid / fp）——不顶替；更早那一条就算齐也不回头用；没有跑 probe | 不回落 |
 | 末条不齐·写侧（合成非 PC 请求） | `event=skip 缺 iid / fp，这条只转发不落盘`；件里没有新增行；没有跑 probe | #38 的写侧门口在，且出声 |
 | 时钟偏移（人为构造） | 第 3 行（共 3 行；`blank=0` / `skipped=0` / `noDevice=0`），`at 2026-11-06T18:11:00.000Z`；用的是第 3 行的设备号，不是 `at` 最大的第 1 行（18:12）；`fullTrack=true`（合成设备号，上游也接受；这不是权益读数） | 报的是件里第几行，不是「最新时刻」 |
 
 同一首整曲曲目上，第 1、2 次与「人为拉长追加窗口」那次的 `fullTrack` 都是 `true`、6 档
 （highest / lossless / hi_res / higher / medium / spatial），HTTP 都是 200，`track.duration` 都是
-200.744 秒。两次连跑之间上游回包长度有出入（28613 / 28692 字节），`streamDurationSeconds` 也有
-200.76 / 200.744 的细微出入，签名长度都是 `X-Helios` 48 / `X-Medusa` 828；这些都不是抓包件的读数，
+200.744 秒。两次连跑之间上游回包长度与 `streamDurationSeconds` 有细微出入；这些不是抓包件的读数，
 读数坐标本身没有漂。
 
 「人为拉长追加窗口」用的是同一份件的副本加一个把半行停留 8 秒的追加进程。tee 自己每条记录一次
-`writeSync`，自然撞上写一半窗口的概率极低；这一步复现的是「读取时尾部已经有一行不完整的 JSON」
+`writeSync`，在 NTFS 上这不是可稳定复现的输入；这一步复现的是「读取时尾部已经有一行不完整的 JSON」
 这个输入形态，不是在测 tee 的写入时序。真机自然抓包那次没有撞上这个窗口，也没有出现 `event=skip`。
 
 票里第 3 条要回答的那句：在这条链路、这次 5 条样本里，真机的件里没有出现不齐的行，中转终端也
@@ -495,7 +494,7 @@ node tools/entitlement-matrix.mjs --track <试听级曲目> --arm captured --fro
 - 抓包件只覆盖**这台机器上这一个登录态**，而且抓的是本机那个 `libresoda` 系播放器：官方 PC 客户端
   这台机器没装（只有安装包与解包件）。所以「真机没有稳定的登录设备号」这句话实测到的是这条链路。
   2026-11-07 的复核在同一链路又抓到 5 条（全 PC 端点、三号齐全；同一件连读两次的坐标没有漂，
-  见第三节末），这条样本边界不变。
+  见第三节的「2026-11-07 复核」），这条样本边界不变。
   两台都能再往前推一步，但本机都做不到：一台**会发固定设备号**的客户端（官方 PC 客户端，
   或填了 `SODA_DEVICE_ID` 的）才能给「固定 vs 变化」这组对照补上真实主语；
   而「成套」那条要求要测出区分力，还得有一首「只有成套才给整曲」的曲目（第四节末），也没找到。
