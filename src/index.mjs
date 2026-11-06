@@ -37,7 +37,7 @@ function hasFlag(name) {
 // selftest / config 的输出经常被原样贴进求助帖：默认隐掉本机路径，只有显式 --verbose 才打原文。
 const showMachinePaths = hasFlag('verbose')
 
-/** 会出现在输出里的本机路径。顺序是「更长的先换」，否则父目录先命中会留下后半截。 */
+/** 会出现在输出里的本机路径。长的排前面：父目录先命中会把更长的文件路径切成半截。 */
 function machinePathLocations() {
     return [
         config.identityFile,
@@ -45,7 +45,14 @@ function machinePathLocations() {
         config.clientDir,
         config.identityFile && path.dirname(config.identityFile),
         config.bdmsModule && path.dirname(config.bdmsModule),
-    ].filter(Boolean)
+    ]
+        .filter(Boolean)
+        .sort((left, right) => right.length - left.length)
+}
+
+/** 单条路径的显示形式：默认换掉，--verbose 才给原文。 */
+function displayPath(value) {
+    return showMachinePaths ? value : redactMachinePaths(value, machinePathLocations())
 }
 
 function redactForDisplay(value) {
@@ -54,7 +61,7 @@ function redactForDisplay(value) {
 
 /** selftest 里那行 `state (<身份文件>)`：整条被换掉时不要再套一层括号。 */
 function identitySummary() {
-    const file = showMachinePaths ? config.identityFile : redactMachinePaths(config.identityFile, machinePathLocations())
+    const file = displayPath(config.identityFile)
     return file === config.identityFile ? `${config.identitySource} (${file})` : `${config.identitySource} ${file}`
 }
 
@@ -66,7 +73,7 @@ function identitySummary() {
  */
 function assertExplicitBdmsModule() {
     if (!config.bdmsModuleExplicit || fs.existsSync(config.bdmsModule)) return
-    const shown = redactMachinePaths(config.bdmsModule, machinePathLocations())
+    const shown = displayPath(config.bdmsModule)
     throw new Error(
         `显式指定的 bdms.node 不存在（LIBMSSDK_BDMS_MODULE / QISHUI_BDMS_PATH）：${shown}` +
             '（用 config --verbose 查看解析到的原文）',

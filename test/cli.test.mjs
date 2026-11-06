@@ -81,25 +81,33 @@ test('config 命令的 stdout 是一个可解析的对象，设备号只出脱�
     assert.equal(payload.identity.persisted, true, '临时 state 目录可写，身份应当落盘')
 })
 
+const mockBdms = path.join(here, 'fixtures', 'mock-bdms.mjs')
+
 test('selftest / config 默认隐掉本机路径，--verbose 才打原文', async () => {
-    // 模块路径放在 home 下：既覆盖 HOME 里的片段，也覆盖显式模块路径本身。
-    const moduleDir = fs.mkdtempSync(path.join(os.homedir(), 'libmssdk-redact-'))
-    const modulePath = path.join(moduleDir, 'bdms.node')
-    const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-state-'))
-    const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-client-'))
-    const identityFile = path.join(identityDir, 'identity.json')
-    const env = {
-        LIBMSSDK_BDMS_MODULE: modulePath,
-        LIBMSSDK_CLIENT_DIR: clientDir,
-        LIBMSSDK_STATE_DIR: identityDir,
-    }
+    const cleanup = []
     try {
+        // 模块路径放在 home 下但不创建：既覆盖 HOME 里的片段，也不往用户目录写东西。
+        const modulePath = path.join(os.homedir(), 'libmssdk-redact-missing', 'bdms.node')
+        const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-state-'))
+        cleanup.push(identityDir)
+        const identityFile = path.join(identityDir, 'identity.json')
+        // 客户端目录由 LOCALAPPDATA 自动探测出来：顺带钉住「APPDATA 下的路径也要隐掉」。
+        const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-appdata-'))
+        cleanup.push(localAppData)
+        const clientDir = path.join(localAppData, 'Programs', 'Soda Music', '3.7.0')
+        fs.mkdirSync(clientDir, { recursive: true })
+        const env = {
+            LIBMSSDK_BDMS_MODULE: modulePath,
+            LIBMSSDK_STATE_DIR: identityDir,
+            LOCALAPPDATA: localAppData,
+        }
+
         for (const command of ['config', 'selftest']) {
             const { code, stdout } = await runWith(env, command)
             assert.equal(code, command === 'selftest' ? 1 : 0, `${command} 的退出码`)
             const payload = JSON.parse(stdout)
             const strings = stringValues(payload)
-            for (const leaked of [modulePath, moduleDir, identityDir, identityFile, clientDir, os.homedir()]) {
+            for (const leaked of [modulePath, os.homedir(), identityDir, identityFile, clientDir, localAppData]) {
                 assert.equal(
                     strings.some(text => text.includes(leaked)),
                     false,
@@ -107,7 +115,7 @@ test('selftest / config 默认隐掉本机路径，--verbose 才打原文', asyn
                 )
             }
             assert.equal(payload.bdmsModule, '(本机路径)', `${command} 要整条换掉显式模块路径`)
-            assert.equal(payload.clientDir, '(本机路径)', `${command} 要整条换掉客户端目录`)
+            assert.equal(payload.clientDir, '(本机路径)', `${command} 要整条换掉 APPDATA 下探测到的客户端目录`)
             if (command === 'config') {
                 assert.equal(payload.identity.file, '(本机路径)', '身份文件路径默认整条换掉')
             } else {
@@ -127,7 +135,32 @@ test('selftest / config 默认隐掉本机路径，--verbose 才打原文', asyn
         assert.equal(verboseSelftest.identity, `state (${identityFile})`)
         assert.equal(verboseSelftest.error.includes(modulePath), true, '--verbose 时错误里的原文要保留')
     } finally {
-        for (const dir of [moduleDir, identityDir, clientDir]) fs.rmSync(dir, { recursive: true, force: true })
+        for (const dir of cleanup) fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('selftest 成功那支也不打本机路径，--verbose 才给原文', async () => {
+    const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-ok-'))
+    const identityFile = path.join(identityDir, 'identity.json')
+    const env = { LIBMSSDK_BDMS_MODULE: mockBdms, LIBMSSDK_STATE_DIR: identityDir }
+    try {
+        const { code, stdout } = await runWith(env, 'selftest')
+        assert.equal(code, 0, 'mock 模块应当能出签名')
+        const payload = JSON.parse(stdout)
+        assert.equal(payload.signOk, true)
+        assert.equal(payload.bdmsModule, '(本机路径)', '成功那支同样要整条换掉模块路径')
+        assert.equal(payload.identity, 'state (本机路径)', '成功那支同样要换掉身份文件路径')
+        const strings = stringValues(payload)
+        for (const leaked of [mockBdms, here, os.homedir(), identityDir, identityFile]) {
+            assert.equal(strings.some(text => text.includes(leaked)), false, `成功那支漏了本机路径 ${leaked}`)
+        }
+
+        const verbose = JSON.parse((await runWith(env, 'selftest', '--verbose')).stdout)
+        assert.equal(verbose.signOk, true)
+        assert.equal(verbose.bdmsModule, mockBdms)
+        assert.equal(verbose.identity, `state (${identityFile})`)
+    } finally {
+        fs.rmSync(identityDir, { recursive: true, force: true })
     }
 })
 
@@ -161,7 +194,6 @@ test('显式模块路径不存在时 serve 拒启，错误里不带本机路径'
 // 真进程的信号那一段：/readyz 之所以会「当场改口」，靠的是 index.mjs 的 SIGTERM 处理器
 // 调到收尾序列。前面的用例只测到 beginShutdown() 那一层，管线和信号之间还隔着一条缝。
 // Windows 不把 SIGTERM 投给进程（Node 文档写明不支持），这一条只在能收信号的平台跑。
-const mockBdms = path.join(here, 'fixtures', 'mock-bdms.mjs')
 
 test(
     '真进程收到 SIGTERM：先改口 /readyz，排空窗口结束后才退出',
