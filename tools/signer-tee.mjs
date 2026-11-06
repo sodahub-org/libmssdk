@@ -99,6 +99,9 @@ const REAL_REPO_ROOT = (() => {
     }
 })()
 
+/** 链接链最多跟 40 跳：与内核 MAXSYMLINKS 同一量级，坏链别把解析拖成死循环。 */
+const MAX_LINK_HOPS = 40
+
 /**
  * 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。
  * 只有 ENOENT 算「这一段还不存在」；其它错误（EACCES / ELOOP / ENAMETOOLONG）或退到根仍失败都拒——
@@ -123,7 +126,8 @@ function resolveRealPath(resolved, hops = 0) {
                 // lstat 也看不见这一段：它确实还不存在，往上退。
             }
             if (dangling) {
-                if (hops >= 40) throw unverifiablePathError(error)
+                // 跳数耗尽不是「路径不存在」：给它自己的码，别让报错把操作者带偏。
+                if (hops >= MAX_LINK_HOPS) throw unverifiablePathError({ code: 'ETOOMANYLINKS' })
                 let target
                 try {
                     target = fs.readlinkSync(cursor)
