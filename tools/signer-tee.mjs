@@ -103,18 +103,38 @@ const REAL_REPO_ROOT = (() => {
  * 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。
  * 只有 ENOENT 算「这一段还不存在」；其它错误（EACCES / ELOOP / ENAMETOOLONG）或退到根仍失败都拒——
  * 护栏宁可误杀，也不降级成只判字面路径。
+ * ENOENT 还要再分一格：末段本身可能是个「指向不存在目标」的链接。`realpathSync` 报 ENOENT，
+ * 但 `openSync` 会顺着链接把文件建到目标那儿——所以链接目标必须解析出来再判，不能当成不存在。
  */
-function resolveRealPath(resolved) {
+function resolveRealPath(resolved, hops = 0) {
     const tail = []
     let cursor = resolved
     for (;;) {
         try {
             return path.join(fs.realpathSync(cursor), ...tail.reverse())
         } catch (error) {
-            // 只有「这一段还不存在」才是预期内的：抓包件还没建出来。
             // EACCES / ELOOP / ENAMETOOLONG 说明路径本身不成立，往上退只会把护栏降级成
             // 只判字面路径——那正是它要防的那一格，所以直接拒，不猜。
             if (error.code !== 'ENOENT') throw unverifiablePathError(error)
+            let dangling = false
+            try {
+                dangling = fs.lstatSync(cursor).isSymbolicLink()
+            } catch {
+                // lstat 也看不见这一段：它确实还不存在，往上退。
+            }
+            if (dangling) {
+                if (hops >= 40) throw unverifiablePathError(error)
+                let target
+                try {
+                    target = fs.readlinkSync(cursor)
+                } catch (linkError) {
+                    throw unverifiablePathError(linkError)
+                }
+                return path.join(
+                    resolveRealPath(path.resolve(path.dirname(cursor), target), hops + 1),
+                    ...tail.reverse(),
+                )
+            }
             const parent = path.dirname(cursor)
             // 退到根还解析不了，同样拒：宁可误杀，也不退回字面判断。
             if (parent === cursor) throw unverifiablePathError(error)

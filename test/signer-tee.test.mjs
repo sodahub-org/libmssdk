@@ -363,6 +363,32 @@ test('真实路径解析不了时护栏要拒，不许退回字面判断', t => 
     }
 })
 
+test('悬空链接指进仓库：realpath 报 ENOENT 也不能当成「还不存在」', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-dangling-'))
+    const link = path.join(dir, 'capture.jsonl')
+    const target = path.join(repoRoot, 'tools', 'capture-dangling-probe.jsonl')
+    try {
+        // 指向一个还不存在的目标：realpath 报 ENOENT，但 openSync 会顺着链接把文件建到目标那儿。
+        fs.symlinkSync(target, link, 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出悬空链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(link), /不入库/, '悬空链接被当成「还不存在」，护栏落在链接外面')
+        assert.throws(
+            () => start({ upstream: DEAD_UPSTREAM, host: '127.0.0.1', port: 0, out: link, log: () => {} }),
+            /不入库/,
+            '直调 start() 时悬空链接同样要拒',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(link, { force: true })
+        fs.rmSync(target, { force: true })
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
 test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
     const seen = []
     const upstream = await listen((request, response) => {
