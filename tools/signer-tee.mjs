@@ -262,8 +262,7 @@ export function start({
     port,
     out,
     log = text => process.stdout.write(text),
-    // 兜底读取端默认回落到 log；log 自己坏了就退回 stderr。
-    // 只兜这一路：其余 log 调用点维持原样，不在这里吞掉。
+    // 兜底读取端默认回落到 log；log 自己坏了就退回 stderr。诊断走的 report 也拿它兜底。
     warn = text => {
         try {
             log(text)
@@ -279,6 +278,21 @@ export function start({
     const upstreamTarget = assertUpstreamUrl(upstream)
     if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
     const captureFile = assertOutsideRepo(out)
+    /**
+     * 诊断行打不出去不能改口：log 坏了退回 warn，warn 也坏就放弃这一行。
+     * 响应码必须由请求本身决定，不能被终端状态带着走——拒绝尤其如此。
+     */
+    const report = text => {
+        try {
+            log(text)
+        } catch {
+            try {
+                warn(text)
+            } catch {
+                // 两条出口都坏了：诊断让位，响应照发。
+            }
+        }
+    }
     const server = http.createServer((request, response) => {
         const reply = (status, payload) => {
             response.writeHead(status, { 'content-type': 'application/json' })
@@ -289,25 +303,25 @@ export function start({
         // 每一道拒绝都要出声，并带上「收到的事实」：操作者只看得见终端，悄悄回 4xx 等于
         // 「护栏有，但没人知道它挡了什么」；带上收到的值，下一次窗口才能自己回答「谁被挡了」。
         if (request.method !== 'POST' || requestPath !== '/sign') {
-            log(`event=deny 404 不是 POST /sign（收到 ${received(request.method)} ${received(requestPath)}）\n`)
+            report(`event=deny 404 不是 POST /sign（收到 ${received(request.method)} ${received(requestPath)}）\n`)
             return reply(404, { ok: false, error: '只转发 POST /sign' })
         }
         // 只认 JSON：浏览器 no-cors 的 simple POST 能送 text/plain 而不必预检，这一道就是拦它的。
         const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
         if (contentType !== 'application/json') {
-            log(`event=deny 415 请求体不是 application/json（收到 ${received(contentType || '(没有)')}）\n`)
+            report(`event=deny 415 请求体不是 application/json（收到 ${received(contentType || '(没有)')}）\n`)
             return reply(415, { ok: false, error: '请求体必须是 application/json' })
         }
         // 这台机器没有跨源调用方：桌面签名客户端不发 Origin，浏览器页面才发。带 Origin 就不是该收的那种请求。
         if (request.headers.origin) {
-            log(`event=deny 403 带 Origin 的请求不收（Origin=${received(request.headers.origin)}）\n`)
+            report(`event=deny 403 带 Origin 的请求不收（Origin=${received(request.headers.origin)}）\n`)
             return reply(403, { ok: false, error: '不收跨源请求' })
         }
         readBody(request)
             .then(async text => {
                 if (text === null) {
                     // 413 最容易被误读成「中转挂了」：调用方拿到一个它没预期的状态码，这里必须留一行。
-                    log(`event=deny 413 请求体超出上限（上限 ${MAX_BODY_BYTES} 字节），这条不收\n`)
+                    report(`event=deny 413 请求体超出上限（上限 ${MAX_BODY_BYTES} 字节），这条不收\n`)
                     return reply(413, { ok: false, error: '请求体超出上限' })
                 }
                 let record = null
@@ -325,10 +339,10 @@ export function start({
                 } catch {
                     // 解析不了就单纯转发：这台中转的职责是记录能记录的东西，不是替签名服务做校验。
                     // 要出声，但不复述内容——报文里可能带着 cookie 与令牌。
-                    log('event=skip 这条请求体解析不了，只转发不记录\n')
+                    report('event=skip 这条请求体解析不了，只转发不记录\n')
                 }
                 // 带着设备号却缺 iid / fp：是业务请求，只是身份不齐。不出声就等于悄悄少记一条。
-                if (reason) log(`event=skip ${reason}，这条只转发不落盘\n`)
+                if (reason) report(`event=skip ${reason}，这条只转发不落盘\n`)
                 if (record) {
                     // 拼终端那一行与落盘是两种失败：格式坏了不能报成「抓包件写不进去」。
                     let line = null
@@ -346,16 +360,16 @@ export function start({
                     } catch (error) {
                         // 落笔前被护栏拒了不是 I/O 故障：把「被谁挡了、为什么」说出来，别伪装成磁盘问题。
                         if (GUARD_ERROR_CODES.has(error.code)) {
-                            log(`event=error 落笔前被护栏拒了（${error.message}），这条只转发没记录\n`)
+                            report(`event=error 落笔前被护栏拒了（${error.message}），这条只转发没记录\n`)
                         } else {
-                            log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
+                            report(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
                         }
                         // 没落盘就不打「已记录」那一行。
                         line = null
                     }
                     // 格式失败这一句放在落盘之后说：先说的那句不能替后面那次尝试打包票。
                     if (formatError) {
-                        log(
+                        report(
                             `event=error 终端行拼不出来（code=${formatError.code || formatError.name}），` +
                                 `这一条${written ? '已照原样落盘（读数没打出来）' : '只转发没记录'}\n`,
                         )
@@ -367,7 +381,11 @@ export function start({
                         } catch (error) {
                             // 只说这一行确实进了抓包件、写终端时抛了什么码；不打「有没有打出来」的包票——
                             // 抛错之前字节可能已经落进日志文件了。
-                            warn(`event=warn 这一行已进抓包件；写终端时抛错（code=${error.code || error.name}）\n`)
+                            try {
+                                warn(`event=warn 这一行已进抓包件；写终端时抛错（code=${error.code || error.name}）\n`)
+                            } catch {
+                                // warn 也写不出去：这一行已在件里，响应不能因此失败。
+                            }
                         }
                     }
                 }

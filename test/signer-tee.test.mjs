@@ -709,6 +709,46 @@ test('deny 行把 C1 控制字符压平：Origin 里的 CSI 不能原样进终�
     assert.match(text, /Origin=\?31m/, '只该替换控制字符，收到的其余字节要保留')
 })
 
+test('log 抛错也不改口：四种拒绝照样按原状态码回', async () => {
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-deadlog-')), 'capture.jsonl')
+    const tee = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out,
+        log: () => {
+            throw new Error('stdout 坏了')
+        },
+        // 兜底也关掉：这条只看状态码，不让回落到 stderr 的噪声混进来。
+        warn: () => {},
+    })
+    const base = `http://127.0.0.1:${tee.address().port}`
+    const statuses = []
+    statuses.push(
+        (await fetch(`${base}/whatever-not-sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })).status,
+    )
+    statuses.push(
+        (await fetch(`${base}/sign`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: signRequest() })).status,
+    )
+    statuses.push(
+        (await fetch(`${base}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+            body: signRequest(),
+        })).status,
+    )
+    statuses.push(
+        (await fetch(`${base}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: `"${'x'.repeat(256 * 1024)}"`,
+        })).status,
+    )
+    assert.deepEqual(statuses, [404, 415, 403, 413], '日志坏掉把拒绝改成了别的结果')
+})
+
 test('复用一份权限更宽的既有抓包件时，写着设备号的那一笔不该以旧权限落地', async t => {
     if (process.platform === 'win32') {
         t.skip('NTFS 不认这个权限位，这条只在 POSIX 上有意义')
