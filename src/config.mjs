@@ -141,8 +141,6 @@ export function loadConfig() {
         bundledBdms: bundledNative().modulePath,
         clientDir,
         bdmsModule,
-        // 显式路径在 serve 启动前要查一次存在性（只查存在，不查能否加载）；默认探测路径已经查过。
-        bdmsModuleExplicit: Boolean(explicitBdmsModule()),
         requestTimeoutMs: Number(env('LIBMSSDK_UPSTREAM_TIMEOUT_MS') || 15000),
         maxBodyBytes: Number(env('LIBMSSDK_MAX_BODY_BYTES') || 256 * 1024),
         // 收尾时的排空窗口：markClosing() 之后先保持监听，让 /readyz 的 503 真的被读到，

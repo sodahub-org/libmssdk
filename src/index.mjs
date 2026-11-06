@@ -10,7 +10,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadConfig, maskDeviceId, VERSION } from './config.mjs'
+import { explicitBdmsModule, loadConfig, maskDeviceId, VERSION } from './config.mjs'
 import { BdmsSigner } from './bdms.mjs'
 import { startServe, stopPoolQuietly } from './serve.mjs'
 import { probeTrack } from './probe.mjs'
@@ -59,20 +59,20 @@ function redactForDisplay(value) {
     return showMachinePaths ? value : redactMachinePathsDeep(value, machinePathLocations())
 }
 
-/** selftest 里那行 `state (<身份文件>)`：整条被换掉时不要再套一层括号。 */
+/** selftest 里那行 `state (<身份文件>)`：默认整条隐掉，--verbose 才给原文。 */
 function identitySummary() {
-    const file = displayPath(config.identityFile)
-    return file === config.identityFile ? `${config.identitySource} (${file})` : `${config.identitySource} ${file}`
+    const file = showMachinePaths ? `(${config.identityFile})` : '(本机路径)'
+    return `${config.identitySource} ${file}`
 }
 
 /**
- * 显式给出的模块路径写错了，配置阶段就拦下：否则 serve 照样监听，只是每条 /sign 都回
+ * 显式给出的模块路径写错了，在开始监听前就拦下：否则 serve 照样监听，只是每条 /sign 都回
  * SIGNER_UNAVAILABLE，排查时很容易先怀疑 worker 而不是一个拼错的路径。
  * 默认探测路径不在这里判——resolveBdmsModule() 已经只返回存在的候选。
  * selftest / config 不走这条检查：它们的工作正是把「找不到模块」如实报出来。
  */
 function assertExplicitBdmsModule() {
-    if (!config.bdmsModuleExplicit || fs.existsSync(config.bdmsModule)) return
+    if (!explicitBdmsModule() || fs.existsSync(config.bdmsModule)) return
     const shown = displayPath(config.bdmsModule)
     throw new Error(
         `显式指定的 bdms.node 不存在（LIBMSSDK_BDMS_MODULE / QISHUI_BDMS_PATH）：${shown}` +

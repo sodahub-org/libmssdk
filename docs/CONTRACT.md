@@ -84,6 +84,9 @@ Meting-API 的远程签名服务保持兼容，
   拦它们既不省容量也不防滥用，只会让探针在过载时改口，把「服务还活着」读成「服务死了」。
 - **绑定非回环地址且没有设置 `LIBMSSDK_TOKEN` 时拒绝启动**，并给出原因；绑定回环地址时
   不配令牌才放行（本机自用）。直接构造 `createDispatcher` 的嵌入用法也走同一道检查。
+- **显式 `LIBMSSDK_BDMS_MODULE` / `QISHUI_BDMS_PATH` 指向的文件不存在时拒绝启动**（只查存在性，
+  不查能否加载），错误里的路径默认隐掉。默认探测（客户端目录 / vendor）没找到模块时不拒启，
+  进程照常监听，由 `/readyz` 的 503 与 `/sign` 的 500 `SIGNER_UNAVAILABLE` 表达。
 
 ## GET /stat
 

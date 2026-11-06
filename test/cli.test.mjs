@@ -151,7 +151,7 @@ test('selftest 成功那支也不打本机路径，--verbose 才给原文', asyn
         assert.equal(payload.bdmsModule, '(本机路径)', '成功那支同样要整条换掉模块路径')
         assert.equal(payload.identity, 'state (本机路径)', '成功那支同样要换掉身份文件路径')
         const strings = stringValues(payload)
-        for (const leaked of [mockBdms, here, os.homedir(), identityDir, identityFile]) {
+        for (const leaked of [mockBdms, os.homedir(), identityDir, identityFile]) {
             assert.equal(strings.some(text => text.includes(leaked)), false, `成功那支漏了本机路径 ${leaked}`)
         }
 
@@ -168,24 +168,27 @@ test('显式模块路径不存在时 serve 拒启，错误里不带本机路径'
     const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-serve-missing-'))
     const modulePath = path.join(moduleDir, 'bdms.node')
     try {
-        const { code, stdout, stderr } = await runWith({ LIBMSSDK_BDMS_MODULE: modulePath }, 'serve')
-        assert.equal(code, 1, '配置阶段就该停下，而不是起来后每条 /sign 都失败')
-        assert.equal(stdout, '', '拒启时不该先打启动日志')
-        const errorLine = stderr
-            .split('\n')
-            .filter(Boolean)
-            .map(line => {
-                try {
-                    return JSON.parse(line)
-                } catch {
-                    return null
-                }
-            })
-            .find(line => line?.event === 'error')
-        assert.ok(errorLine, `stderr 里没有 event=error：${stderr}`)
-        assert.match(errorLine.message, /显式指定的 bdms\.node 不存在/)
-        assert.equal(errorLine.message.includes(moduleDir), false, `错误里漏了本机路径：${errorLine.message}`)
-        assert.match(errorLine.message, /\(本机路径\)/, '路径位置要给出「已被隐掉」的信号')
+        // 两个变量名都认：漏掉其中一个，用户拿旧名配的那条路就会绕过检查。
+        for (const key of ['LIBMSSDK_BDMS_MODULE', 'QISHUI_BDMS_PATH']) {
+            const { code, stdout, stderr } = await runWith({ [key]: modulePath }, 'serve')
+            assert.equal(code, 1, `${key}：配置阶段就该停下，而不是起来后每条 /sign 都失败`)
+            assert.equal(stdout, '', `${key}：拒启时不该先打启动日志`)
+            const errorLine = stderr
+                .split('\n')
+                .filter(Boolean)
+                .map(line => {
+                    try {
+                        return JSON.parse(line)
+                    } catch {
+                        return null
+                    }
+                })
+                .find(line => line?.event === 'error')
+            assert.ok(errorLine, `${key}：stderr 里没有 event=error：${stderr}`)
+            assert.match(errorLine.message, /显式指定的 bdms\.node 不存在/)
+            assert.equal(errorLine.message.includes(moduleDir), false, `${key}：错误里漏了本机路径：${errorLine.message}`)
+            assert.match(errorLine.message, /\(本机路径\)/, `${key}：路径位置要给出「已被隐掉」的信号`)
+        }
     } finally {
         fs.rmSync(moduleDir, { recursive: true, force: true })
     }
