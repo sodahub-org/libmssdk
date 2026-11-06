@@ -302,6 +302,64 @@ test('仓库外的链接指进仓库：按解析后的真实路径判，不按�
     }
 })
 
+test('启动后父目录被换成指进仓库的链接：落笔前再判一次，一个字都进不了仓库', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-swap-'))
+    const probe = 'capture-guard-probe.jsonl'
+    const out = path.join(dir, probe)
+    const logged = []
+    const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
+    const moved = `${dir}-moved`
+    fs.renameSync(dir, moved)
+    try {
+        fs.symlinkSync(path.join(repoRoot, 'tools'), dir, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        fs.rmSync(moved, { recursive: true, force: true })
+        return
+    }
+    // 万一护栏失灵，别把探针行留在仓库里；正常路径下这个文件根本不该被创建。
+    const inRepo = path.join(repoRoot, 'tools', probe)
+    try {
+        await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })
+        assert.equal(fs.existsSync(inRepo), false, '完整设备号被写进了仓库目录')
+        assert.match(logged.join(''), /event=error/, '落笔前拦下了，但没出声')
+    } finally {
+        fs.rmSync(inRepo, { force: true })
+        fs.rmSync(dir, { force: true })
+        fs.rmSync(moved, { recursive: true, force: true })
+    }
+})
+
+test('真实路径解析不了时护栏要拒，不许退回字面判断', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-loop-'))
+    const loop = path.join(dir, 'loop')
+    try {
+        // 自指链接：realpath 会报 ELOOP（Windows 的 junction 上同样如此，且不需要特权）。
+        fs.symlinkSync(loop, loop, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+        t.skip(`这台机器建不出自指链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(path.join(loop, 'capture.jsonl')),
+            /真实路径/,
+            '解析失败被当成「末段还不存在」，护栏降级成了字面判断',
+        )
+    } finally {
+        try {
+            fs.rmSync(loop, { force: true })
+        } catch {
+            // 链接本身删不掉时，下面的递归删除还会再试一次
+        }
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
 test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
     const seen = []
     const upstream = await listen((request, response) => {
@@ -417,7 +475,13 @@ test('上游是非回环地址时不许走明文 http：入站拦得住，出站
 
     // 「不误杀本机明文上游」判据在同一个纯函数上测：起真服务会一直等信号，不适合拿子进程跑这条
     assert.doesNotThrow(() => assertUpstreamUrl('http://127.0.0.1:8899/sign'), '本机签名器就是明文 http，别拦它')
-    assert.doesNotThrow(() => assertUpstreamUrl('http://localhost:8899/sign'))
+    assert.doesNotThrow(() => assertUpstreamUrl('http://127.0.0.2:8899/sign'), '127/8 整段都是回环')
+    assert.doesNotThrow(() => assertUpstreamUrl('http://[::1]:8899/sign'))
+    assert.throws(
+        () => assertUpstreamUrl('http://localhost:8899/sign'),
+        /https/,
+        'localhost 连到哪儿由 hosts 与解析器决定，出站不能把它当回环',
+    )
     assert.doesNotThrow(() => assertUpstreamUrl('https://signer.example/sign'), '远端走 https 是文档里给的用法')
     assert.throws(() => assertUpstreamUrl('http://10.1.2.3/sign'), /https/)
     assert.throws(() => assertUpstreamUrl('ftp://127.0.0.1/sign'), /http/)
@@ -457,6 +521,27 @@ test('start() 自己就拒非回环绑定：判据不能只写在命令行那一
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-bind-')), 'capture.jsonl')
     assert.throws(() => start({ upstream: DEAD_UPSTREAM, host: '0.0.0.0', port: 0, out, log: () => {} }), /回环/)
     assert.throws(() => start({ upstream: DEAD_UPSTREAM, host: '', port: 0, out, log: () => {} }), /回环/)
+})
+
+test('start() 自己就拒非回环上传与仓库内落盘：两条直调路径都不能绕过判据', () => {
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-entry-')), 'capture.jsonl')
+    assert.throws(
+        () => start({ upstream: 'http://10.1.2.3/sign', host: '127.0.0.1', port: 0, out: outside, log: () => {} }),
+        /https/,
+        '直调 start() 时明文送往非回环上游——判据只写在 main() 里就等于没写',
+    )
+    assert.throws(
+        () =>
+            start({
+                upstream: DEAD_UPSTREAM,
+                host: '127.0.0.1',
+                port: 0,
+                out: path.join(repoRoot, 'tools', 'capture.jsonl'),
+                log: () => {},
+            }),
+        /不入库/,
+        '直调 start() 时把抓包件指进仓库——写入侧没有自己的判据',
+    )
 })
 
 test('门口拒掉的三种请求各出一行声：护栏不出声就等于没有护栏', async () => {

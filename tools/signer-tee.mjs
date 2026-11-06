@@ -16,6 +16,7 @@
 
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -103,13 +104,22 @@ function resolveRealPath(resolved) {
     for (;;) {
         try {
             return path.join(fs.realpathSync(cursor), ...tail.reverse())
-        } catch {
+        } catch (error) {
+            // 只有「这一段还不存在」才是预期内的：抓包件还没建出来。
+            // EACCES / ELOOP / ENAMETOOLONG 说明路径本身不成立，往上退只会把护栏降级成
+            // 只判字面路径——那正是它要防的那一格，所以直接拒，不猜。
+            if (error.code !== 'ENOENT') throw unverifiablePath(error)
             const parent = path.dirname(cursor)
-            if (parent === cursor) return resolved
+            // 退到根还解析不了，同样拒：宁可误杀，也不退回字面判断。
+            if (parent === cursor) throw unverifiablePath(error)
             tail.push(path.basename(cursor))
             cursor = parent
         }
     }
+}
+
+function unverifiablePath(error) {
+    return new Error(`无法确认 --out 的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
 }
 
 function insideRepo(candidate, root) {
@@ -133,6 +143,18 @@ export function assertOutsideRepo(target) {
 }
 
 /**
+ * 出站判据要用「连接语义」，不能借 `isLoopbackBind` 的「绑定语义」：
+ * 绑定到 `localhost` 时内核只听本机，这是对的；而 `http://localhost:8899` 连到哪儿
+ * 由 hosts 与解析器决定，明文 cookie 会跟着那个解析结果走。所以这里只认字面回环：
+ * 127/8 整段与 `[::1]`。
+ */
+function isLiteralLoopback(hostname) {
+    const value = String(hostname || '').trim().toLowerCase()
+    const bare = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value
+    return bare === '::1' || (net.isIPv4(bare) && bare.startsWith('127.'))
+}
+
+/**
  * 上游地址的判据：必须 http(s)，而且非回环就只能走 https。
  * 绑定收在回环保护不了出站那一跳——转发出去的是整份 SignRequest（`headers.cookie` 的值在里面）
  * 外加原样转发的令牌。文件头给的远端用法本来就是 `https://signer.example/sign`，这里把这句话管住。
@@ -145,14 +167,17 @@ export function assertUpstreamUrl(upstream) {
         throw new Error('--upstream 必须是 http(s) 绝对地址')
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('--upstream 必须是 http(s) 绝对地址')
-    if (parsed.protocol === 'http:' && !isLoopbackBind(parsed.hostname)) {
-        throw new Error('--upstream 是非回环地址时只能走 https：转发出去那份请求体里带着 cookie')
+    if (parsed.protocol === 'http:' && !isLiteralLoopback(parsed.hostname)) {
+        throw new Error('--upstream 走明文 http 时只认字面回环地址（127.0.0.1 / ::1）：转发出去那份请求体里带着 cookie；远端只能 https')
     }
     return parsed.toString()
 }
 
 function appendRecord(file, record) {
-    const handle = fs.openSync(file, 'a', 0o600)
+    // 判据写进写入口本身（与 AGENTS 约定 5 同一个思路）：启动时判过一次，但这台中转可能开着
+    // 几十分钟，父目录在这段时间里被换成指进仓库的链接时，只有落笔前这次能拦住。
+    const target = assertOutsideRepo(file)
+    const handle = fs.openSync(target, 'a', 0o600)
     try {
         // 先把权限定下来再写：`openSync` 的 mode 会被既有 umask 削掉，而复用一份权限更宽的既有文件时，
         // 第一条（写着完整设备号的）记录不该以旧权限落地哪怕一小会儿。
@@ -181,6 +206,10 @@ async function readBody(request) {
 export function start({ upstream, host, port, out, log = text => process.stdout.write(text) }) {
     // 判据放在入口本身，不放调用方身上：这台中转会把请求原样转发，绑到非回环就等于对外提供服务。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
+    // 出站与落盘两条判据也在这里：只写在命令行那一层，`start({...})` 的直调就绕过去了。
+    const upstreamTarget = assertUpstreamUrl(upstream)
+    if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
+    const captureFile = assertOutsideRepo(out)
     const server = http.createServer((request, response) => {
         const reply = (status, payload) => {
             response.writeHead(status, { 'content-type': 'application/json' })
@@ -230,7 +259,7 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                 if (record) {
                     let line = null
                     try {
-                        appendRecord(out, record)
+                        appendRecord(captureFile, record)
                         line = formatCapture(record)
                     } catch (error) {
                         log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
@@ -246,7 +275,7 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                         }
                     }
                 }
-                const upstreamResponse = await fetch(upstream, {
+                const upstreamResponse = await fetch(upstreamTarget, {
                     method: 'POST',
                     // 不跟跳转：这台中转的职责是转发给指定上游，不是替它追重定向——
                     // 默认跟随会把带着 cookie 的那份请求体重发到跳转目的地。
@@ -284,10 +313,10 @@ async function main() {
     const upstream = argValue('upstream')
     const out = argValue('out')
     if (!upstream) throw new Error('需要 --upstream <真正的签名服务 /sign 地址>')
-    assertUpstreamUrl(upstream)
     if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
     // 这台中转会把请求原样转发出去，绑定收到谁那儿必须自己说得清：只许回环。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
+    // 上游判据由 start() 自己复查并返回规范化后的地址，这里不再调一次再把它丢掉。
     const target = assertOutsideRepo(out)
     const server = await start({ upstream, host, port, out: target })
     process.stderr.write(
