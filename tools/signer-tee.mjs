@@ -7,6 +7,7 @@
 //
 // 凭据边界：Cookie 与 Authorization 的值一律不落盘（只记字段名与个数）；`x-helios` / `x-medusa`
 // 是逐请求签名，也不记。落盘的只有设备身份、公共参数里的形状字段与请求头名——UA 的值不存。
+// 拒绝时打的 `event=deny` 会带上收到的请求行与 Origin（压成一行、截断）：那是判定依据，不是凭据。
 // 抓包件在 POSIX 上是 0600（Windows 的 NTFS 不认这个位，那里靠的是账号所有权 + 放在仓库外），
 // 并且拒绝写进仓库目录——真实设备号属于「不得入库」的那一类。
 //
@@ -119,6 +120,9 @@ function resolveRealPath(resolved) {
     }
 }
 
+/** 落笔前护栏的错误码：写入口靠它把「被护栏拒了」和磁盘失败分开报。 */
+const GUARD_ERROR_CODES = new Set(['EOUTSIDEREPO', 'EUNVERIFIABLEPATH'])
+
 function unverifiablePathError(error) {
     const wrapped = new Error(`无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
     wrapped.code = 'EUNVERIFIABLEPATH'
@@ -221,7 +225,8 @@ export function start({
     port,
     out,
     log = text => process.stdout.write(text),
-    // 兜底读取端默认回落到 log；log 自己坏了就退回 stderr——报不出声不能把一次成功的转发升级成 502。
+    // 兜底读取端默认回落到 log；log 自己坏了就退回 stderr。
+    // 只兜这一路：其余 log 调用点维持原样，不在这里吞掉。
     warn = text => {
         try {
             log(text)
@@ -303,7 +308,7 @@ export function start({
                         written = true
                     } catch (error) {
                         // 落笔前被护栏拒了不是 I/O 故障：把「被谁挡了、为什么」说出来，别伪装成磁盘问题。
-                        if (error.code === 'EOUTSIDEREPO' || error.code === 'EUNVERIFIABLEPATH') {
+                        if (GUARD_ERROR_CODES.has(error.code)) {
                             log(`event=error 落笔前被护栏拒了（${error.message}），这条只转发没记录\n`)
                         } else {
                             log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
@@ -370,12 +375,11 @@ async function main() {
     if (!out) throw new Error('需要 --out <抓包件路径>（仓库外；POSIX 上 0600）')
     // 这台中转会把请求原样转发出去，绑定收到谁那儿必须自己说得清：只许回环。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
-    // 上游判据由 start() 自己复查并返回规范化后的地址，这里不再调一次再把它丢掉。
-    const target = assertOutsideRepo(out)
-    const server = await start({ upstream, host, port, out: target, warn: text => process.stderr.write(text) })
+    // 上游与落盘判据都在 start() 里复查：它是所有人共用的入口，这里只留命令行早退。
+    const server = await start({ upstream, host, port, out, warn: text => process.stderr.write(text) })
     process.stderr.write(
         `取证中转已启动：http://${host}:${port}/sign → 转发给上游签名器；` +
-            `抓包件=${path.basename(target)}（POSIX 上 0600，Windows 靠账号所有权 + 仓库外）\n`,
+            `抓包件=${path.basename(out)}（POSIX 上 0600，Windows 靠账号所有权 + 仓库外）\n`,
     )
     process.stderr.write('用完：Ctrl+C 停掉，再把播放器的 signer_url 改回原来那份。\n')
     await new Promise(resolve => {

@@ -304,8 +304,8 @@ test('仓库外的链接指进仓库：按解析后的真实路径判，不按�
 
 test('启动后父目录被换成指进仓库的链接：落笔前再判一次，一个字都进不了仓库', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-swap-'))
-    const probe = 'capture-guard-probe.jsonl'
-    const out = path.join(dir, probe)
+    const probeFile = 'capture-guard-probe.jsonl'
+    const out = path.join(dir, probeFile)
     const logged = []
     const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
     const moved = `${dir}-moved`
@@ -318,7 +318,7 @@ test('启动后父目录被换成指进仓库的链接：落笔前再判一次�
         return
     }
     // 万一护栏失灵，别把探针行留在仓库里；正常路径下这个文件根本不该被创建。
-    const inRepo = path.join(repoRoot, 'tools', probe)
+    const inRepo = path.join(repoRoot, 'tools', probeFile)
     try {
         await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
             method: 'POST',
@@ -497,14 +497,14 @@ test('默认 warn 回落：log 坏了也不能把一次成功的转发变成 502
         request.on('end', () => response.end('{"ok":true}'))
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
-    // 不注入 warn：默认回落先走 log，log 抛错时退回 stderr。退回那一下会把一行 event=warn 打到
-    // 测试进程的 stderr 上——这是真实行为，不在这里 patch 全局就能看见。
+    // 不注入 warn：默认回落先走 log，log 抛错时退回 stderr。让 log 对每一行都抛，
+    // 回落分支才真的被执行；退回那一下会把一行 event=warn 打到测试进程的 stderr 上——
+    // 这是真实行为，不在这里 patch 全局就能看见。
     const tee = await startTee({
         upstream: upstream.url,
         out,
-        log: text => {
-            if (String(text).startsWith('event=tee')) throw new Error('stdout 坏了')
-            return true
+        log: () => {
+            throw new Error('stdout 坏了')
         },
     })
     const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
