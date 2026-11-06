@@ -491,15 +491,42 @@ test('落盘、终端、格式三种失败要各报各的：谁都不能混成�
     assert.deepEqual(JSON.parse(captured).identity, CAPTURED_ID)
 })
 
-test('默认 warn 回落：log 坏了也不能把一次成功的转发变成 502', async () => {
+test('默认 warn 回落到 log：不注入 warn 时，那句警告也进同一汇', async () => {
     const upstream = await listen((request, response) => {
         request.resume()
         request.on('end', () => response.end('{"ok":true}'))
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
-    // 不注入 warn：默认回落先走 log，log 抛错时退回 stderr。让 log 对每一行都抛，
-    // 回落分支才真的被执行；退回那一下会把一行 event=warn 打到测试进程的 stderr 上——
-    // 这是真实行为，不在这里 patch 全局就能看见。
+    // 读数那一行让 log 抛，逼出 warn 那条路；warn 自己没有注入，默认应当回落到同一个 log。
+    const logged = []
+    const tee = await startTee({
+        upstream: upstream.url,
+        out,
+        log: text => {
+            const line = String(text)
+            if (line.startsWith('event=tee')) throw new Error('stdout 坏了')
+            logged.push(line)
+            return true
+        },
+    })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 200)
+    assert.match(logged.join(''), /event=warn/, '默认 warn 没有回落到注入的 log——票八要求的就是这条兜底')
+    assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1, '这一条其实落盘了')
+})
+
+test('默认 warn 在 log 自身抛错时退回 stderr：不能把成功的转发变成 502', async () => {
+    const upstream = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => response.end('{"ok":true}'))
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
+    // log 对每一行都抛，回落分支才真的被执行；退回 stderr 会把一行 event=warn 打到
+    // 测试进程的 stderr 上——这是真实行为，不在这里 patch 全局就能看见。
     const tee = await startTee({
         upstream: upstream.url,
         out,
