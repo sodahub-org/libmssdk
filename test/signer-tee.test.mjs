@@ -497,15 +497,19 @@ test('默认 warn 回落到 log：不注入 warn 时，那句警告也进同一�
         request.on('end', () => response.end('{"ok":true}'))
     })
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
-    // 读数那一行让 log 抛，逼出 warn 那条路；warn 自己没有注入，默认应当回落到同一个 log。
+    // 第一次写日志（读数那一行）让 log 抛，逼出 warn 那条路；warn 自己没有注入，默认应当回落到同一个 log。
+    // 不绑具体文案：这里要的是「第一行失败后 warn 还能落地」，不是某条前缀。
+    let thrown = false
     const logged = []
     const tee = await startTee({
         upstream: upstream.url,
         out,
         log: text => {
-            const line = String(text)
-            if (line.startsWith('event=tee')) throw new Error('stdout 坏了')
-            logged.push(line)
+            if (!thrown) {
+                thrown = true
+                throw new Error('stdout 坏了')
+            }
+            logged.push(String(text))
             return true
         },
     })
@@ -519,7 +523,7 @@ test('默认 warn 回落到 log：不注入 warn 时，那句警告也进同一�
     assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1, '这一条其实落盘了')
 })
 
-test('默认 warn 在 log 自身抛错时退回 stderr：不能把成功的转发变成 502', async () => {
+test('默认 warn 在 log 自身抛错时不把成功的转发变成 502', async () => {
     const upstream = await listen((request, response) => {
         request.resume()
         request.on('end', () => response.end('{"ok":true}'))
