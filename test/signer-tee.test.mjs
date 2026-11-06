@@ -129,9 +129,9 @@ async function listen(handler) {
  * 既不依赖某个端口当时有没有人听，也不用先占住再放开那种两步写法。
  */
 const DEAD_UPSTREAM = 'http://127.0.0.1:1/sign'
-/** 起一台中转，上游由调用方给。 */
-async function startTee({ upstream, out, log = () => {} }) {
-    const tee = await start({ upstream, host: '127.0.0.1', port: 0, out, log })
+/** 起一台中转，上游由调用方给。`...rest` 给用例注入 `warn` / `format` 这类接缝。 */
+async function startTee({ upstream, out, log = () => {}, ...rest }) {
+    const tee = await start({ upstream, host: '127.0.0.1', port: 0, out, log, ...rest })
     openServers.push(tee)
     return tee
 }
@@ -418,7 +418,7 @@ test('带 Origin 的一律拒：本机桌面客户端不发这个头，只有网
     assert.equal(fs.existsSync(out), false, '不该落盘')
 })
 
-test('落盘失败要带错误码；终端写不出不能报成「抓包件写不进去」', async () => {
+test('落盘、终端、格式三种失败要各报各的：谁都不能混成「抓包件写不进去」', async () => {
     // 一、落盘失败：指到目录上，openSync 必抛——报的那行要带上 code，人才知道是哪一类失败
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-code-'))
     const loggedA = []
@@ -443,28 +443,49 @@ test('落盘失败要带错误码；终端写不出不能报成「抓包件写�
             return true
         },
     }
-    const teeB = await startTee({ upstream: DEAD_UPSTREAM, out, log: text => boom.write(text) })
     const warnings = []
-    const originalWarn = process.stderr.write
-    process.stderr.write = function patched(chunk, ...rest) {
-        warnings.push(String(chunk))
-        return originalWarn.call(process.stderr, chunk, ...rest)
-    }
-    try {
-        await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: signRequest(),
-        })
-    } finally {
-        process.stderr.write = originalWarn
-    }
+    // 兜底读取端由 start() 注入：用例不再 patch 全局 process.stderr.write。
+    const teeB = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out,
+        log: text => boom.write(text),
+        warn: text => warnings.push(text),
+    })
+    await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
     assert.equal(fs.existsSync(out), true, '这条其实落盘了')
     assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1)
     const textB = warnings.join('')
     assert.match(textB, /event=warn/, '终端写失败要单独说，不能沉默')
     assert.match(textB, /code=[A-Za-z_]+/, `没带错误码：${JSON.stringify(textB)}`)
     assert.ok(!/没打出来/.test(textB), `还在断言打没打出来：${JSON.stringify(textB)}`)
+
+    // 三、记录已经成形、只是终端行拼不出来：报格式失败，不能报成「抓包件写不进去」——
+    // 旧写法把 appendRecord 与 formatCapture 放在同一个 try 里，这一格会把格式错误说成落盘错误。
+    const outC = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-format-')), 'capture.jsonl')
+    const loggedC = []
+    const teeC = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out: outC,
+        log: line => loggedC.push(line),
+        format: () => {
+            throw new Error('记录形状变了')
+        },
+    })
+    await fetch(`http://127.0.0.1:${teeC.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    const textC = loggedC.join('')
+    assert.match(textC, /event=error 终端行拼不出来/, `格式失败没单独报：${JSON.stringify(textC)}`)
+    assert.ok(!textC.includes('抓包件写不进去'), `格式失败被报成了写不进去：${JSON.stringify(textC)}`)
+    const captured = fs.readFileSync(outC, 'utf8').trim()
+    assert.equal(captured.split(/\r?\n/).length, 1, '格式失败不该连累落盘：这一条确实进件了')
+    assert.deepEqual(JSON.parse(captured).identity, CAPTURED_ID)
 })
 
 test('上游是非回环地址时不许走明文 http：入站拦得住，出站那一跳也得管', () => {
@@ -582,6 +603,9 @@ test('复用一份权限更宽的既有抓包件时，写着设备号的那一�
     fs.writeFileSync(out, '')
     fs.chmodSync(out, 0o666) // 一份本来就谁都能读的旧文件
     const modesAtWrite = []
+    // 这里 patch 的是全局 `fs` 对象：工具与用例 import 的是同一个模块实例，
+    // `appendRecord()` 里的 `fs.writeSync` 才会走到这个桩上。这条耦合是故意的——
+    // 换成为工具注入 fs 就不成立，改动 appendRecord 的写法时记得这条用例靠的是它。
     const originalWrite = fs.writeSync
     fs.writeSync = function patched(fd, ...rest) {
         try {

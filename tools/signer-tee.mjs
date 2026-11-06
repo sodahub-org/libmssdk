@@ -209,7 +209,15 @@ async function readBody(request) {
     return Buffer.concat(chunks).toString('utf8')
 }
 
-export function start({ upstream, host, port, out, log = text => process.stdout.write(text) }) {
+export function start({
+    upstream,
+    host,
+    port,
+    out,
+    log = text => process.stdout.write(text),
+    warn = text => log(text),
+    format = formatCapture,
+}) {
     // 判据放在入口本身，不放调用方身上：这台中转会把请求原样转发，绑到非回环就等于对外提供服务。
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
     // 出站与落盘两条判据也在这里：只写在命令行那一层，`start({...})` 的直调就绕过去了。
@@ -266,14 +274,22 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                 }
                 // 带着设备号却缺 iid / fp：是业务请求，只是身份不齐。不出声就等于悄悄少记一条。
                 if (reason) log(`event=skip ${reason}，这条只转发不落盘\n`)
-                // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
                 if (record) {
+                    // 拼终端那一行与落盘是两种失败：格式坏了不能报成「抓包件写不进去」，
+                    // 那一行其实会进件。先拼出来，后面那段 try 里就只剩落盘这一个可能。
                     let line = null
                     try {
+                        line = format(record)
+                    } catch (error) {
+                        log(`event=error 终端行拼不出来（code=${error.code || error.name}），这一条照原样落盘\n`)
+                    }
+                    // 写不进去是另一回事：抓包件空了就等于没取证，所以这条单独出声。
+                    try {
                         appendRecord(captureFile, record)
-                        line = formatCapture(record)
                     } catch (error) {
                         log(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
+                        // 没落盘就不打「已记录」那一行。
+                        line = null
                     }
                     // 落盘成功之后才写终端：这一步失败不能改口说「抓包件写不进去」——那一行确实进件了。
                     if (line) {
@@ -282,7 +298,7 @@ export function start({ upstream, host, port, out, log = text => process.stdout.
                         } catch (error) {
                             // 只说这一行确实进了抓包件、写终端时抛了什么码；不打「有没有打出来」的包票——
                             // 抛错之前字节可能已经落进日志文件了。
-                            process.stderr.write(`event=warn 这一行已进抓包件；写终端时抛错（code=${error.code || error.name}）\n`)
+                            warn(`event=warn 这一行已进抓包件；写终端时抛错（code=${error.code || error.name}）\n`)
                         }
                     }
                 }
@@ -329,7 +345,7 @@ async function main() {
     if (!isLoopbackBind(host)) throw new Error('只允许绑回环地址（127.0.0.1 / ::1）：它会把请求原样转发，不对外提供服务')
     // 上游判据由 start() 自己复查并返回规范化后的地址，这里不再调一次再把它丢掉。
     const target = assertOutsideRepo(out)
-    const server = await start({ upstream, host, port, out: target })
+    const server = await start({ upstream, host, port, out: target, warn: text => process.stderr.write(text) })
     process.stderr.write(
         `取证中转已启动：http://${host}:${port}/sign → 转发给上游签名器；` +
             `抓包件=${path.basename(target)}（POSIX 上 0600，Windows 靠账号所有权 + 仓库外）\n`,
