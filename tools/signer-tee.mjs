@@ -42,6 +42,7 @@ const SHAPE_PARAMS = [
     'version_code',
 ]
 
+/** 从命令行取 `--name` 后面那个值；没给或给空就回退。 */
 function argValue(name, fallback = '') {
     const index = process.argv.indexOf(`--${name}`)
     return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
@@ -159,12 +160,14 @@ function resolveRealPath(resolved, hops = 0) {
 /** 落笔前护栏的错误码：写入口靠它把「被护栏拒了」和磁盘失败分开报。 */
 const GUARD_ERROR_CODES = new Set(['EOUTSIDEREPO', 'EUNVERIFIABLEPATH'])
 
+/** 把「解析不了真实路径」包成带自己码的错误：写入口据此别把护栏拒绝报成磁盘失败。 */
 function unverifiablePathError(error) {
     const wrapped = new Error(`无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
     wrapped.code = 'EUNVERIFIABLEPATH'
     return wrapped
 }
 
+/** candidate 等于 root 或在它下面都算「里面」；`..<分隔符>` 与跨盘绝对路径算出去。 */
 function insideRepo(candidate, root) {
     const relative = path.relative(root, candidate)
     // 「出去了」只有两种形态：以 `..<分隔符>` 开头，或跨盘时给出绝对路径。
@@ -252,6 +255,7 @@ function received(value, limit = 80) {
     return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
+/** 读完整请求体；超过上限就返回 null，由调用方回 413。 */
 async function readBody(request) {
     const chunks = []
     let size = 0
@@ -433,6 +437,7 @@ export function start({
     })
 }
 
+/** CLI 入口：校验参数、起中转、等 SIGINT/SIGTERM 收尾。 */
 async function main() {
     const host = argValue('listen', '127.0.0.1')
     const port = Number(argValue('port', '18899'))

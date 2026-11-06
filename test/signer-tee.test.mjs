@@ -25,6 +25,7 @@ const TRACK_V2_URL =
     'https://api.qishui.com/luna/pc/track_v2?ac=wifi&aid=386088&device_id=1789435000000&fp=1789435000000' +
     '&iid=1789435000001&os_version=Windows+11&region=cn&tz_name=Asia+Shanghai&version_code=30030000&version_name=3.3.0'
 
+/** 一份真机形状的 SignRequest 夹具；`overrides` 覆盖其中的请求头。 */
 function signRequest(overrides = {}) {
     return JSON.stringify({
         url: TRACK_V2_URL,
@@ -249,6 +250,7 @@ test('抓包件写不进去时单独出声：这条只转发没记录，取证�
 
 const teeCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'signer-tee.mjs')
 const repoRoot = path.resolve(path.dirname(teeCli), '..')
+/** 用子进程跑工具本体：用法守卫失败必须发生在起监听之前。 */
 function runTee(...args) {
     return spawnSync(process.execPath, [teeCli, ...args], { encoding: 'utf8' })
 }
