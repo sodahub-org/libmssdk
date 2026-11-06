@@ -134,8 +134,16 @@ function resolveRealPath(resolved, hops = 0) {
                 } catch (linkError) {
                     throw unverifiablePathError(linkError)
                 }
+                // 相对目标要按「链接所在目录的真实路径」解析：内核跟随链接时以真实父目录为基准。
+                // 父目录本身是链接时，用字面父目录会算到另一处，而 open 建文件落在真实那一处。
+                let realParent
+                try {
+                    realParent = fs.realpathSync(path.dirname(cursor))
+                } catch (parentError) {
+                    throw unverifiablePathError(parentError)
+                }
                 return path.join(
-                    resolveRealPath(path.resolve(path.dirname(cursor), target), hops + 1),
+                    resolveRealPath(path.resolve(realParent, target), hops + 1),
                     ...tail.reverse(),
                 )
             }

@@ -389,6 +389,42 @@ test('悬空链接指进仓库：realpath 报 ENOENT 也不能当成「还不存
     }
 })
 
+test('链接的父目录本身是链接时，相对目标要按真实父目录解析', t => {
+    if (process.platform === 'win32') {
+        t.skip('相对目标跨盘建不出来；这条只在 POSIX 上有意义')
+        return
+    }
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-alias-'))
+    const realParent = path.join(base, 'real')
+    const deep = path.join(base, 'a', 'b', 'c')
+    const alias = path.join(deep, 'alias')
+    const target = path.join(repoRoot, 'tools', 'capture-alias-probe.jsonl')
+    try {
+        fs.mkdirSync(realParent, { recursive: true })
+        fs.mkdirSync(deep, { recursive: true })
+        // 字面父目录（<base>/a/b/c/alias）比真实父目录（<base>/real）深：
+        // 用字面父目录解析相对目标会落到仓库外，内核却按真实父目录把文件建进仓库。
+        fs.symlinkSync(realParent, alias, 'dir')
+        fs.symlinkSync(path.relative(realParent, target), path.join(realParent, 'capture.jsonl'), 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(path.join(alias, 'capture.jsonl')),
+            /不入库/,
+            '相对目标按字面父目录解析，护栏判到了仓库外——内核却会把文件建进仓库',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(alias, { force: true })
+        fs.rmSync(path.join(realParent, 'capture.jsonl'), { force: true })
+        fs.rmSync(target, { force: true })
+        fs.rmSync(base, { recursive: true, force: true })
+    }
+})
+
 test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
     const seen = []
     const upstream = await listen((request, response) => {
