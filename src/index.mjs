@@ -8,12 +8,14 @@
 //                       （上游自检只有这一个入口，HTTP 层不再提供 /probe）
 //   libmssdk config     打印当前配置摘要（设备号脱敏）
 
+import fs from 'node:fs'
+import path from 'node:path'
 import { loadConfig, maskDeviceId, VERSION } from './config.mjs'
 import { BdmsSigner } from './bdms.mjs'
 import { startServe, stopPoolQuietly } from './serve.mjs'
 import { probeTrack } from './probe.mjs'
 import { errorResponse, normalizeSignRequest, signResponse } from './contract.mjs'
-import { logError, logEvent } from './log.mjs'
+import { logError, logEvent, redactMachinePaths, redactMachinePathsDeep } from './log.mjs'
 
 // 身份在这里就完成「读到或用独占创建生成」。真正保证不分裂的是独占创建本身（见 src/identity.mjs），
 // 不是进程角色分工：现在每个入口命令（含被按次拉起的 bridge）启动都会走到这里，靠 wx 收敛。
@@ -27,6 +29,50 @@ function argValue(name, fallback = '') {
     return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
 }
 
+/** 布尔开关只认 `--name`；不把下一个 token 当值吃掉。 */
+function hasFlag(name) {
+    return process.argv.includes(`--${name}`)
+}
+
+// selftest / config 的输出经常被原样贴进求助帖：默认隐掉本机路径，只有显式 --verbose 才打原文。
+const showMachinePaths = hasFlag('verbose')
+
+/** 会出现在输出里的本机路径。顺序是「更长的先换」，否则父目录先命中会留下后半截。 */
+function machinePathLocations() {
+    return [
+        config.identityFile,
+        config.bdmsModule,
+        config.clientDir,
+        config.identityFile && path.dirname(config.identityFile),
+        config.bdmsModule && path.dirname(config.bdmsModule),
+    ].filter(Boolean)
+}
+
+function redactForDisplay(value) {
+    return showMachinePaths ? value : redactMachinePathsDeep(value, machinePathLocations())
+}
+
+/** selftest 里那行 `state (<身份文件>)`：整条被换掉时不要再套一层括号。 */
+function identitySummary() {
+    const file = showMachinePaths ? config.identityFile : redactMachinePaths(config.identityFile, machinePathLocations())
+    return file === config.identityFile ? `${config.identitySource} (${file})` : `${config.identitySource} ${file}`
+}
+
+/**
+ * 显式给出的模块路径写错了，配置阶段就拦下：否则 serve 照样监听，只是每条 /sign 都回
+ * SIGNER_UNAVAILABLE，排查时很容易先怀疑 worker 而不是一个拼错的路径。
+ * 默认探测路径不在这里判——resolveBdmsModule() 已经只返回存在的候选。
+ * selftest / config 不走这条检查：它们的工作正是把「找不到模块」如实报出来。
+ */
+function assertExplicitBdmsModule() {
+    if (!config.bdmsModuleExplicit || fs.existsSync(config.bdmsModule)) return
+    const shown = redactMachinePaths(config.bdmsModule, machinePathLocations())
+    throw new Error(
+        `显式指定的 bdms.node 不存在（LIBMSSDK_BDMS_MODULE / QISHUI_BDMS_PATH）：${shown}` +
+            '（用 config --verbose 查看解析到的原文）',
+    )
+}
+
 async function readStdin() {
     const chunks = []
     for await (const chunk of process.stdin) chunks.push(chunk)
@@ -34,6 +80,7 @@ async function readStdin() {
 }
 
 async function commandServe() {
+    assertExplicitBdmsModule()
     // /sign 由主进程排队、worker 计算；签名以外的端点（健康检查与弃用回执）由 src/endpoints.mjs
     // 承接。主进程那份 signer 只给 selftest / probe / bridge 用，不进 HTTP 层。
     const entry = startServe({ config })
@@ -109,7 +156,7 @@ async function commandSelftest() {
         deviceId: maskDeviceId(config.deviceId) || '(未配置)',
         iid: maskDeviceId(config.iid) || '(未配置)',
         fp: maskDeviceId(config.fp) || '(未配置)',
-        identity: `${config.identitySource} (${config.identityFile})`,
+        identity: identitySummary(),
     }
     try {
         const signed = signer.sign({
@@ -125,7 +172,7 @@ async function commandSelftest() {
         report.signOk = false
         report.error = String(error?.message || error)
     }
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify(redactForDisplay(report), null, 2)}\n`)
     if (!report.signOk) process.exitCode = 1
 }
 
@@ -150,29 +197,24 @@ async function commandProbe() {
 }
 
 function commandConfig() {
-    process.stdout.write(
-        `${JSON.stringify(
-            {
-                version: VERSION,
-                host: config.host,
-                port: config.port,
-                auth: Boolean(config.token),
-                trustProxy: config.trustProxy,
-                clientDir: config.clientDir,
-                bdmsModule: config.bdmsModule,
-                identity: {
-                    deviceId: maskDeviceId(config.deviceId),
-                    iid: maskDeviceId(config.iid),
-                    fp: maskDeviceId(config.fp),
-                    source: config.identitySource,
-                    file: config.identityFile,
-                    persisted: config.identityPersisted,
-                },
-            },
-            null,
-            2,
-        )}\n`,
-    )
+    const summary = {
+        version: VERSION,
+        host: config.host,
+        port: config.port,
+        auth: Boolean(config.token),
+        trustProxy: config.trustProxy,
+        clientDir: config.clientDir,
+        bdmsModule: config.bdmsModule,
+        identity: {
+            deviceId: maskDeviceId(config.deviceId),
+            iid: maskDeviceId(config.iid),
+            fp: maskDeviceId(config.fp),
+            source: config.identitySource,
+            file: config.identityFile,
+            persisted: config.identityPersisted,
+        },
+    }
+    process.stdout.write(`${JSON.stringify(redactForDisplay(summary), null, 2)}\n`)
 }
 
 const command = (process.argv[2] || 'serve').toLowerCase()

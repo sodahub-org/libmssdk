@@ -60,9 +60,14 @@ function resolveClientDir() {
     return ''
 }
 
+/** 用户显式给出的 bdms.node 路径；空串表示没有显式指定，走客户端目录或 vendor 目录探测。 */
+export function explicitBdmsModule() {
+    return env('LIBMSSDK_BDMS_MODULE') || env('QISHUI_BDMS_PATH')
+}
+
 /** bdms.node 路径：客户端里真正干签名的原生模块。worker 侧也要用它，但别顺带调 loadConfig()。 */
 export function resolveBdmsModule() {
-    const explicit = env('LIBMSSDK_BDMS_MODULE') || env('QISHUI_BDMS_PATH')
+    const explicit = explicitBdmsModule()
     if (explicit) return explicit
     const local = bundledNative().modulePath
     if (local) return local
@@ -136,6 +141,8 @@ export function loadConfig() {
         bundledBdms: bundledNative().modulePath,
         clientDir,
         bdmsModule,
+        // 显式路径在 serve 启动前要查一次存在性（只查存在，不查能否加载）；默认探测路径已经查过。
+        bdmsModuleExplicit: Boolean(explicitBdmsModule()),
         requestTimeoutMs: Number(env('LIBMSSDK_UPSTREAM_TIMEOUT_MS') || 15000),
         maxBodyBytes: Number(env('LIBMSSDK_MAX_BODY_BYTES') || 256 * 1024),
         // 收尾时的排空窗口：markClosing() 之后先保持监听，让 /readyz 的 503 真的被读到，

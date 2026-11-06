@@ -5,7 +5,8 @@
 
 对外的变化是：`/sign` 的计算方式与失败状态码；`/livez` 与 `/readyz` 两个健康端点；
 `/probe`、`/track/stream`、`/config` 从 HTTP 上拿掉；交付能直接用的反向代理配置。
-`bridge` / `selftest` / `probe` 这几个本地命令不变。
+`bridge` / `probe` 这两个本地命令不变；`selftest` / `config` 的输出默认隐掉本机路径
+（`--verbose` 才打原文）。
 
 ## 1. 默认启动多个进程
 
@@ -167,6 +168,12 @@ SIGKILL（`verify/wine-multi` 判据 7 首轮记录为 `refused-only`）。所�
 顺带一条：`src/server.mjs` 里那份进程内 `/sign` 老路径也退场了。签名只有分发器一条路
 （主进程排队、worker 计算），主进程那份 signer 不再进 HTTP 层，只给 `selftest` / `probe` /
 `bridge` 这三个本地命令用。
+
+`node src/index.mjs config` / `selftest` 的输出默认把 `bdmsModule`、`clientDir`、身份文件路径与报错里的
+本机路径换成 `(本机路径)`——这两条命令的输出经常被原样贴进求助帖。要排查具体文件时加 `--verbose`。
+另外，显式 `LIBMSSDK_BDMS_MODULE` 拼错时，`serve` 现在在监听前退出，而不是起来后让每条 `/sign` 都回
+500 `SIGNER_UNAVAILABLE`；只查文件存在性，不查能否加载。默认探测（客户端目录 / vendor）没找到模块时
+仍按原行为启动。
 
 ## 8. TLS：配置交付了，进程内仍然不做
 

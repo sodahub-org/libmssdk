@@ -23,18 +23,40 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-cli-'))
 
 after(() => fs.rmSync(stateDir, { recursive: true, force: true }))
 
-async function run(...args) {
+async function runWith(envOverrides, ...args) {
     const env = { ...process.env, LIBMSSDK_STATE_DIR: stateDir }
-    // 设备号 / Cookie / 曲目 id 都可能从宿主环境漏进子进程：清掉，用例只认命令行参数
-    for (const key of ['LIBMSSDK_DEVICE_ID', 'LIBMSSDK_COOKIE', 'LIBMSSDK_PROBE_TRACK_ID', 'LIBMSSDK_TOKEN']) {
+    // 设备号 / Cookie / 曲目 id / 模块路径都可能从宿主环境漏进子进程：清掉，用例只认自己给的
+    for (const key of [
+        'LIBMSSDK_DEVICE_ID',
+        'LIBMSSDK_COOKIE',
+        'LIBMSSDK_PROBE_TRACK_ID',
+        'LIBMSSDK_TOKEN',
+        'LIBMSSDK_BDMS_MODULE',
+        'QISHUI_BDMS_PATH',
+        'LIBMSSDK_CLIENT_DIR',
+        'QISHUI_CLIENT_DIR',
+    ]) {
         delete env[key]
     }
+    Object.assign(env, envOverrides)
     try {
         const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], { env })
         return { code: 0, stdout, stderr }
     } catch (error) {
         return { code: error.code ?? 1, stdout: error.stdout || '', stderr: error.stderr || '' }
     }
+}
+
+async function run(...args) {
+    return runWith({}, ...args)
+}
+
+/** 收集 JSON 里的全部字符串值：Windows 路径在 JSON 文本里被转义过，不能直接拿 stdout 做包含判断。 */
+function stringValues(value, out = []) {
+    if (typeof value === 'string') out.push(value)
+    else if (Array.isArray(value)) for (const item of value) stringValues(item, out)
+    else if (value && typeof value === 'object') for (const item of Object.values(value)) stringValues(item, out)
+    return out
 }
 
 test('probe 子命令在，缺 track_id 时非零退出并说清缺什么', async () => {
@@ -57,6 +79,83 @@ test('config 命令的 stdout 是一个可解析的对象，设备号只出脱�
     assert.match(payload.identity.deviceId, /^\d{3}\*\*\*\d{3}$/, '只出前 3 后 3')
     assert.equal(/\d{16}/.test(stdout), false, '完整设备号（16 位）不该出现在输出里')
     assert.equal(payload.identity.persisted, true, '临时 state 目录可写，身份应当落盘')
+})
+
+test('selftest / config 默认隐掉本机路径，--verbose 才打原文', async () => {
+    // 模块路径放在 home 下：既覆盖 HOME 里的片段，也覆盖显式模块路径本身。
+    const moduleDir = fs.mkdtempSync(path.join(os.homedir(), 'libmssdk-redact-'))
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-state-'))
+    const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-redact-client-'))
+    const identityFile = path.join(identityDir, 'identity.json')
+    const env = {
+        LIBMSSDK_BDMS_MODULE: modulePath,
+        LIBMSSDK_CLIENT_DIR: clientDir,
+        LIBMSSDK_STATE_DIR: identityDir,
+    }
+    try {
+        for (const command of ['config', 'selftest']) {
+            const { code, stdout } = await runWith(env, command)
+            assert.equal(code, command === 'selftest' ? 1 : 0, `${command} 的退出码`)
+            const payload = JSON.parse(stdout)
+            const strings = stringValues(payload)
+            for (const leaked of [modulePath, moduleDir, identityDir, identityFile, clientDir, os.homedir()]) {
+                assert.equal(
+                    strings.some(text => text.includes(leaked)),
+                    false,
+                    `${command} 的输出漏了本机路径 ${leaked}：${stdout}`,
+                )
+            }
+            assert.equal(payload.bdmsModule, '(本机路径)', `${command} 要整条换掉显式模块路径`)
+            assert.equal(payload.clientDir, '(本机路径)', `${command} 要整条换掉客户端目录`)
+            if (command === 'config') {
+                assert.equal(payload.identity.file, '(本机路径)', '身份文件路径默认整条换掉')
+            } else {
+                assert.equal(payload.identity, 'state (本机路径)', '身份文件路径默认整条换掉，不套两层括号')
+                assert.equal(payload.error, 'bdms.node 不存在：(本机路径)', '报错原文里的模块路径也要换掉')
+            }
+        }
+
+        // 排查「到底找的是哪个文件」靠显式开关，不靠默认输出。
+        const verboseConfig = JSON.parse((await runWith(env, 'config', '--verbose')).stdout)
+        assert.equal(verboseConfig.bdmsModule, modulePath)
+        assert.equal(verboseConfig.clientDir, clientDir)
+        assert.equal(verboseConfig.identity.file, identityFile)
+
+        const verboseSelftest = JSON.parse((await runWith(env, 'selftest', '--verbose')).stdout)
+        assert.equal(verboseSelftest.bdmsModule, modulePath)
+        assert.equal(verboseSelftest.identity, `state (${identityFile})`)
+        assert.equal(verboseSelftest.error.includes(modulePath), true, '--verbose 时错误里的原文要保留')
+    } finally {
+        for (const dir of [moduleDir, identityDir, clientDir]) fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('显式模块路径不存在时 serve 拒启，错误里不带本机路径', async () => {
+    const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-serve-missing-'))
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    try {
+        const { code, stdout, stderr } = await runWith({ LIBMSSDK_BDMS_MODULE: modulePath }, 'serve')
+        assert.equal(code, 1, '配置阶段就该停下，而不是起来后每条 /sign 都失败')
+        assert.equal(stdout, '', '拒启时不该先打启动日志')
+        const errorLine = stderr
+            .split('\n')
+            .filter(Boolean)
+            .map(line => {
+                try {
+                    return JSON.parse(line)
+                } catch {
+                    return null
+                }
+            })
+            .find(line => line?.event === 'error')
+        assert.ok(errorLine, `stderr 里没有 event=error：${stderr}`)
+        assert.match(errorLine.message, /显式指定的 bdms\.node 不存在/)
+        assert.equal(errorLine.message.includes(moduleDir), false, `错误里漏了本机路径：${errorLine.message}`)
+        assert.match(errorLine.message, /\(本机路径\)/, '路径位置要给出「已被隐掉」的信号')
+    } finally {
+        fs.rmSync(moduleDir, { recursive: true, force: true })
+    }
 })
 
 // 真进程的信号那一段：/readyz 之所以会「当场改口」，靠的是 index.mjs 的 SIGTERM 处理器
