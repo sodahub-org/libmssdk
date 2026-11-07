@@ -285,3 +285,6 @@ echo '{"url":"https://api.qishui.com/luna/pc/track_v2?device_id=…","method":"P
 
 输出与 `/sign` 的响应体一致（一行 JSON），可直接作为 libresoda
 `CommandSignature` 的后端。
+
+失败时 stderr 只给一条可读的原文，本机路径默认换成 `(本机路径)`（与 `selftest` / `config` 同一口径）；
+需要排查具体文件时在命令行加 `--verbose`。

@@ -146,7 +146,10 @@ async function commandBridge() {
         const signed = signer.sign({ url: spec.url, headers: spec.headers, deviceId: spec.deviceId })
         process.stdout.write(JSON.stringify(signResponse(signed)))
     } catch (error) {
-        process.stderr.write(String(error?.message || error))
+        // stderr 会进调用方（libresoda）的日志，本机路径同样不能原样出去：
+        // 与 selftest / config 同一个口径，--verbose 才给原文。
+        const message = String(error?.message || error)
+        process.stderr.write(showMachinePaths ? message : redactMachinePaths(message, machinePathLocations()))
         process.exit(1)
     }
 }

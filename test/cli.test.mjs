@@ -23,7 +23,8 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-cli-'))
 
 after(() => fs.rmSync(stateDir, { recursive: true, force: true }))
 
-async function runWith(envOverrides, ...args) {
+/** 子进程环境：清掉宿主可能漏进去的配置，只认用例自己给的。 */
+function childEnv(envOverrides) {
     const env = { ...process.env, LIBMSSDK_STATE_DIR: stateDir }
     // 设备号 / Cookie / 曲目 id / 模块路径都可能从宿主环境漏进子进程：清掉，用例只认自己给的
     for (const key of [
@@ -38,13 +39,34 @@ async function runWith(envOverrides, ...args) {
     ]) {
         delete env[key]
     }
-    Object.assign(env, envOverrides)
+    return Object.assign(env, envOverrides)
+}
+
+async function runWith(envOverrides, ...args) {
     try {
-        const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], { env })
+        const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], { env: childEnv(envOverrides) })
         return { code: 0, stdout, stderr }
     } catch (error) {
         return { code: error.code ?? 1, stdout: error.stdout || '', stderr: error.stderr || '' }
     }
+}
+
+/** bridge 要读 stdin：execFile 不关 stdin，不能让子进程一直等。 */
+async function runWithStdin(envOverrides, input, ...args) {
+    const child = spawn(process.execPath, [cli, ...args], { env: childEnv(envOverrides), stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+        stdout += chunk
+    })
+    child.stderr.on('data', chunk => {
+        stderr += chunk
+    })
+    child.stdin.end(input)
+    const [code] = await once(child, 'exit')
+    return { code, stdout, stderr }
 }
 
 async function run(...args) {
@@ -161,6 +183,27 @@ test('selftest 成功那支也不打本机路径，--verbose 才给原文', asyn
         assert.equal(verbose.identity, `state (${identityFile})`)
     } finally {
         fs.rmSync(identityDir, { recursive: true, force: true })
+    }
+})
+
+test('bridge 失败时 stderr 不带本机路径，--verbose 才给原文', async () => {
+    const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-bridge-missing-'))
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    // 与 libresoda 的调用形状一致：stdin 一个 SignRequest，失败看 stderr。
+    const payload = JSON.stringify({ url: 'https://api.qishui.com/luna/pc/track_v2?aid=1', headers: {} })
+    try {
+        const quiet = await runWithStdin({ LIBMSSDK_BDMS_MODULE: modulePath }, payload, 'bridge')
+        assert.equal(quiet.code, 1, '模块不存在要让调用方看得出来')
+        assert.equal(quiet.stdout, '', '失败时不该往 stdout 吐半截 JSON')
+        assert.equal(quiet.stderr.includes(moduleDir), false, `stderr 漏了本机路径：${quiet.stderr}`)
+        assert.equal(quiet.stderr.includes(modulePath), false, `stderr 漏了本机路径：${quiet.stderr}`)
+        assert.match(quiet.stderr, /bdms\.node 不存在：\(本机路径\)/, '话要说全，只留「不存在」就够了')
+
+        const verbose = await runWithStdin({ LIBMSSDK_BDMS_MODULE: modulePath }, payload, 'bridge', '--verbose')
+        assert.equal(verbose.code, 1)
+        assert.equal(verbose.stderr.includes(modulePath), true, '--verbose 时错误里的原文要保留')
+    } finally {
+        fs.rmSync(moduleDir, { recursive: true, force: true })
     }
 })
 
