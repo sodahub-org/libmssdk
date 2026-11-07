@@ -23,11 +23,14 @@ export function redactHeaders(headers = {}) {
  * require() 失败会带上模块绝对路径、它所在的目录，有时还有 cwd 与 home 短形。
  * 短于 3 个字符的一律不收：`path.dirname('')` 是 '.'，收进来会把「bdms.node」吃成
  * 「bdms(本机路径)node」—— 脱敏脱错了比不脱更糟。
+ *
+ * 长的排前面：home 通常是项目根的父目录，父目录先命中会把更长的路径切成半截，
+ * 输出里就会留下「(本机路径)\orca\workspaces\…」这种残段。
  */
 function sensitivePaths(extra = []) {
-    return [...extra, process.cwd(), os.homedir(), PROJECT_ROOT].filter(
-        location => typeof location === 'string' && location.length >= 3,
-    )
+    return [...extra, process.cwd(), os.homedir(), PROJECT_ROOT]
+        .filter(location => typeof location === 'string' && location.length >= 3)
+        .sort((left, right) => right.length - left.length)
 }
 
 /**
