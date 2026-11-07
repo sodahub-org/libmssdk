@@ -42,7 +42,7 @@ test('父目录不能先命中：home 下的项目根要整条换掉，不留半
     assert.equal(redactMachinePaths(text), path.join('(本机路径)', 'src', 'bdms.mjs'))
 })
 
-test('父目录不能先命中：候选按长度排，长路径先整条换掉', () => {
+test('父目录不能先命中：候选顺序反着传也整条换掉', () => {
     // 与真实布局同形：项目根嵌在 home 下面。传候选时故意把父目录排前面，
     // 排序一旦丢了，home 会先把项目根切成半截，留下 orca/workspaces/… 这种残段。
     const home = path.join(os.tmpdir(), 'libmssdk-home')

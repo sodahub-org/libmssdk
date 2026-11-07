@@ -64,8 +64,11 @@ async function runWithStdin(envOverrides, input, ...args) {
     child.stderr.on('data', chunk => {
         stderr += chunk
     })
+    // 子进程提前退出时 stdin 会 EPIPE：不接住就是整个测试文件挂掉，而不是这条用例失败。
+    child.stdin.on('error', () => {})
     child.stdin.end(input)
-    const [code] = await once(child, 'exit')
+    // 等 close 而不是 exit：exit 先到，缓冲里的 stderr 可能还没读完。
+    const [code] = await once(child, 'close')
     return { code, stdout, stderr }
 }
 
@@ -183,6 +186,37 @@ test('selftest 成功那支也不打本机路径，--verbose 才给原文', asyn
         assert.equal(verbose.identity, `state (${identityFile})`)
     } finally {
         fs.rmSync(identityDir, { recursive: true, force: true })
+    }
+})
+
+test('selftest 模块指向同名目录时，报错里只剩相对片段', async () => {
+    // 票面上的复现：路径存在但加载不了，require 会带上 require stack，
+    // 父目录先命中就会把 stack 里那条 src/bdms.mjs 剪成半截。
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-selftest-dir-'))
+    const moduleDir = path.join(rootDir, 'dirnode')
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    fs.mkdirSync(modulePath, { recursive: true })
+    try {
+        const { code, stdout } = await runWith({ LIBMSSDK_BDMS_MODULE: modulePath }, 'selftest')
+        assert.equal(code, 1)
+        const payload = JSON.parse(stdout)
+        assert.equal(payload.signOk, false)
+        assert.equal(payload.bdmsModule, '(本机路径)')
+        const strings = stringValues(payload)
+        for (const leaked of [rootDir, moduleDir, modulePath, os.homedir()]) {
+            assert.equal(
+                strings.some(text => text.includes(leaked)),
+                false,
+                `selftest 的输出漏了本机路径 ${leaked}：${stdout}`,
+            )
+        }
+        assert.match(
+            payload.error,
+            new RegExp(`\\(本机路径\\)[\\\\/]src[\\\\/]bdms\\.mjs`),
+            `require stack 里那条路径要整条换掉、不留半截：${payload.error}`,
+        )
+    } finally {
+        fs.rmSync(rootDir, { recursive: true, force: true })
     }
 })
 
