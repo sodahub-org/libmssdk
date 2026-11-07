@@ -91,10 +91,18 @@ export function formatCapture(record) {
     )
 }
 
+/**
+ * 真实路径统一走 `.native`：Windows 上普通 `realpathSync` 不展开 8.3 短名（`LIBMSS~1`
+ * 原样返回），`.native` 会换成长名；护栏必须跟 `openSync` 落到同一处。
+ */
+function realpathOf(value) {
+    return fs.realpathSync.native(value)
+}
+
 /** 仓库根的真实路径：链接绕过来的判断要跟真实路径比，不能跟拼出来的字面路径比。 */
 const REAL_REPO_ROOT = (() => {
     try {
-        return fs.realpathSync(REPO_ROOT)
+        return realpathOf(REPO_ROOT)
     } catch {
         return REPO_ROOT
     }
@@ -168,7 +176,7 @@ function resolveRealPath(resolved, hops = 0) {
     let cursor = resolved
     for (;;) {
         try {
-            return path.join(fs.realpathSync(cursor), ...tail.reverse())
+            return path.join(realpathOf(cursor), ...tail.reverse())
         } catch (error) {
             // EACCES / ELOOP / ENAMETOOLONG 说明路径本身不成立，往上退只会把护栏降级成
             // 只判字面路径——那正是它要防的那一格，所以直接拒，不猜。
@@ -194,7 +202,7 @@ function resolveRealPath(resolved, hops = 0) {
                 let baseDir = linkParent
                 if (!path.isAbsolute(target)) {
                     try {
-                        baseDir = fs.realpathSync(linkParent)
+                        baseDir = realpathOf(linkParent)
                     } catch (parentError) {
                         throw unverifiablePathError(parentError)
                     }

@@ -42,6 +42,23 @@ function signRequest(overrides = {}) {
     })
 }
 
+/** Windows 8.3 短名：长名去掉非字母数字、取前 6 位大写加 `~N`；卷上没开 8.3 就返回 null。 */
+function shortNameOf(longPath) {
+    const dir = path.dirname(longPath)
+    const stem = path.basename(longPath).replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 6)
+    for (let n = 1; n <= 9; n += 1) {
+        const candidate = path.join(dir, `${stem}~${n}`)
+        try {
+            if (fs.realpathSync.native(candidate).toLowerCase() === fs.realpathSync.native(longPath).toLowerCase()) {
+                return candidate
+            }
+        } catch {
+            // 这个编号不存在，试下一个
+        }
+    }
+    return null
+}
+
 test('抓到的是 URL 里那份设备身份与形状字段，其余按键名丢掉', () => {
     const record = captureRecord({
         url: TRACK_V2_URL,
@@ -393,7 +410,7 @@ test('悬空链接指进仓库：realpath 报 ENOENT 也不能当成「还不存
 
 test('链接的父目录本身是链接时，相对目标要按真实父目录解析', t => {
     if (process.platform === 'win32') {
-        t.skip('相对目标跨盘建不出来；这条只在 POSIX 上有意义')
+        t.skip('需要同盘的相对链接目标；Windows 上临时目录与仓库不同盘，这条只在 POSIX 上有意义')
         return
     }
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-alias-'))
@@ -429,7 +446,7 @@ test('链接的父目录本身是链接时，相对目标要按真实父目录�
 
 test('目标里夹着「链接段 + ..」：要按内核语义逐段跟，不能字面折叠', t => {
     if (process.platform === 'win32') {
-        t.skip('相对目标跨盘建不出来；这条只在 POSIX 上有意义')
+        t.skip('需要同盘的相对链接目标；Windows 上临时目录与仓库不同盘，这条只在 POSIX 上有意义')
         return
     }
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-lexical-'))
@@ -458,6 +475,32 @@ test('目标里夹着「链接段 + ..」：要按内核语义逐段跟，不能
         fs.rmSync(path.join(realParent, 'x'), { force: true })
         fs.rmSync(target, { force: true })
         fs.rmSync(base, { recursive: true, force: true })
+    }
+})
+
+test('Windows 8.3 短名不能绕过仓库护栏', t => {
+    if (process.platform !== 'win32') {
+        t.skip('8.3 短名只在 Windows 上存在')
+        return
+    }
+    const shortRoot = shortNameOf(repoRoot)
+    if (!shortRoot) {
+        t.skip('这个卷没有启用 8.3 短名')
+        return
+    }
+    const probe = 'capture-shortname-probe.jsonl'
+    const viaShort = path.join(shortRoot, 'tools', probe)
+    const target = path.join(repoRoot, 'tools', probe)
+    try {
+        assert.throws(() => assertOutsideRepo(viaShort), /不入库/, `8.3 短名 ${path.basename(shortRoot)} 被判成了仓库外`)
+        assert.throws(
+            () => start({ upstream: DEAD_UPSTREAM, host: '127.0.0.1', port: 0, out: viaShort, log: () => {} }),
+            /不入库/,
+            '直调 start() 时短名同样要拒',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(target, { force: true })
     }
 })
 
