@@ -203,10 +203,12 @@ test('selftest 模块指向同名目录时，报错里只剩相对片段', async
     const repoRoot = path.resolve(here, '..')
     const repoParent = path.dirname(repoRoot)
     fs.mkdirSync(modulePath, { recursive: true })
-    const env = childEnv({ LIBMSSDK_BDMS_MODULE: modulePath })
     // os.homedir()：Windows 认 USERPROFILE，POSIX 认 HOME，两个都给同一层。
-    env.HOME = repoParent
-    env.USERPROFILE = repoParent
+    const env = childEnv({
+        LIBMSSDK_BDMS_MODULE: modulePath,
+        HOME: repoParent,
+        USERPROFILE: repoParent,
+    })
     try {
         const { code, stdout } = await runWithOptions({ env, cwd: os.tmpdir() }, 'selftest')
         assert.equal(code, 1)
