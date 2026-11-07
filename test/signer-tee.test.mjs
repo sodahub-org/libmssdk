@@ -420,7 +420,9 @@ test('链接的父目录本身是链接时，相对目标要按真实父目录�
         t.skip('需要同盘的相对链接目标；Windows 上临时目录与仓库不同盘，这条只在 POSIX 上有意义')
         return
     }
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-alias-'))
+    // 取真实路径：macOS 的 /var 是 /private/var 的链接，按字面 tmpdir 算出来的相对目标
+    // 会被内核按真实父目录多退一层，落点与用例预期对不上。
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-alias-')))
     const realParent = path.join(base, 'real')
     const deep = path.join(base, 'a', 'b', 'c')
     const alias = path.join(deep, 'alias')
@@ -456,7 +458,8 @@ test('目标里夹着「链接段 + ..」：要按内核语义逐段跟，不能
         t.skip('需要同盘的相对链接目标；Windows 上临时目录与仓库不同盘，这条只在 POSIX 上有意义')
         return
     }
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-lexical-'))
+    // 同上：相对目标必须按真实路径算，macOS 的 /var 别名会多出（或少掉）一层。
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-lexical-')))
     const realParent = path.join(base, 'real')
     const target = path.join(repoRoot, 'tools', 'capture-lexical-probe.jsonl')
     const viaLink = path.join(realParent, 'capture.jsonl')
