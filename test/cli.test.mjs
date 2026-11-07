@@ -23,7 +23,8 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-cli-'))
 
 after(() => fs.rmSync(stateDir, { recursive: true, force: true }))
 
-async function runWith(envOverrides, ...args) {
+/** 子进程环境：清掉宿主可能漏进去的配置，只认用例自己给的。 */
+function childEnv(envOverrides) {
     const env = { ...process.env, LIBMSSDK_STATE_DIR: stateDir }
     // 设备号 / Cookie / 曲目 id / 模块路径都可能从宿主环境漏进子进程：清掉，用例只认自己给的
     for (const key of [
@@ -38,17 +39,59 @@ async function runWith(envOverrides, ...args) {
     ]) {
         delete env[key]
     }
-    Object.assign(env, envOverrides)
+    return Object.assign(env, envOverrides)
+}
+
+async function runWithOptions(options, ...args) {
     try {
-        const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], { env })
+        const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], options)
         return { code: 0, stdout, stderr }
     } catch (error) {
         return { code: error.code ?? 1, stdout: error.stdout || '', stderr: error.stderr || '' }
     }
 }
 
+async function runWith(envOverrides, ...args) {
+    return runWithOptions({ env: childEnv(envOverrides) }, ...args)
+}
+
+/** bridge 要读 stdin：execFile 不关 stdin，不能让子进程一直等。 */
+async function runWithStdin(envOverrides, input, ...args) {
+    const child = spawn(process.execPath, [cli, ...args], { env: childEnv(envOverrides), stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+        stdout += chunk
+    })
+    child.stderr.on('data', chunk => {
+        stderr += chunk
+    })
+    // 子进程提前退出时 stdin 会 EPIPE：不接住就是整个测试文件挂掉，而不是这条用例失败。
+    child.stdin.on('error', () => {})
+    child.stdin.end(input)
+    // 等 close 而不是 exit：exit 先到，缓冲里的 stderr 可能还没读完。
+    const [code] = await once(child, 'close')
+    return { code, stdout, stderr }
+}
+
 async function run(...args) {
     return runWith({}, ...args)
+}
+
+/** 从 stderr 里取一条指定 event 的 JSON 行（非 JSON 行跳过）。 */
+function stderrEvent(stderr, event) {
+    for (const line of stderr.split('\n')) {
+        if (!line.trim()) continue
+        try {
+            const parsed = JSON.parse(line)
+            if (parsed.event === event) return parsed
+        } catch {
+            // 例如 bridge 的纯文本 stderr：不是 JSON，跳过
+        }
+    }
+    return null
 }
 
 /** 收集 JSON 里的全部字符串值：Windows 路径在 JSON 文本里被转义过，不能直接拿 stdout 做包含判断。 */
@@ -164,6 +207,93 @@ test('selftest 成功那支也不打本机路径，--verbose 才给原文', asyn
     }
 })
 
+test('selftest 模块指向同名目录时，报错里只剩相对片段', async () => {
+    // 票面上的复现：路径存在但加载不了，require 会带上 require stack。
+    // 子进程的 cwd 挪到仓库外、home 设成仓库的父目录，复刻「home 是项目根父目录」那种布局：
+    // 父目录先命中就会把 stack 里那条 src/bdms.mjs 剪成半截。
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-selftest-dir-'))
+    const moduleDir = path.join(rootDir, 'dirnode')
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    const repoRoot = path.resolve(here, '..')
+    const repoParent = path.dirname(repoRoot)
+    fs.mkdirSync(modulePath, { recursive: true })
+    // os.homedir()：Windows 认 USERPROFILE，POSIX 认 HOME，两个都给同一层。
+    const env = childEnv({
+        LIBMSSDK_BDMS_MODULE: modulePath,
+        HOME: repoParent,
+        USERPROFILE: repoParent,
+    })
+    try {
+        const { code, stdout } = await runWithOptions({ env, cwd: os.tmpdir() }, 'selftest')
+        assert.equal(code, 1)
+        const payload = JSON.parse(stdout)
+        assert.equal(payload.signOk, false)
+        assert.equal(payload.bdmsModule, '(本机路径)')
+        const strings = stringValues(payload)
+        for (const leaked of [rootDir, moduleDir, modulePath, repoParent, os.homedir()]) {
+            assert.equal(
+                strings.some(text => text.includes(leaked)),
+                false,
+                `selftest 的输出漏了本机路径 ${leaked}：${stdout}`,
+            )
+        }
+        assert.match(
+            payload.error,
+            new RegExp(`\\(本机路径\\)[\\\\/]src[\\\\/]bdms\\.mjs`),
+            `require stack 里那条路径要整条换掉、不留半截：${payload.error}`,
+        )
+    } finally {
+        fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+})
+
+test('bridge 失败时 stderr 不带本机路径，--verbose 才给原文', async () => {
+    const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-bridge-missing-'))
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    // 与 libresoda 的调用形状一致：stdin 一个 SignRequest，失败看 stderr。
+    const payload = JSON.stringify({ url: 'https://api.qishui.com/luna/pc/track_v2?aid=1', headers: {} })
+    try {
+        const quiet = await runWithStdin({ LIBMSSDK_BDMS_MODULE: modulePath }, payload, 'bridge')
+        assert.equal(quiet.code, 1, '模块不存在要让调用方看得出来')
+        assert.equal(quiet.stdout, '', '失败时不该往 stdout 吐半截 JSON')
+        assert.equal(quiet.stderr.includes(moduleDir), false, `stderr 漏了本机路径：${quiet.stderr}`)
+        assert.equal(quiet.stderr.includes(modulePath), false, `stderr 漏了本机路径：${quiet.stderr}`)
+        // 整句相等：带尾巴的半截路径（(本机路径)\…\bdms.node）也会匹配只查前缀的正则。
+        assert.equal(quiet.stderr.trim(), 'bdms.node 不存在：(本机路径)', '话要说全，只留「不存在」就够了')
+
+        const verbose = await runWithStdin({ LIBMSSDK_BDMS_MODULE: modulePath }, payload, 'bridge', '--verbose')
+        assert.equal(verbose.code, 1)
+        assert.equal(verbose.stderr.includes(modulePath), true, '--verbose 时错误里的原文要保留')
+    } finally {
+        fs.rmSync(moduleDir, { recursive: true, force: true })
+    }
+})
+
+test('probe 失败时顶层兜底的 stderr 也不带本机路径，--verbose 才给原文', async () => {
+    // probe 先签名再出网：模块不存在时就在这一句失败，不会真去打上游。
+    const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-probe-missing-'))
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    const env = { LIBMSSDK_BDMS_MODULE: modulePath }
+    const args = ['probe', '--track', '1', '--device', '7000000000000001']
+    try {
+        const quiet = await runWith(env, ...args)
+        assert.equal(quiet.code, 1)
+        assert.equal(quiet.stdout, '', '失败时不该往 stdout 吐半截 JSON')
+        const errorLine = stderrEvent(quiet.stderr, 'error')
+        assert.ok(errorLine, `stderr 里没有 event=error：${quiet.stderr}`)
+        assert.equal(errorLine.message.includes(moduleDir), false, `错误里漏了本机路径：${errorLine.message}`)
+        assert.equal(errorLine.message, 'bdms.node 不存在：(本机路径)', '话要说全，只留「不存在」就够了')
+
+        const verbose = await runWith(env, ...args, '--verbose')
+        assert.equal(verbose.code, 1)
+        const verboseError = stderrEvent(verbose.stderr, 'error')
+        assert.ok(verboseError, `--verbose 时 stderr 里没有 event=error：${verbose.stderr}`)
+        assert.equal(verboseError.message.includes(modulePath), true, '--verbose 时错误里的原文要保留')
+    } finally {
+        fs.rmSync(moduleDir, { recursive: true, force: true })
+    }
+})
+
 test('显式模块路径不存在时 serve 拒启，错误里不带本机路径', async () => {
     const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-serve-missing-'))
     const modulePath = path.join(moduleDir, 'bdms.node')
@@ -173,19 +303,10 @@ test('显式模块路径不存在时 serve 拒启，错误里不带本机路径'
             const { code, stdout, stderr } = await runWith({ [key]: modulePath }, 'serve')
             assert.equal(code, 1, `${key}：配置阶段就该停下，而不是起来后每条 /sign 都失败`)
             assert.equal(stdout, '', `${key}：拒启时不该先打启动日志`)
-            const errorLine = stderr
-                .split('\n')
-                .filter(Boolean)
-                .map(line => {
-                    try {
-                        return JSON.parse(line)
-                    } catch {
-                        return null
-                    }
-                })
-                .find(line => line?.event === 'error')
+            const errorLine = stderrEvent(stderr, 'error')
             assert.ok(errorLine, `${key}：stderr 里没有 event=error：${stderr}`)
             assert.match(errorLine.message, /显式指定的 bdms\.node 不存在/)
+            assert.match(errorLine.message, /：\(本机路径\)（用 config --verbose/, '占位符后面不能带残段')
             assert.equal(errorLine.message.includes(moduleDir), false, `${key}：错误里漏了本机路径：${errorLine.message}`)
             assert.match(errorLine.message, /\(本机路径\)/, `${key}：路径位置要给出「已被隐掉」的信号`)
         }

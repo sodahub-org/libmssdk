@@ -33,10 +33,14 @@ function hasFlag(name) {
     return process.argv.includes(`--${name}`)
 }
 
-// selftest / config 的输出经常被原样贴进求助帖：默认隐掉本机路径，只有显式 --verbose 才打原文。
+// 命令行输出经常被原样贴进求助帖或交给调用方记日志（selftest / config / bridge / probe 与顶层兜底）：
+// 默认隐掉本机路径，只有显式 --verbose 才打原文。
 const showMachinePaths = hasFlag('verbose')
 
-/** 会出现在输出里的本机路径。长的排前面：父目录先命中会把更长的文件路径切成半截。 */
+/**
+ * 会出现在输出里的本机路径。顺序交给 log.mjs 的 sensitivePaths()：那里统一按长度排，
+ * 免得「长的排前面」这条不变量在仓库里有两个出处。
+ */
 function machinePathLocations() {
     return [
         config.identityFile,
@@ -44,9 +48,7 @@ function machinePathLocations() {
         config.clientDir,
         config.identityFile && path.dirname(config.identityFile),
         config.bdmsModule && path.dirname(config.bdmsModule),
-    ]
-        .filter(Boolean)
-        .sort((left, right) => right.length - left.length)
+    ].filter(Boolean)
 }
 
 /** 单条路径的显示形式：默认换掉，--verbose 才给原文。 */
@@ -146,7 +148,9 @@ async function commandBridge() {
         const signed = signer.sign({ url: spec.url, headers: spec.headers, deviceId: spec.deviceId })
         process.stdout.write(JSON.stringify(signResponse(signed)))
     } catch (error) {
-        process.stderr.write(String(error?.message || error))
+        // stderr 会进调用方（libresoda）的日志，本机路径同样不能原样出去：
+        // 与 selftest / config 同一个口径，--verbose 才给原文。
+        process.stderr.write(displayPath(String(error?.message || error)))
         process.exit(1)
     }
 }
@@ -254,6 +258,8 @@ try {
             process.exitCode = 2
     }
 } catch (error) {
-    logError(error?.message || error)
+    // 顶层兜底也会带本机路径（例如 probe 先签名、模块加载失败时抛的就是模块路径），
+    // 与其余输出同一口径：默认隐掉，--verbose 才打原文。
+    logError(displayPath(String(error?.message || error)))
     process.exitCode = 1
 }
