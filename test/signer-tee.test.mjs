@@ -427,6 +427,40 @@ test('链接的父目录本身是链接时，相对目标要按真实父目录�
     }
 })
 
+test('目标里夹着「链接段 + ..」：要按内核语义逐段跟，不能字面折叠', t => {
+    if (process.platform === 'win32') {
+        t.skip('相对目标跨盘建不出来；这条只在 POSIX 上有意义')
+        return
+    }
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-lexical-'))
+    const realParent = path.join(base, 'real')
+    const target = path.join(repoRoot, 'tools', 'capture-lexical-probe.jsonl')
+    const viaLink = path.join(realParent, 'capture.jsonl')
+    try {
+        fs.mkdirSync(realParent, { recursive: true })
+        // x 比链接名浅两级：内核先跟到 <base>，再 .. 到 <base> 的父目录；
+        // 字面折叠却把「x/..」抵消成链接所在目录，于是判到仓库外。
+        fs.symlinkSync(base, path.join(realParent, 'x'), 'dir')
+        fs.symlinkSync(`x/../${path.relative(path.dirname(base), target)}`, viaLink, 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(viaLink),
+            /不入库/,
+            '目标里的「链接段 + ..」被字面折叠，护栏与内核算到了不同的落点',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(viaLink, { force: true })
+        fs.rmSync(path.join(realParent, 'x'), { force: true })
+        fs.rmSync(target, { force: true })
+        fs.rmSync(base, { recursive: true, force: true })
+    }
+})
+
 test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
     const seen = []
     const upstream = await listen((request, response) => {

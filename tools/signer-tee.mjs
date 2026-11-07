@@ -102,6 +102,59 @@ const REAL_REPO_ROOT = (() => {
 
 /** 链接链最多跟 40 跳：与内核 MAXSYMLINKS 同一量级，坏链别把解析拖成死循环。 */
 const MAX_LINK_HOPS = 40
+/** 路径分段：Windows 认两种分隔符，POSIX 只认 `/`（反斜杠可以是文件名的一部分）。 */
+const SEGMENT_SPLIT = path.sep === '\\' ? /[\\/]+/ : /\/+/
+
+/** 把一段路径拆成「起点 + 队列」：绝对路径从自己的根开始，相对路径从 baseDir 开始。 */
+function startOf(value, baseDir) {
+    if (!path.isAbsolute(value)) return { resolved: baseDir, queue: value.split(SEGMENT_SPLIT).filter(Boolean) }
+    const parsed = path.parse(value)
+    return { resolved: parsed.root, queue: value.slice(parsed.root.length).split(SEGMENT_SPLIT).filter(Boolean) }
+}
+
+/**
+ * 按内核语义解析一个可能还不存在的路径：逐段跟随链接，`..` 作用在「已经解析过链接」的位置上。
+ * `path.resolve` 只做字面折叠，遇到「链接段 + ..」会与内核算出不同的落点；护栏判的必须是
+ * 内核最后真正写入的位置。遇到真缺段就按字面接上——那一段之下不可能再有链接（open 也会失败）。
+ */
+function resolveTargetPath(baseDir, target, hops) {
+    const start = startOf(target, baseDir)
+    let resolved = start.resolved
+    const queue = start.queue
+    let used = hops
+    while (queue.length) {
+        const segment = queue.shift()
+        if (segment === '.') continue
+        if (segment === '..') {
+            resolved = path.dirname(resolved)
+            continue
+        }
+        const candidate = path.join(resolved, segment)
+        let stat
+        try {
+            stat = fs.lstatSync(candidate)
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw unverifiablePathError(error)
+            return path.join(resolved, segment, ...queue)
+        }
+        if (!stat.isSymbolicLink()) {
+            resolved = candidate
+            continue
+        }
+        if (used >= MAX_LINK_HOPS) throw unverifiablePathError({ code: 'ETOOMANYLINKS' })
+        used += 1
+        let next
+        try {
+            next = fs.readlinkSync(candidate)
+        } catch (error) {
+            throw unverifiablePathError(error)
+        }
+        const nested = startOf(next, resolved)
+        resolved = nested.resolved
+        queue.unshift(...nested.queue)
+    }
+    return resolved
+}
 
 /**
  * 末段通常还不存在（那是准备新建的抓包件），所以从最近的已存在父目录解析真实路径，再把尾巴接回去。
@@ -135,18 +188,18 @@ function resolveRealPath(resolved, hops = 0) {
                 } catch (linkError) {
                     throw unverifiablePathError(linkError)
                 }
-                // 相对目标要按「链接所在目录的真实路径」解析：内核跟随链接时以真实父目录为基准。
-                // 父目录本身是链接时，用字面父目录会算到另一处，而 open 建文件落在真实那一处。
-                let realParent
-                try {
-                    realParent = fs.realpathSync(path.dirname(cursor))
-                } catch (parentError) {
-                    throw unverifiablePathError(parentError)
+                // 相对目标以「链接所在目录的真实路径」为基准；目标内部若还有「链接段 + ..」，
+                // 也必须逐段跟——字面折叠会算到另一处，而 open 建文件落在内核算出的那一处。
+                const linkParent = path.dirname(cursor)
+                let baseDir = linkParent
+                if (!path.isAbsolute(target)) {
+                    try {
+                        baseDir = fs.realpathSync(linkParent)
+                    } catch (parentError) {
+                        throw unverifiablePathError(parentError)
+                    }
                 }
-                return path.join(
-                    resolveRealPath(path.resolve(realParent, target), hops + 1),
-                    ...tail.reverse(),
-                )
+                return path.join(resolveTargetPath(baseDir, target, hops + 1), ...tail.reverse())
             }
             const parent = path.dirname(cursor)
             // 退到根还解析不了，同样拒：宁可误杀，也不退回字面判断。
