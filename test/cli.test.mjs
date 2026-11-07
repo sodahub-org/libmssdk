@@ -80,7 +80,7 @@ async function run(...args) {
     return runWith({}, ...args)
 }
 
-/** 从 stderr 里取一条 event=error 的 JSON 行（非 JSON 行跳过）。 */
+/** 从 stderr 里取一条指定 event 的 JSON 行（非 JSON 行跳过）。 */
 function stderrEvent(stderr, event) {
     for (const line of stderr.split('\n')) {
         if (!line.trim()) continue
@@ -258,7 +258,8 @@ test('bridge 失败时 stderr 不带本机路径，--verbose 才给原文', asyn
         assert.equal(quiet.stdout, '', '失败时不该往 stdout 吐半截 JSON')
         assert.equal(quiet.stderr.includes(moduleDir), false, `stderr 漏了本机路径：${quiet.stderr}`)
         assert.equal(quiet.stderr.includes(modulePath), false, `stderr 漏了本机路径：${quiet.stderr}`)
-        assert.match(quiet.stderr, /bdms\.node 不存在：\(本机路径\)/, '话要说全，只留「不存在」就够了')
+        // 整句相等：带尾巴的半截路径（(本机路径)\…\bdms.node）也会匹配只查前缀的正则。
+        assert.equal(quiet.stderr.trim(), 'bdms.node 不存在：(本机路径)', '话要说全，只留「不存在」就够了')
 
         const verbose = await runWithStdin({ LIBMSSDK_BDMS_MODULE: modulePath }, payload, 'bridge', '--verbose')
         assert.equal(verbose.code, 1)
@@ -277,10 +278,11 @@ test('probe 失败时顶层兜底的 stderr 也不带本机路径，--verbose �
     try {
         const quiet = await runWith(env, ...args)
         assert.equal(quiet.code, 1)
+        assert.equal(quiet.stdout, '', '失败时不该往 stdout 吐半截 JSON')
         const errorLine = stderrEvent(quiet.stderr, 'error')
         assert.ok(errorLine, `stderr 里没有 event=error：${quiet.stderr}`)
         assert.equal(errorLine.message.includes(moduleDir), false, `错误里漏了本机路径：${errorLine.message}`)
-        assert.match(errorLine.message, /bdms\.node 不存在：\(本机路径\)/, '话要说全，只留「不存在」就够了')
+        assert.equal(errorLine.message, 'bdms.node 不存在：(本机路径)', '话要说全，只留「不存在」就够了')
 
         const verbose = await runWith(env, ...args, '--verbose')
         assert.equal(verbose.code, 1)
@@ -301,17 +303,7 @@ test('显式模块路径不存在时 serve 拒启，错误里不带本机路径'
             const { code, stdout, stderr } = await runWith({ [key]: modulePath }, 'serve')
             assert.equal(code, 1, `${key}：配置阶段就该停下，而不是起来后每条 /sign 都失败`)
             assert.equal(stdout, '', `${key}：拒启时不该先打启动日志`)
-            const errorLine = stderr
-                .split('\n')
-                .filter(Boolean)
-                .map(line => {
-                    try {
-                        return JSON.parse(line)
-                    } catch {
-                        return null
-                    }
-                })
-                .find(line => line?.event === 'error')
+            const errorLine = stderrEvent(stderr, 'error')
             assert.ok(errorLine, `${key}：stderr 里没有 event=error：${stderr}`)
             assert.match(errorLine.message, /显式指定的 bdms\.node 不存在/)
             assert.equal(errorLine.message.includes(moduleDir), false, `${key}：错误里漏了本机路径：${errorLine.message}`)
