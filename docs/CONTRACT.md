@@ -286,5 +286,6 @@ echo '{"url":"https://api.qishui.com/luna/pc/track_v2?device_id=…","method":"P
 输出与 `/sign` 的响应体一致（一行 JSON），可直接作为 libresoda
 `CommandSignature` 的后端。
 
-失败时 stderr 只给一条可读的说明，本机路径默认换成 `(本机路径)`（与 `selftest` / `config` 同一口径）。
+失败时错误说明是一条可读的文本，本机路径默认换成 `(本机路径)`（与 `selftest` / `config` 同一口径）；
+启动期的降级告警仍可能先占一行 stderr。
 调用方代跑时一般不带开关；需要排查具体文件时，用同一份输入在命令行加 `--verbose` 重跑。

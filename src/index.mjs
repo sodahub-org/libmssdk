@@ -33,7 +33,8 @@ function hasFlag(name) {
     return process.argv.includes(`--${name}`)
 }
 
-// selftest / config 的输出经常被原样贴进求助帖：默认隐掉本机路径，只有显式 --verbose 才打原文。
+// 命令行输出经常被原样贴进求助帖或交给调用方记日志（selftest / config / bridge / probe 与顶层兜底）：
+// 默认隐掉本机路径，只有显式 --verbose 才打原文。
 const showMachinePaths = hasFlag('verbose')
 
 /**

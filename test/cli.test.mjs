@@ -306,6 +306,7 @@ test('显式模块路径不存在时 serve 拒启，错误里不带本机路径'
             const errorLine = stderrEvent(stderr, 'error')
             assert.ok(errorLine, `${key}：stderr 里没有 event=error：${stderr}`)
             assert.match(errorLine.message, /显式指定的 bdms\.node 不存在/)
+            assert.match(errorLine.message, /：\(本机路径\)（用 config --verbose/, '占位符后面不能带残段')
             assert.equal(errorLine.message.includes(moduleDir), false, `${key}：错误里漏了本机路径：${errorLine.message}`)
             assert.match(errorLine.message, /\(本机路径\)/, `${key}：路径位置要给出「已被隐掉」的信号`)
         }
