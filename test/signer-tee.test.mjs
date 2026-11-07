@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +25,7 @@ const TRACK_V2_URL =
     'https://api.qishui.com/luna/pc/track_v2?ac=wifi&aid=386088&device_id=1789435000000&fp=1789435000000' +
     '&iid=1789435000001&os_version=Windows+11&region=cn&tz_name=Asia+Shanghai&version_code=30030000&version_name=3.3.0'
 
+/** 一份真机形状的 SignRequest 夹具；`overrides` 覆盖其中的请求头。 */
 function signRequest(overrides = {}) {
     return JSON.stringify({
         url: TRACK_V2_URL,
@@ -38,6 +40,30 @@ function signRequest(overrides = {}) {
             ...overrides,
         },
     })
+}
+
+/** Windows 8.3 短名：长名大写后取前 6 位加 `~N`（NTFS 会保留连字符/下划线）；卷上没开 8.3 就返回 null。 */
+function shortNameOf(longPath) {
+    const dir = path.dirname(longPath)
+    const base = path.basename(longPath).toUpperCase()
+    const stems = new Set([
+        base.replace(/[^A-Z0-9_-]/g, '').slice(0, 6),
+        base.replace(/[^A-Z0-9]/g, '').slice(0, 6),
+    ])
+    for (const stem of stems) {
+        if (!stem) continue
+        for (let n = 1; n <= 9; n += 1) {
+            const candidate = path.join(dir, `${stem}~${n}`)
+            try {
+                if (fs.realpathSync.native(candidate).toLowerCase() === fs.realpathSync.native(longPath).toLowerCase()) {
+                    return candidate
+                }
+            } catch {
+                // 这个编号不存在，试下一个
+            }
+        }
+    }
+    return null
 }
 
 test('抓到的是 URL 里那份设备身份与形状字段，其余按键名丢掉', () => {
@@ -129,9 +155,9 @@ async function listen(handler) {
  * 既不依赖某个端口当时有没有人听，也不用先占住再放开那种两步写法。
  */
 const DEAD_UPSTREAM = 'http://127.0.0.1:1/sign'
-/** 起一台中转，上游由调用方给。 */
-async function startTee({ upstream, out, log = () => {} }) {
-    const tee = await start({ upstream, host: '127.0.0.1', port: 0, out, log })
+/** 起一台中转，上游由调用方给。`...rest` 给用例注入 `warn` / `format` 这类接缝。 */
+async function startTee({ upstream, out, log = () => {}, ...rest }) {
+    const tee = await start({ upstream, host: '127.0.0.1', port: 0, out, log, ...rest })
     openServers.push(tee)
     return tee
 }
@@ -248,6 +274,7 @@ test('抓包件写不进去时单独出声：这条只转发没记录，取证�
 
 const teeCli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'signer-tee.mjs')
 const repoRoot = path.resolve(path.dirname(teeCli), '..')
+/** 用子进程跑工具本体：用法守卫失败必须发生在起监听之前。 */
 function runTee(...args) {
     return spawnSync(process.execPath, [teeCli, ...args], { encoding: 'utf8' })
 }
@@ -298,6 +325,247 @@ test('仓库外的链接指进仓库：按解析后的真实路径判，不按�
         assert.throws(() => assertOutsideRepo(path.join(link, 'capture.jsonl')), /不入库/)
     } finally {
         fs.rmSync(link, { force: true })
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('启动后父目录被换成指进仓库的链接：落笔前再判一次，一个字都进不了仓库', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-swap-'))
+    const probeFile = 'capture-guard-probe.jsonl'
+    const out = path.join(dir, probeFile)
+    const logged = []
+    const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
+    const moved = `${dir}-moved`
+    fs.renameSync(dir, moved)
+    try {
+        fs.symlinkSync(path.join(repoRoot, 'tools'), dir, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        fs.rmSync(moved, { recursive: true, force: true })
+        return
+    }
+    // 万一护栏失灵，别把探针行留在仓库里；正常路径下这个文件根本不该被创建。
+    const inRepo = path.join(repoRoot, 'tools', probeFile)
+    try {
+        await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })
+        assert.equal(fs.existsSync(inRepo), false, '完整设备号被写进了仓库目录')
+        const text = logged.join('')
+        assert.match(text, /event=error 落笔前被护栏拒了/, `落笔前拦下了，但没说是护栏挡的：${text}`)
+        assert.match(text, /不入库/, '护栏拒绝了却不给原因，操作者会当成磁盘故障')
+    } finally {
+        fs.rmSync(inRepo, { force: true })
+        fs.rmSync(dir, { force: true })
+        fs.rmSync(moved, { recursive: true, force: true })
+    }
+})
+
+test('真实路径解析不了时护栏要拒，不许退回字面判断', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-loop-'))
+    const loop = path.join(dir, 'loop')
+    try {
+        // 自指链接：realpath 会报 ELOOP（Windows 的 junction 上同样如此，且不需要特权）。
+        fs.symlinkSync(loop, loop, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+        t.skip(`这台机器建不出自指链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(path.join(loop, 'capture.jsonl')),
+            /真实路径/,
+            '解析失败被当成「末段还不存在」，护栏降级成了字面判断',
+        )
+    } finally {
+        try {
+            fs.rmSync(loop, { force: true })
+        } catch {
+            // 链接本身删不掉时，下面的递归删除还会再试一次
+        }
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('悬空链接指进仓库：realpath 报 ENOENT 也不能当成「还不存在」', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-dangling-'))
+    const link = path.join(dir, 'capture.jsonl')
+    const target = path.join(repoRoot, 'tools', 'capture-dangling-probe.jsonl')
+    try {
+        // 指向一个还不存在的目标：realpath 报 ENOENT，但 openSync 会顺着链接把文件建到目标那儿。
+        fs.symlinkSync(target, link, 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出悬空链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(link), /不入库/, '悬空链接被当成「还不存在」，护栏落在链接外面')
+        assert.throws(
+            () => start({ upstream: DEAD_UPSTREAM, host: '127.0.0.1', port: 0, out: link, log: () => {} }),
+            /不入库/,
+            '直调 start() 时悬空链接同样要拒',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(link, { force: true })
+        fs.rmSync(target, { force: true })
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('链接的父目录本身是链接时，相对目标要按真实父目录解析', t => {
+    if (process.platform === 'win32') {
+        t.skip('需要同盘的相对链接目标；Windows 上临时目录与仓库不同盘，这条只在 POSIX 上有意义')
+        return
+    }
+    // 取真实路径：macOS 的 /var 是 /private/var 的链接，按字面 tmpdir 算出来的相对目标
+    // 会被内核按真实父目录多退一层，落点与用例预期对不上。
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-alias-')))
+    const realParent = path.join(base, 'real')
+    const deep = path.join(base, 'a', 'b', 'c')
+    const alias = path.join(deep, 'alias')
+    const target = path.join(repoRoot, 'tools', 'capture-alias-probe.jsonl')
+    try {
+        fs.mkdirSync(realParent, { recursive: true })
+        fs.mkdirSync(deep, { recursive: true })
+        // 字面父目录（<base>/a/b/c/alias）比真实父目录（<base>/real）深：
+        // 用字面父目录解析相对目标会落到仓库外，内核却按真实父目录把文件建进仓库。
+        fs.symlinkSync(realParent, alias, 'dir')
+        fs.symlinkSync(path.relative(realParent, target), path.join(realParent, 'capture.jsonl'), 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(path.join(alias, 'capture.jsonl')),
+            /不入库/,
+            '相对目标按字面父目录解析，护栏判到了仓库外——内核却会把文件建进仓库',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(alias, { force: true })
+        fs.rmSync(path.join(realParent, 'capture.jsonl'), { force: true })
+        fs.rmSync(target, { force: true })
+        fs.rmSync(base, { recursive: true, force: true })
+    }
+})
+
+test('目标里夹着「链接段 + ..」：要按内核语义逐段跟，不能字面折叠', t => {
+    if (process.platform === 'win32') {
+        t.skip('需要同盘的相对链接目标；Windows 上临时目录与仓库不同盘，这条只在 POSIX 上有意义')
+        return
+    }
+    // 同上：相对目标必须按真实路径算，macOS 的 /var 别名会多出（或少掉）一层。
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-lexical-')))
+    const realParent = path.join(base, 'real')
+    const target = path.join(repoRoot, 'tools', 'capture-lexical-probe.jsonl')
+    const viaLink = path.join(realParent, 'capture.jsonl')
+    try {
+        fs.mkdirSync(realParent, { recursive: true })
+        // x 比链接名浅两级：内核先跟到 <base>，再 .. 到 <base> 的父目录；
+        // 字面折叠却把「x/..」抵消成链接所在目录，于是判到仓库外。
+        fs.symlinkSync(base, path.join(realParent, 'x'), 'dir')
+        fs.symlinkSync(`x/../${path.relative(path.dirname(base), target)}`, viaLink, 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(viaLink),
+            /不入库/,
+            '目标里的「链接段 + ..」被字面折叠，护栏与内核算到了不同的落点',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(viaLink, { force: true })
+        fs.rmSync(path.join(realParent, 'x'), { force: true })
+        fs.rmSync(target, { force: true })
+        fs.rmSync(base, { recursive: true, force: true })
+    }
+})
+
+test('Windows 8.3 短名不能绕过仓库护栏', t => {
+    if (process.platform !== 'win32') {
+        t.skip('8.3 短名只在 Windows 上存在')
+        return
+    }
+    const shortRoot = shortNameOf(repoRoot)
+    if (!shortRoot) {
+        t.skip('没探测到 8.3 短名（卷未启用，或名字不合 8.3 规则）')
+        return
+    }
+    const probe = 'capture-shortname-probe.jsonl'
+    const viaShort = path.join(shortRoot, 'tools', probe)
+    const target = path.join(repoRoot, 'tools', probe)
+    try {
+        assert.throws(() => assertOutsideRepo(viaShort), /不入库/, `8.3 短名 ${path.basename(shortRoot)} 被判成了仓库外`)
+        assert.throws(
+            () => start({ upstream: DEAD_UPSTREAM, host: '127.0.0.1', port: 0, out: viaShort, log: () => {} }),
+            /不入库/,
+            '直调 start() 时短名同样要拒',
+        )
+        assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(target, { force: true })
+    }
+})
+
+test('链接目标里用 8.3 短名也绕不过护栏', t => {
+    if (process.platform !== 'win32') {
+        t.skip('8.3 短名只在 Windows 上存在')
+        return
+    }
+    const shortRoot = shortNameOf(repoRoot)
+    if (!shortRoot) {
+        t.skip('没探测到 8.3 短名（卷未启用，或名字不合 8.3 规则）')
+        return
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-shortlink-'))
+    const link = path.join(dir, 'capture.jsonl')
+    const probe = 'capture-shortlink-probe.jsonl'
+    const targetShort = path.join(shortRoot, 'tools', probe)
+    const targetLong = path.join(repoRoot, 'tools', probe)
+    try {
+        fs.symlinkSync(targetShort, link, 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(link), /不入库/, '链接目标写成短名后，护栏判到了仓库外')
+        assert.throws(
+            () => start({ upstream: DEAD_UPSTREAM, host: '127.0.0.1', port: 0, out: link, log: () => {} }),
+            /不入库/,
+            '直调 start() 时同样要拒',
+        )
+        assert.equal(fs.existsSync(targetLong), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(link, { force: true })
+        fs.rmSync(dir, { recursive: true, force: true })
+        fs.rmSync(targetLong, { force: true })
+    }
+})
+
+test('超长链接链直接拒：不猜、也不无限跟', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-chain-'))
+    const target = path.join(os.tmpdir(), `libmssdk-tee-chain-target-${process.pid}.jsonl`)
+    try {
+        // 50 跳的悬空链：内核自己也会在 MAXSYMLINKS 处停，护栏要跟着拒。
+        for (let i = 50; i >= 1; i -= 1) {
+            const next = i === 50 ? target : path.join(dir, `l${i + 1}`)
+            fs.symlinkSync(next, path.join(dir, `l${i}`), 'file')
+        }
+    } catch (error) {
+        t.skip(`这台机器建不出链接链：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(path.join(dir, 'l1')), /真实路径/, '超长链接链被当成正常路径放行了')
+    } finally {
         fs.rmSync(dir, { recursive: true, force: true })
     }
 })
@@ -360,7 +628,7 @@ test('带 Origin 的一律拒：本机桌面客户端不发这个头，只有网
     assert.equal(fs.existsSync(out), false, '不该落盘')
 })
 
-test('落盘失败要带错误码；终端写不出不能报成「抓包件写不进去」', async () => {
+test('落盘、终端、格式三种失败要各报各的：谁都不能混成「抓包件写不进去」', async () => {
     // 一、落盘失败：指到目录上，openSync 必抛——报的那行要带上 code，人才知道是哪一类失败
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-code-'))
     const loggedA = []
@@ -385,28 +653,106 @@ test('落盘失败要带错误码；终端写不出不能报成「抓包件写�
             return true
         },
     }
-    const teeB = await startTee({ upstream: DEAD_UPSTREAM, out, log: text => boom.write(text) })
     const warnings = []
-    const originalWarn = process.stderr.write
-    process.stderr.write = function patched(chunk, ...rest) {
-        warnings.push(String(chunk))
-        return originalWarn.call(process.stderr, chunk, ...rest)
-    }
-    try {
-        await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: signRequest(),
-        })
-    } finally {
-        process.stderr.write = originalWarn
-    }
+    // 兜底读取端由 start() 注入：用例不再 patch 全局 process.stderr.write。
+    const teeB = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out,
+        log: text => boom.write(text),
+        warn: text => warnings.push(text),
+    })
+    await fetch(`http://127.0.0.1:${teeB.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
     assert.equal(fs.existsSync(out), true, '这条其实落盘了')
     assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1)
     const textB = warnings.join('')
     assert.match(textB, /event=warn/, '终端写失败要单独说，不能沉默')
     assert.match(textB, /code=[A-Za-z_]+/, `没带错误码：${JSON.stringify(textB)}`)
     assert.ok(!/没打出来/.test(textB), `还在断言打没打出来：${JSON.stringify(textB)}`)
+
+    // 三、记录已经成形、只是终端行拼不出来：报格式失败，不能报成「抓包件写不进去」——
+    // 旧写法把 appendRecord 与 formatCapture 放在同一个 try 里，这一格会把格式错误说成落盘错误。
+    const outC = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-format-')), 'capture.jsonl')
+    const loggedC = []
+    const teeC = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out: outC,
+        log: line => loggedC.push(line),
+        format: () => {
+            throw new Error('记录形状变了')
+        },
+    })
+    await fetch(`http://127.0.0.1:${teeC.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    const textC = loggedC.join('')
+    assert.match(textC, /event=error 终端行拼不出来/, `格式失败没单独报：${JSON.stringify(textC)}`)
+    assert.ok(!textC.includes('抓包件写不进去'), `格式失败被报成了写不进去：${JSON.stringify(textC)}`)
+    assert.match(textC, /已照原样落盘/, '格式坏了但这一条其实进了件，结果要说准——不能只喊「失败」')
+    const captured = fs.readFileSync(outC, 'utf8').trim()
+    assert.equal(captured.split(/\r?\n/).length, 1, '格式失败不该连累落盘：这一条确实进件了')
+    assert.deepEqual(JSON.parse(captured).identity, CAPTURED_ID)
+})
+
+test('默认 warn 回落到 log：不注入 warn 时，那句警告也进同一汇', async () => {
+    const upstream = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => response.end('{"ok":true}'))
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
+    // 第一次写日志（读数那一行）让 log 抛，逼出 warn 那条路；warn 自己没有注入，默认应当回落到同一个 log。
+    // 不绑具体文案：这里要的是「第一行失败后 warn 还能落地」，不是某条前缀。
+    let thrown = false
+    const logged = []
+    const tee = await startTee({
+        upstream: upstream.url,
+        out,
+        log: text => {
+            if (!thrown) {
+                thrown = true
+                throw new Error('stdout 坏了')
+            }
+            logged.push(String(text))
+            return true
+        },
+    })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 200)
+    assert.match(logged.join(''), /event=warn/, '默认 warn 没有回落到注入的 log——票八要求的就是这条兜底')
+    assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1, '这一条其实落盘了')
+})
+
+test('默认 warn 在 log 自身抛错时不把成功的转发变成 502', async () => {
+    const upstream = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => response.end('{"ok":true}'))
+    })
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-warn-')), 'capture.jsonl')
+    // log 对每一行都抛，回落分支才真的被执行；退回 stderr 会把一行 event=warn 打到
+    // 测试进程的 stderr 上——这是真实行为，不在这里 patch 全局就能看见。
+    const tee = await startTee({
+        upstream: upstream.url,
+        out,
+        log: () => {
+            throw new Error('stdout 坏了')
+        },
+    })
+    const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: signRequest(),
+    })
+    assert.equal(response.status, 200, '终端写坏了不该把调用方晾成 502')
+    assert.equal(fs.readFileSync(out, 'utf8').trim().split(/\r?\n/).length, 1, '这一条其实落盘了')
 })
 
 test('上游是非回环地址时不许走明文 http：入站拦得住，出站那一跳也得管', () => {
@@ -417,7 +763,13 @@ test('上游是非回环地址时不许走明文 http：入站拦得住，出站
 
     // 「不误杀本机明文上游」判据在同一个纯函数上测：起真服务会一直等信号，不适合拿子进程跑这条
     assert.doesNotThrow(() => assertUpstreamUrl('http://127.0.0.1:8899/sign'), '本机签名器就是明文 http，别拦它')
-    assert.doesNotThrow(() => assertUpstreamUrl('http://localhost:8899/sign'))
+    assert.doesNotThrow(() => assertUpstreamUrl('http://127.0.0.2:8899/sign'), '127/8 整段都是回环')
+    assert.doesNotThrow(() => assertUpstreamUrl('http://[::1]:8899/sign'))
+    assert.throws(
+        () => assertUpstreamUrl('http://localhost:8899/sign'),
+        /https/,
+        'localhost 连到哪儿由 hosts 与解析器决定，出站不能把它当回环',
+    )
     assert.doesNotThrow(() => assertUpstreamUrl('https://signer.example/sign'), '远端走 https 是文档里给的用法')
     assert.throws(() => assertUpstreamUrl('http://10.1.2.3/sign'), /https/)
     assert.throws(() => assertUpstreamUrl('ftp://127.0.0.1/sign'), /http/)
@@ -459,7 +811,28 @@ test('start() 自己就拒非回环绑定：判据不能只写在命令行那一
     assert.throws(() => start({ upstream: DEAD_UPSTREAM, host: '', port: 0, out, log: () => {} }), /回环/)
 })
 
-test('门口拒掉的三种请求各出一行声：护栏不出声就等于没有护栏', async () => {
+test('start() 自己就拒非回环上传与仓库内落盘：两条直调路径都不能绕过判据', () => {
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-entry-')), 'capture.jsonl')
+    assert.throws(
+        () => start({ upstream: 'http://10.1.2.3/sign', host: '127.0.0.1', port: 0, out: outside, log: () => {} }),
+        /https/,
+        '直调 start() 时明文送往非回环上游——判据只写在 main() 里就等于没写',
+    )
+    assert.throws(
+        () =>
+            start({
+                upstream: DEAD_UPSTREAM,
+                host: '127.0.0.1',
+                port: 0,
+                out: path.join(repoRoot, 'tools', 'capture.jsonl'),
+                log: () => {},
+            }),
+        /不入库/,
+        '直调 start() 时把抓包件指进仓库——写入侧没有自己的判据',
+    )
+})
+
+test('门口拒掉的四种请求各出一行声，并带上收到的值：护栏不出声就等于没有护栏', async () => {
     const logged = []
     const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-deny-')), 'capture.jsonl')
     const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
@@ -467,12 +840,94 @@ test('门口拒掉的三种请求各出一行声：护栏不出声就等于没�
     await fetch(`http://127.0.0.1:${port}/whatever-not-sign`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: signRequest() })
     await fetch(`http://127.0.0.1:${port}/sign`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: signRequest() })
     await fetch(`http://127.0.0.1:${port}/sign`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: signRequest() })
+    const oversized = await fetch(`http://127.0.0.1:${port}/sign`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: `"${'x'.repeat(256 * 1024)}"`,
+    })
+    assert.equal(oversized.status, 413, '超过上限的请求体要回 413')
+
     const text = logged.join('')
     assert.match(text, /event=deny 404/, `路径不符没出声：${JSON.stringify(text)}`)
     assert.match(text, /event=deny 415/, 'content-type 不符没出声')
     assert.match(text, /event=deny 403/, '带 Origin 没出声')
+    assert.match(text, /event=deny 413/, '请求体超限没出声——这一格最容易被误读成「中转挂了」')
+    // 出声要带上「收到的事实」，否则下一次窗口还是只能猜谁被挡了。
+    assert.match(text, /收到 POST \/whatever-not-sign/, `404 没带收到的请求行：${JSON.stringify(text)}`)
+    assert.match(text, /收到 text\/plain/, `415 没带收到的 content-type：${JSON.stringify(text)}`)
+    assert.match(text, /Origin=http:\/\/evil\.example/, `403 没带收到的 Origin：${JSON.stringify(text)}`)
     assert.ok(!text.includes('SECRET-COOKIE-VALUE'), '出声也不得带出报文内容')
-    assert.equal(fs.existsSync(out), false, '三条都不该落盘')
+    assert.equal(fs.existsSync(out), false, '四条都不该落盘')
+})
+
+test('deny 行把 C1 控制字符压平：Origin 里的 CSI 不能原样进终端', async () => {
+    const logged = []
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-c1-')), 'capture.jsonl')
+    const tee = await startTee({ upstream: DEAD_UPSTREAM, out, log: line => logged.push(line) })
+    const port = tee.address().port
+    // fetch 不会把 0x9b 原样发出去；用裸 socket 发一条带 C1 的 Origin（latin1），
+    // 模拟「能连到这台中转的任意本机客户端」。0x9b 就是 CSI，有的终端会当转义序列解释。
+    await new Promise((resolve, reject) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+            socket.write(
+                Buffer.concat([
+                    Buffer.from(
+                        'POST /sign HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nOrigin: ',
+                        'latin1',
+                    ),
+                    Buffer.from([0x9b, 0x33, 0x31, 0x6d]),
+                    Buffer.from('\r\nContent-Length: 0\r\nConnection: close\r\n\r\n', 'latin1'),
+                ]),
+            )
+        })
+        socket.on('close', resolve)
+        socket.on('error', reject)
+        socket.resume()
+    })
+    const text = logged.join('')
+    assert.match(text, /event=deny 403/, `带 C1 的 Origin 没被门口挡下或没出声：${JSON.stringify(text)}`)
+    assert.ok(!text.includes('\u009b'), `C1 控制字符原样进了终端：${JSON.stringify(text)}`)
+    assert.match(text, /Origin=\?31m/, '只该替换控制字符，收到的其余字节要保留')
+})
+
+test('log 抛错也不改口：四种拒绝照样按原状态码回', async () => {
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-deadlog-')), 'capture.jsonl')
+    const tee = await startTee({
+        upstream: DEAD_UPSTREAM,
+        out,
+        log: () => {
+            throw new Error('stdout 坏了')
+        },
+        // 兜底也关掉：这条只看状态码，不让回落到 stderr 的噪声混进来。
+        warn: () => {},
+    })
+    const base = `http://127.0.0.1:${tee.address().port}`
+    const statuses = []
+    statuses.push(
+        (await fetch(`${base}/whatever-not-sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })).status,
+    )
+    statuses.push(
+        (await fetch(`${base}/sign`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: signRequest() })).status,
+    )
+    statuses.push(
+        (await fetch(`${base}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+            body: signRequest(),
+        })).status,
+    )
+    statuses.push(
+        (await fetch(`${base}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: `"${'x'.repeat(256 * 1024)}"`,
+        })).status,
+    )
+    assert.deepEqual(statuses, [404, 415, 403, 413], '日志坏掉把拒绝改成了别的结果')
 })
 
 test('复用一份权限更宽的既有抓包件时，写着设备号的那一笔不该以旧权限落地', async t => {
@@ -485,6 +940,9 @@ test('复用一份权限更宽的既有抓包件时，写着设备号的那一�
     fs.writeFileSync(out, '')
     fs.chmodSync(out, 0o666) // 一份本来就谁都能读的旧文件
     const modesAtWrite = []
+    // 这里 patch 的是全局 `fs` 对象：工具与用例 import 的是同一个模块实例，
+    // `appendRecord()` 里的 `fs.writeSync` 才会走到这个桩上。这条耦合是故意的——
+    // 换成为工具注入 fs 就不成立，改动 appendRecord 的写法时记得这条用例靠的是它。
     const originalWrite = fs.writeSync
     fs.writeSync = function patched(fd, ...rest) {
         try {
