@@ -2,7 +2,6 @@
 // 与本机路径一律不落盘。这里钉的是最容易走漏的那条路 —— 报错原文。
 
 import assert from 'node:assert/strict'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -37,21 +36,12 @@ test('报错原文里的本机路径一律换掉，包括依赖目录与 home', 
 })
 
 test('父目录不能先命中：home 下的项目根要整条换掉，不留半截', () => {
-    // test/ 就在仓库根下，这一条用的正是「home 是项目根父目录」那种真实布局。
+    // test/ 在仓库根下，这一条用的正是真实布局：项目根嵌在自己的父目录里，
+    // 父目录候选（相当于 home）排在项目根前面。排序丢了的话外层目录先命中，
+    // 会残留「(本机路径)\<仓库目录名>\src\bdms.mjs」这半截。
     const text = path.resolve(here, '..', 'src', 'bdms.mjs')
-    assert.equal(redactMachinePaths(text), path.join('(本机路径)', 'src', 'bdms.mjs'))
-})
-
-test('父目录不能先命中：候选顺序反着传也整条换掉', () => {
-    // 与真实布局同形：项目根嵌在 home 下面。传候选时故意把父目录排前面，
-    // 排序一旦丢了，home 会先把项目根切成半截，留下 orca/workspaces/… 这种残段。
-    const home = path.join(os.tmpdir(), 'libmssdk-home')
-    const projectRoot = path.join(home, 'orca', 'workspaces', 'libmssdk', 'worktree')
-    const text = path.join(projectRoot, 'src', 'bdms.mjs')
-    assert.equal(
-        redactMachinePaths(text, [home, projectRoot]),
-        `${'(本机路径)'}${path.sep}src${path.sep}bdms.mjs`,
-    )
+    const parent = path.resolve(here, '..', '..')
+    assert.equal(redactMachinePaths(text, [parent]), path.join('(本机路径)', 'src', 'bdms.mjs'))
 })
 
 test('没给路径候选时原样返回，不吞掉信息', () => {
