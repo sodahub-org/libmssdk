@@ -42,18 +42,25 @@ function signRequest(overrides = {}) {
     })
 }
 
-/** Windows 8.3 短名：长名去掉非字母数字、取前 6 位大写加 `~N`；卷上没开 8.3 就返回 null。 */
+/** Windows 8.3 短名：长名大写后取前 6 位加 `~N`（NTFS 会保留连字符/下划线）；卷上没开 8.3 就返回 null。 */
 function shortNameOf(longPath) {
     const dir = path.dirname(longPath)
-    const stem = path.basename(longPath).replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 6)
-    for (let n = 1; n <= 9; n += 1) {
-        const candidate = path.join(dir, `${stem}~${n}`)
-        try {
-            if (fs.realpathSync.native(candidate).toLowerCase() === fs.realpathSync.native(longPath).toLowerCase()) {
-                return candidate
+    const base = path.basename(longPath).toUpperCase()
+    const stems = new Set([
+        base.replace(/[^A-Z0-9_-]/g, '').slice(0, 6),
+        base.replace(/[^A-Z0-9]/g, '').slice(0, 6),
+    ])
+    for (const stem of stems) {
+        if (!stem) continue
+        for (let n = 1; n <= 9; n += 1) {
+            const candidate = path.join(dir, `${stem}~${n}`)
+            try {
+                if (fs.realpathSync.native(candidate).toLowerCase() === fs.realpathSync.native(longPath).toLowerCase()) {
+                    return candidate
+                }
+            } catch {
+                // 这个编号不存在，试下一个
             }
-        } catch {
-            // 这个编号不存在，试下一个
         }
     }
     return null
@@ -485,7 +492,7 @@ test('Windows 8.3 短名不能绕过仓库护栏', t => {
     }
     const shortRoot = shortNameOf(repoRoot)
     if (!shortRoot) {
-        t.skip('这个卷没有启用 8.3 短名')
+        t.skip('没探测到 8.3 短名（卷未启用，或名字不合 8.3 规则）')
         return
     }
     const probe = 'capture-shortname-probe.jsonl'
@@ -501,6 +508,42 @@ test('Windows 8.3 短名不能绕过仓库护栏', t => {
         assert.equal(fs.existsSync(target), false, '仓库里出现了本不该有的文件')
     } finally {
         fs.rmSync(target, { force: true })
+    }
+})
+
+test('链接目标里用 8.3 短名也绕不过护栏', t => {
+    if (process.platform !== 'win32') {
+        t.skip('8.3 短名只在 Windows 上存在')
+        return
+    }
+    const shortRoot = shortNameOf(repoRoot)
+    if (!shortRoot) {
+        t.skip('没探测到 8.3 短名（卷未启用，或名字不合 8.3 规则）')
+        return
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-shortlink-'))
+    const link = path.join(dir, 'capture.jsonl')
+    const probe = 'capture-shortlink-probe.jsonl'
+    const targetShort = path.join(shortRoot, 'tools', probe)
+    const targetLong = path.join(repoRoot, 'tools', probe)
+    try {
+        fs.symlinkSync(targetShort, link, 'file')
+    } catch (error) {
+        t.skip(`这台机器建不出链接：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(link), /不入库/, '链接目标写成短名后，护栏判到了仓库外')
+        assert.throws(
+            () => start({ upstream: DEAD_UPSTREAM, host: '127.0.0.1', port: 0, out: link, log: () => {} }),
+            /不入库/,
+            '直调 start() 时同样要拒',
+        )
+        assert.equal(fs.existsSync(targetLong), false, '仓库里出现了本不该有的文件')
+    } finally {
+        fs.rmSync(link, { force: true })
+        fs.rmSync(dir, { recursive: true, force: true })
+        fs.rmSync(targetLong, { force: true })
     }
 })
 

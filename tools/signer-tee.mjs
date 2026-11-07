@@ -207,7 +207,9 @@ function resolveRealPath(resolved, hops = 0) {
                         throw unverifiablePathError(parentError)
                     }
                 }
-                return path.join(resolveTargetPath(baseDir, target, hops + 1), ...tail.reverse())
+                const resolvedTarget = resolveTargetPath(baseDir, target, hops + 1)
+                // 逐段解析只看结构；短名/大小写这类归一仍要交给 realpath，否则会和长名仓库根对不上。
+                return path.join(resolveRealPath(resolvedTarget, hops + 1), ...tail.reverse())
             }
             const parent = path.dirname(cursor)
             // 退到根还解析不了，同样拒：宁可误杀，也不退回字面判断。
