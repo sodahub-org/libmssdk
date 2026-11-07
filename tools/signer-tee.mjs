@@ -124,6 +124,7 @@ function startOf(value, baseDir) {
  * 按内核语义解析一个可能还不存在的路径：逐段跟随链接，`..` 作用在「已经解析过链接」的位置上。
  * `path.resolve` 只做字面折叠，遇到「链接段 + ..」会与内核算出不同的落点；护栏判的必须是
  * 内核最后真正写入的位置。遇到真缺段就按字面接上——那一段之下不可能再有链接（open 也会失败）。
+ * 返回 `{ path, hops }`：hops 已把这一路跟过的链接算进去，调用方接着用同一份预算。
  */
 function resolveTargetPath(baseDir, target, hops) {
     const start = startOf(target, baseDir)
@@ -143,7 +144,7 @@ function resolveTargetPath(baseDir, target, hops) {
             stat = fs.lstatSync(candidate)
         } catch (error) {
             if (error.code !== 'ENOENT') throw unverifiablePathError(error)
-            return path.join(resolved, segment, ...queue)
+            return { path: path.join(resolved, segment, ...queue), hops: used }
         }
         if (!stat.isSymbolicLink()) {
             resolved = candidate
@@ -161,7 +162,7 @@ function resolveTargetPath(baseDir, target, hops) {
         resolved = nested.resolved
         queue.unshift(...nested.queue)
     }
-    return resolved
+    return { path: resolved, hops: used }
 }
 
 /**
@@ -207,9 +208,10 @@ function resolveRealPath(resolved, hops = 0) {
                         throw unverifiablePathError(parentError)
                     }
                 }
-                const resolvedTarget = resolveTargetPath(baseDir, target, hops + 1)
+                const targetPath = resolveTargetPath(baseDir, target, hops + 1)
                 // 逐段解析只看结构；短名/大小写这类归一仍要交给 realpath，否则会和长名仓库根对不上。
-                return path.join(resolveRealPath(resolvedTarget, hops + 1), ...tail.reverse())
+                // hops 由解析结果带回来，两段共用同一份预算，不被重复计数。
+                return path.join(resolveRealPath(targetPath.path, targetPath.hops), ...tail.reverse())
             }
             const parent = path.dirname(cursor)
             // 退到根还解析不了，同样拒：宁可误杀，也不退回字面判断。

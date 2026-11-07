@@ -547,6 +547,26 @@ test('链接目标里用 8.3 短名也绕不过护栏', t => {
     }
 })
 
+test('超长链接链直接拒：不猜、也不无限跟', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-chain-'))
+    const target = path.join(os.tmpdir(), `libmssdk-tee-chain-target-${process.pid}.jsonl`)
+    try {
+        // 50 跳的悬空链：内核自己也会在 MAXSYMLINKS 处停，护栏要跟着拒。
+        for (let i = 50; i >= 1; i -= 1) {
+            const next = i === 50 ? target : path.join(dir, `l${i + 1}`)
+            fs.symlinkSync(next, path.join(dir, `l${i}`), 'file')
+        }
+    } catch (error) {
+        t.skip(`这台机器建不出链接链：${error.code || error.message}`)
+        return
+    }
+    try {
+        assert.throws(() => assertOutsideRepo(path.join(dir, 'l1')), /真实路径/, '超长链接链被当成正常路径放行了')
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
 test('只收 /sign：别的 path 一律 404，既不转发也不落盘', async () => {
     const seen = []
     const upstream = await listen((request, response) => {
