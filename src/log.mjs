@@ -25,7 +25,7 @@ export function redactHeaders(headers = {}) {
  * 「bdms(本机路径)node」—— 脱敏脱错了比不脱更糟。
  *
  * 长的排前面：home 通常是项目根的父目录，父目录先命中会把更长的路径切成半截，
- * 输出里就会留下「(本机路径)\orca\workspaces\…」这种残段。
+ * 输出里就会留下「(本机路径)\<仓库目录名>\src\…」这种残段。
  */
 function sensitivePaths(extra = []) {
     return [...extra, process.cwd(), os.homedir(), PROJECT_ROOT]

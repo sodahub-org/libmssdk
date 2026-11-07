@@ -5,7 +5,7 @@
 
 对外的变化是：`/sign` 的计算方式与失败状态码；`/livez` 与 `/readyz` 两个健康端点；
 `/probe`、`/track/stream`、`/config` 从 HTTP 上拿掉；交付能直接用的反向代理配置。
-`bridge` / `probe` 这两个本地命令的参数与输出形状不变；`selftest` / `config` 的输出、
+`bridge` / `probe` 这两个本地命令的参数与 stdout 形状不变；`selftest` / `config` 的输出、
 以及 `bridge` 失败时的 stderr 默认隐掉本机路径（`--verbose` 才打原文）。
 
 ## 1. 默认启动多个进程

@@ -42,13 +42,17 @@ function childEnv(envOverrides) {
     return Object.assign(env, envOverrides)
 }
 
-async function runWith(envOverrides, ...args) {
+async function runWithOptions(options, ...args) {
     try {
-        const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], { env: childEnv(envOverrides) })
+        const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...args], options)
         return { code: 0, stdout, stderr }
     } catch (error) {
         return { code: error.code ?? 1, stdout: error.stdout || '', stderr: error.stderr || '' }
     }
+}
+
+async function runWith(envOverrides, ...args) {
+    return runWithOptions({ env: childEnv(envOverrides) }, ...args)
 }
 
 /** bridge 要读 stdin：execFile 不关 stdin，不能让子进程一直等。 */
@@ -190,20 +194,27 @@ test('selftest 成功那支也不打本机路径，--verbose 才给原文', asyn
 })
 
 test('selftest 模块指向同名目录时，报错里只剩相对片段', async () => {
-    // 票面上的复现：路径存在但加载不了，require 会带上 require stack，
+    // 票面上的复现：路径存在但加载不了，require 会带上 require stack。
+    // 子进程的 cwd 挪到仓库外、home 设成仓库的父目录，复刻「home 是项目根父目录」那种布局：
     // 父目录先命中就会把 stack 里那条 src/bdms.mjs 剪成半截。
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-selftest-dir-'))
     const moduleDir = path.join(rootDir, 'dirnode')
     const modulePath = path.join(moduleDir, 'bdms.node')
+    const repoRoot = path.resolve(here, '..')
+    const repoParent = path.dirname(repoRoot)
     fs.mkdirSync(modulePath, { recursive: true })
+    const env = childEnv({ LIBMSSDK_BDMS_MODULE: modulePath })
+    // os.homedir()：Windows 认 USERPROFILE，POSIX 认 HOME，两个都给同一层。
+    env.HOME = repoParent
+    env.USERPROFILE = repoParent
     try {
-        const { code, stdout } = await runWith({ LIBMSSDK_BDMS_MODULE: modulePath }, 'selftest')
+        const { code, stdout } = await runWithOptions({ env, cwd: os.tmpdir() }, 'selftest')
         assert.equal(code, 1)
         const payload = JSON.parse(stdout)
         assert.equal(payload.signOk, false)
         assert.equal(payload.bdmsModule, '(本机路径)')
         const strings = stringValues(payload)
-        for (const leaked of [rootDir, moduleDir, modulePath, os.homedir()]) {
+        for (const leaked of [rootDir, moduleDir, modulePath, repoParent, os.homedir()]) {
             assert.equal(
                 strings.some(text => text.includes(leaked)),
                 false,
