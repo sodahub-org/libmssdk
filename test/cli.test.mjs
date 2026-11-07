@@ -80,6 +80,20 @@ async function run(...args) {
     return runWith({}, ...args)
 }
 
+/** 从 stderr 里取一条 event=error 的 JSON 行（非 JSON 行跳过）。 */
+function stderrEvent(stderr, event) {
+    for (const line of stderr.split('\n')) {
+        if (!line.trim()) continue
+        try {
+            const parsed = JSON.parse(line)
+            if (parsed.event === event) return parsed
+        } catch {
+            // 例如 bridge 的纯文本 stderr：不是 JSON，跳过
+        }
+    }
+    return null
+}
+
 /** 收集 JSON 里的全部字符串值：Windows 路径在 JSON 文本里被转义过，不能直接拿 stdout 做包含判断。 */
 function stringValues(value, out = []) {
     if (typeof value === 'string') out.push(value)
@@ -249,6 +263,30 @@ test('bridge 失败时 stderr 不带本机路径，--verbose 才给原文', asyn
         const verbose = await runWithStdin({ LIBMSSDK_BDMS_MODULE: modulePath }, payload, 'bridge', '--verbose')
         assert.equal(verbose.code, 1)
         assert.equal(verbose.stderr.includes(modulePath), true, '--verbose 时错误里的原文要保留')
+    } finally {
+        fs.rmSync(moduleDir, { recursive: true, force: true })
+    }
+})
+
+test('probe 失败时顶层兜底的 stderr 也不带本机路径，--verbose 才给原文', async () => {
+    // probe 先签名再出网：模块不存在时就在这一句失败，不会真去打上游。
+    const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-probe-missing-'))
+    const modulePath = path.join(moduleDir, 'bdms.node')
+    const env = { LIBMSSDK_BDMS_MODULE: modulePath }
+    const args = ['probe', '--track', '1', '--device', '7000000000000001']
+    try {
+        const quiet = await runWith(env, ...args)
+        assert.equal(quiet.code, 1)
+        const errorLine = stderrEvent(quiet.stderr, 'error')
+        assert.ok(errorLine, `stderr 里没有 event=error：${quiet.stderr}`)
+        assert.equal(errorLine.message.includes(moduleDir), false, `错误里漏了本机路径：${errorLine.message}`)
+        assert.match(errorLine.message, /bdms\.node 不存在：\(本机路径\)/, '话要说全，只留「不存在」就够了')
+
+        const verbose = await runWith(env, ...args, '--verbose')
+        assert.equal(verbose.code, 1)
+        const verboseError = stderrEvent(verbose.stderr, 'error')
+        assert.ok(verboseError, `--verbose 时 stderr 里没有 event=error：${verbose.stderr}`)
+        assert.equal(verboseError.message.includes(modulePath), true, '--verbose 时错误里的原文要保留')
     } finally {
         fs.rmSync(moduleDir, { recursive: true, force: true })
     }

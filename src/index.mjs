@@ -257,6 +257,8 @@ try {
             process.exitCode = 2
     }
 } catch (error) {
-    logError(error?.message || error)
+    // 顶层兜底也会带本机路径（例如 probe 先签名、模块加载失败时抛的就是模块路径），
+    // 与其余输出同一口径：默认隐掉，--verbose 才打原文。
+    logError(displayPath(String(error?.message || error)))
     process.exitCode = 1
 }
