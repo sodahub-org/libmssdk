@@ -15,7 +15,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, test } from 'node:test'
 
-const { assertOutsideRepo, assertUpstreamUrl, captureRecord, formatCapture, start } = await import('../tools/signer-tee.mjs')
+const { assertOutsideRepo, assertUpstreamUrl, captureRecord, formatCapture, received, start, verifyOpenedCapture } =
+    await import('../tools/signer-tee.mjs')
 
 const SECRET_COOKIE = 'sessionid_ss=SECRET-COOKIE-VALUE'
 const SECRET_TOKEN = 'Bearer SECRET-TOKEN-VALUE'
@@ -131,6 +132,29 @@ test('打到终端的那一行只留首尾：完整设备号不进日志', () =>
     assert.ok(!line.includes('1789435000000'), `设备号被整串打出来了：${line}`)
     assert.match(line, /13位/)
     assert.ok(!line.includes('SECRET'), 'cookie 值不该顺带出现')
+})
+
+test('回显行把请求体里的控制字符与 bidi 压平：ESC/CSI、U+2028、RLO 都不能进终端', () => {
+    const dirty = '\u001b[31m\u202e\u2066\u200e\u2028'
+    const url =
+        'https://api.qishui.com/luna/pc/track_v2' +
+        `?device_id=${encodeURIComponent('\u001b[31m12345')}` +
+        `&iid=${encodeURIComponent('123\u202e456')}` +
+        `&fp=${encodeURIComponent('123\u2066')}` +
+        `&version_name=${encodeURIComponent(`3.3.0${dirty}`)}`
+    const line = formatCapture(captureRecord({ url, method: 'PO\u001bST' }).record)
+    for (const character of ['\u001b', '\u202e', '\u2066', '\u200e', '\u2028']) {
+        assert.ok(!line.includes(character), `${JSON.stringify(character)} 原样进了终端：${JSON.stringify(line)}`)
+    }
+    assert.match(line, /PO\?ST/, `method 里的 ESC 没被压平：${line}`)
+    assert.match(line, /版本=3\.3\.0\?/, `version_name 里的控制符没被压平：${line}`)
+    assert.match(line, /device=\?\[3\*\*\*345/, `掩码后的身份号没压平：${line}`)
+})
+
+test('received 连 bidi 一起压平：deny 行与回显行共用同一份', () => {
+    const flat = received('\u200eA\u200fB\u202aC\u202eD\u2066E\u2069F\u2028G\u2029H')
+    assert.equal(flat, '?A?B?C?D?E?F?G?H', `bidi 或行分隔符漏过去了：${JSON.stringify(flat)}`)
+    assert.equal(received('x'.repeat(100)).length, 81, '截断仍是 80 字加省略号')
 })
 
 test('抓包件不许落在仓库目录里：真实设备号属于不入库的那一类', () => {
@@ -360,6 +384,61 @@ test('启动后父目录被换成指进仓库的链接：落笔前再判一次�
         fs.rmSync(inRepo, { force: true })
         fs.rmSync(dir, { force: true })
         fs.rmSync(moved, { recursive: true, force: true })
+    }
+})
+
+test('open 之后的句柄复核：句柄和路径不是同一份时就拒，正常文件不误杀', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-handle-'))
+    const openedFile = path.join(dir, 'opened.jsonl')
+    const otherFile = path.join(dir, 'other.jsonl')
+    fs.writeFileSync(openedFile, '')
+    fs.writeFileSync(otherFile, '')
+    const handle = fs.openSync(openedFile, 'a', 0o600)
+    try {
+        assert.doesNotThrow(() => verifyOpenedCapture(handle, openedFile), '句柄与路径一致时被误杀')
+        assert.throws(
+            () => verifyOpenedCapture(handle, otherFile),
+            /换成了另一份/,
+            '句柄指向 A、路径却给 B，复核还放行',
+        )
+    } finally {
+        fs.closeSync(handle)
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('抓包件有第二个硬链接名时一条都不写：硬链接没有可跟的目标，护栏保守拒', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-hardlink-'))
+    const out = path.join(dir, 'capture.jsonl')
+    const alias = path.join(dir, 'alias.jsonl')
+    fs.writeFileSync(out, '')
+    try {
+        fs.linkSync(out, alias)
+    } catch (error) {
+        t.skip(`这台机器建不出硬链接：${error.code || error.message}`)
+        fs.rmSync(dir, { recursive: true, force: true })
+        return
+    }
+    const logged = []
+    const upstream = await listen((request, response) => {
+        request.resume()
+        request.on('end', () => response.end('{"ok":true}'))
+    })
+    try {
+        const tee = await startTee({ upstream: upstream.url, out, log: line => logged.push(line) })
+        const response = await fetch(`http://127.0.0.1:${tee.address().port}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: signRequest(),
+        })
+        assert.equal(response.status, 200, '拒绝落盘不能把调用方晾着：转发照做')
+        assert.equal(fs.readFileSync(out, 'utf8'), '', '抓包件被写进了内容')
+        assert.equal(fs.readFileSync(alias, 'utf8'), '', '硬链接那一头也被写进了内容')
+        const text = logged.join('')
+        assert.match(text, /event=error 落笔前被护栏拒了/, `硬链接没被拒：${text}`)
+        assert.match(text, /nlink=2/, '拒绝原因要说清是硬链接')
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
     }
 })
 
