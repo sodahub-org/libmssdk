@@ -16,9 +16,10 @@
 //
 // 落盘护栏的残留边界：判定（assertOutsideRepo）与 open 之间仍有窗口，open 之后再用句柄复核——
 // fstat 的 nlink、重新判路径、句柄 inode 与路径 inode 对比，Linux 再读 /proc/self/fd 的真实路径。
-// nlink > 1 的硬链接保守拒。但同用户攻击者在复核之后还能把已打开的文件改名/移动，这一段没有
-// 可移植的锁能防；Windows/macOS 上 Node 也无法从句柄反查真实路径。这里只说「把窗口收窄」，
-// 不说「已经防死」。
+// nlink > 1 的硬链接保守拒。但同用户攻击者在复核之后还能把已打开的文件改名/移动，或再 link 出
+// 第二个名字进仓库，nlink 快照拦不住；Windows/macOS 上 Node 也无法从句柄反查真实路径。有的文件
+// 系统不报 inode（恒为 0），这时无法确认句柄与路径是同一份，护栏会保守拒写并在错误里说明。
+// 这里只说「把窗口收窄」，不说「已经防死」。
 //
 //   node tools/signer-tee.mjs --upstream http://127.0.0.1:8899/sign --out <仓库外的路径>
 //   node tools/signer-tee.mjs --upstream https://signer.example/sign --port 18899 --out <路径>
@@ -234,21 +235,23 @@ function resolveRealPath(resolved, hops = 0) {
     }
 }
 
-/** 落笔前护栏的错误码：写入口靠它把「被护栏拒了」和磁盘失败分开报。 */
-const GUARD_ERROR_CODES = new Set(['EOUTSIDEREPO', 'EUNVERIFIABLEPATH', 'EHARDLINK', 'EPATHCHANGED'])
+/** 落笔前护栏的错误码：由 guardError 自己登记，新增拒绝理由不用再手动对齐两处。 */
+const GUARD_ERROR_CODES = new Set()
 
 /** 带自己码的护栏错误：写入口据此别把「拒绝写」报成磁盘故障。 */
 function guardError(code, message) {
     const error = new Error(message)
     error.code = code
+    GUARD_ERROR_CODES.add(code)
     return error
 }
 
 /** 把「解析不了真实路径」包成带自己码的错误：写入口据此别把护栏拒绝报成磁盘失败。 */
 function unverifiablePathError(error) {
-    const wrapped = new Error(`无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
-    wrapped.code = 'EUNVERIFIABLEPATH'
-    return wrapped
+    return guardError(
+        'EUNVERIFIABLEPATH',
+        `无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`,
+    )
 }
 
 /** candidate 等于 root 或在它下面都算「里面」；`..<分隔符>` 与跨盘绝对路径算出去。 */
@@ -267,10 +270,8 @@ function insideRepo(candidate, root) {
 export function assertOutsideRepo(target) {
     const resolved = path.resolve(target)
     if (insideRepo(resolved, REPO_ROOT) || insideRepo(resolveRealPath(resolved), REAL_REPO_ROOT)) {
-        const error = new Error('--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
         // 带上自己的码：写入口复用这条判据时，调用方要能把它和磁盘失败分开报。
-        error.code = 'EOUTSIDEREPO'
-        throw error
+        throw guardError('EOUTSIDEREPO', '--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
     }
     return resolved
 }
@@ -333,7 +334,11 @@ export function verifyOpenedCapture(handle, file) {
         throw guardError('EPATHCHANGED', `抓包件在判定与落笔之间被换掉了（code=${error.code || error.name}），这条不写`)
     }
     // 有的文件系统不报 inode（恒为 0）：这时没法确认句柄与路径是同一份，宁可不写。
-    if (opened.ino === 0n || current.ino === 0n || opened.dev !== current.dev || opened.ino !== current.ino) {
+    // 这跟「被人换掉了」是两回事，得给单独的原因，别让取证的人照着假线索排查。
+    if (opened.ino === 0n || current.ino === 0n) {
+        throw guardError('EINODEMISSING', '文件系统不报 inode，无法确认抓包件是同一份：护栏保守拒，这条不写')
+    }
+    if (opened.dev !== current.dev || opened.ino !== current.ino) {
         throw guardError('EPATHCHANGED', '抓包件在判定与落笔之间被换成了另一份，这条不写')
     }
     if (process.platform === 'linux') {
