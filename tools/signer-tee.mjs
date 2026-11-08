@@ -97,9 +97,10 @@ export function captureRecord({ url, headers = {}, method = 'POST', tsMs }) {
  */
 export function formatCapture(record) {
     const { deviceId, iid, fp } = record.identity
+    const idPart = (label, value) => `${label}=${received(maskDeviceId(value))}(${value.length}位)｜`
     return (
-        `event=tee ${received(record.method)} ${received(record.path)}｜device=${received(maskDeviceId(deviceId))}(${deviceId.length}位)｜` +
-        `iid=${received(maskDeviceId(iid))}(${iid.length}位)｜fp=${received(maskDeviceId(fp))}(${fp.length}位)｜` +
+        `event=tee ${received(record.method)} ${received(record.path)}｜` +
+        `${idPart('device', deviceId)}${idPart('iid', iid)}${idPart('fp', fp)}` +
         `版本=${received(record.shape.version_name || '?')}｜头名=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
     )
 }
@@ -235,15 +236,20 @@ function resolveRealPath(resolved, hops = 0) {
     }
 }
 
-/** 落笔前护栏的错误码：由 guardError 自己登记，新增拒绝理由不用再手动对齐两处。 */
-const GUARD_ERROR_CODES = new Set()
+/**
+ * 带自己码的护栏错误：写入口据此把「拒绝写」和磁盘故障分开报。
+ * 用类型而不是码表来分类：新增拒绝理由不用再同步另一处清单。
+ */
+class GuardError extends Error {
+    constructor(code, message) {
+        super(message)
+        this.name = 'GuardError'
+        this.code = code
+    }
+}
 
-/** 带自己码的护栏错误：写入口据此别把「拒绝写」报成磁盘故障。 */
 function guardError(code, message) {
-    const error = new Error(message)
-    error.code = code
-    GUARD_ERROR_CODES.add(code)
-    return error
+    return new GuardError(code, message)
 }
 
 /** 把「解析不了真实路径」包成带自己码的错误：写入口据此别把护栏拒绝报成磁盘失败。 */
@@ -313,7 +319,7 @@ export function assertUpstreamUrl(upstream) {
  * - 重新判路径：判定之后、open 之前父目录被换成指进仓库的链接时，这里抓；
  * - 句柄 inode 与路径 inode 必须一致：open 与复核之间路径被换掉时，这里抓；
  * - Linux 再读 /proc/self/fd 的真实路径：那是句柄侧的事实，不受路径竞态影响。
- * 复核不过就一个字节都不写。残留（同用户改名/移动、非 Linux 没有句柄反查路径）写在文件头。
+ * 复核不过就一个字节都不写。残留边界见文件头。
  */
 export function verifyOpenedCapture(handle, file) {
     let opened
@@ -525,7 +531,7 @@ export function start({
                         written = true
                     } catch (error) {
                         // 落笔前被护栏拒了不是 I/O 故障：把「被谁挡了、为什么」说出来，别伪装成磁盘问题。
-                        if (GUARD_ERROR_CODES.has(error.code)) {
+                        if (error instanceof GuardError) {
                             report(`event=error 落笔前被护栏拒了（${error.message}），这条只转发没记录\n`)
                         } else {
                             report(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
