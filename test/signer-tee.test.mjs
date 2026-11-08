@@ -135,7 +135,7 @@ test('打到终端的那一行只留首尾：完整设备号不进日志', () =>
 })
 
 test('回显行把请求体里的控制字符与 bidi 压平：ESC/CSI、U+2028、RLO 都不能进终端', () => {
-    const dirty = '\u001b[31m\u202e\u2066\u200e\u2028'
+    const dirty = '\u001b[31m\u202e\u2066\u200e\u2028\u2029\u009b'
     const url =
         'https://api.qishui.com/luna/pc/track_v2' +
         `?device_id=${encodeURIComponent('\u001b[31m12345')}` +
@@ -143,7 +143,7 @@ test('回显行把请求体里的控制字符与 bidi 压平：ESC/CSI、U+2028�
         `&fp=${encodeURIComponent('123\u2066')}` +
         `&version_name=${encodeURIComponent(`3.3.0${dirty}`)}`
     const line = formatCapture(captureRecord({ url, method: 'PO\u001bST' }).record)
-    for (const character of ['\u001b', '\u202e', '\u2066', '\u200e', '\u2028']) {
+    for (const character of ['\u001b', '\u202e', '\u2066', '\u200e', '\u2028', '\u2029', '\u009b']) {
         assert.ok(!line.includes(character), `${JSON.stringify(character)} 原样进了终端：${JSON.stringify(line)}`)
     }
     assert.match(line, /PO\?ST/, `method 里的 ESC 没被压平：${line}`)
@@ -416,6 +416,25 @@ test('open 之后的句柄复核：句柄和路径不是同一份时就拒，正
             '句柄指向 A、路径却给 B，复核还放行',
         )
     } finally {
+        fs.closeSync(handle)
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+test('文件系统不报 inode 时单独给原因：不伪装成「被换掉了」', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-noino-'))
+    const file = path.join(dir, 'capture.jsonl')
+    fs.writeFileSync(file, '')
+    const handle = fs.openSync(file, 'a', 0o600)
+    const originalFstat = fs.fstatSync
+    fs.fstatSync = function patched(fd, options) {
+        if (fd === handle) return { nlink: 1n, dev: 1n, ino: 0n }
+        return originalFstat.call(fs, fd, options)
+    }
+    try {
+        assert.throws(() => verifyOpenedCapture(handle, file), /不报 inode/, 'inode 缺失被报成了别的失败')
+    } finally {
+        fs.fstatSync = originalFstat
         fs.closeSync(handle)
         fs.rmSync(dir, { recursive: true, force: true })
     }
