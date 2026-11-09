@@ -11,6 +11,16 @@
 // 抓包件在 POSIX 上是 0600（Windows 的 NTFS 不认这个位，那里靠的是账号所有权 + 放在仓库外），
 // 并且拒绝写进仓库目录——真实设备号属于「不得入库」的那一类。
 //
+// 终端注入：回显行与 deny 行共用同一个 received()，把 C0/C1/DEL、U+2028/29 与 bidi 控制符
+// 都压成 `?`；请求体里的 method、path、version_name 与掩码后的身份号一律先过它。
+//
+// 落盘护栏的残留边界：判定（assertOutsideRepo）与 open 之间仍有窗口，open 之后再用句柄复核——
+// fstat 的 nlink、重新判路径、句柄 inode 与路径 inode 对比，Linux 再读 /proc/self/fd 的真实路径。
+// nlink > 1 的硬链接保守拒。但同用户攻击者在复核之后还能把已打开的文件改名/移动，或再 link 出
+// 第二个名字进仓库，nlink 快照拦不住；Windows/macOS 上 Node 也无法从句柄反查真实路径。有的文件
+// 系统不报 inode（恒为 0），这时无法确认句柄与路径是同一份，护栏会保守拒写并在错误里说明。
+// 这里只说「把窗口收窄」，不说「已经防死」。
+//
 //   node tools/signer-tee.mjs --upstream http://127.0.0.1:8899/sign --out <仓库外的路径>
 //   node tools/signer-tee.mjs --upstream https://signer.example/sign --port 18899 --out <路径>
 //   然后把播放器的 signer_url 指到 http://127.0.0.1:<port>/sign，随便播一首，Ctrl+C。
@@ -81,13 +91,17 @@ export function captureRecord({ url, headers = {}, method = 'POST', tsMs }) {
     return { record, reason: null }
 }
 
-/** 打到终端的那一行：设备号只留首尾，曲名与完整曲目号根本不进这里。 */
+/**
+ * 打到终端的那一行：设备号只留首尾，曲名与完整曲目号根本不进这里。
+ * 来自请求体的每一段都先过 received()：query 会解码百分号编码，控制字符能原样进来。
+ */
 export function formatCapture(record) {
     const { deviceId, iid, fp } = record.identity
+    const idPart = (label, value) => `${label}=${received(maskDeviceId(value))}(${value.length}位)｜`
     return (
-        `event=tee ${record.method} ${record.path}｜device=${maskDeviceId(deviceId)}(${deviceId.length}位)｜` +
-        `iid=${maskDeviceId(iid)}(${iid.length}位)｜fp=${maskDeviceId(fp)}(${fp.length}位)｜` +
-        `版本=${record.shape.version_name || '?'}｜头名=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
+        `event=tee ${received(record.method)} ${received(record.path)}｜` +
+        `${idPart('device', deviceId)}${idPart('iid', iid)}${idPart('fp', fp)}` +
+        `版本=${received(record.shape.version_name || '?')}｜头名=${record.headerNames.length}条｜cookie字段=${record.cookieFields}`
     )
 }
 
@@ -222,14 +236,28 @@ function resolveRealPath(resolved, hops = 0) {
     }
 }
 
-/** 落笔前护栏的错误码：写入口靠它把「被护栏拒了」和磁盘失败分开报。 */
-const GUARD_ERROR_CODES = new Set(['EOUTSIDEREPO', 'EUNVERIFIABLEPATH'])
+/**
+ * 带自己码的护栏错误：写入口据此把「拒绝写」和磁盘故障分开报。
+ * 用类型而不是码表来分类：新增拒绝理由不用再同步另一处清单。
+ */
+class GuardError extends Error {
+    constructor(code, message) {
+        super(message)
+        this.name = 'GuardError'
+        this.code = code
+    }
+}
+
+function guardError(code, message) {
+    return new GuardError(code, message)
+}
 
 /** 把「解析不了真实路径」包成带自己码的错误：写入口据此别把护栏拒绝报成磁盘失败。 */
 function unverifiablePathError(error) {
-    const wrapped = new Error(`无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`)
-    wrapped.code = 'EUNVERIFIABLEPATH'
-    return wrapped
+    return guardError(
+        'EUNVERIFIABLEPATH',
+        `无法确认抓包件的真实路径（code=${error.code || error.name}）：护栏不能降级成字面判断`,
+    )
 }
 
 /** candidate 等于 root 或在它下面都算「里面」；`..<分隔符>` 与跨盘绝对路径算出去。 */
@@ -248,10 +276,8 @@ function insideRepo(candidate, root) {
 export function assertOutsideRepo(target) {
     const resolved = path.resolve(target)
     if (insideRepo(resolved, REPO_ROOT) || insideRepo(resolveRealPath(resolved), REAL_REPO_ROOT)) {
-        const error = new Error('--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
         // 带上自己的码：写入口复用这条判据时，调用方要能把它和磁盘失败分开报。
-        error.code = 'EOUTSIDEREPO'
-        throw error
+        throw guardError('EOUTSIDEREPO', '--out 不能在仓库目录里：真实设备号不入库，请指到仓库外的路径')
     }
     return resolved
 }
@@ -288,6 +314,56 @@ export function assertUpstreamUrl(upstream) {
 }
 
 /**
+ * open 之后的句柄级复核：写之前必须确认「手里这个句柄」就是路径上那份、且在仓库外。
+ * - nlink > 1：仓库外的名字可能只是指向仓库文件的硬链接，realpath 原理上跟不出来，保守拒；
+ * - 重新判路径：判定之后、open 之前父目录被换成指进仓库的链接时，这里抓；
+ * - 句柄 inode 与路径 inode 必须一致：open 与复核之间路径被换掉时，这里抓；
+ * - Linux 再读 /proc/self/fd 的真实路径：那是句柄侧的事实，不受路径竞态影响。
+ * 复核不过就一个字节都不写。残留边界见文件头。
+ */
+export function verifyOpenedCapture(handle, file) {
+    let opened
+    try {
+        opened = fs.fstatSync(handle, { bigint: true })
+    } catch (error) {
+        throw guardError('EUNVERIFIABLEPATH', `无法确认打开后的抓包件（code=${error.code || error.name}）`)
+    }
+    if (opened.nlink > 1n) {
+        throw guardError('EHARDLINK', `抓包件还有别的硬链接名（nlink=${opened.nlink}）：无法确认那些名字不在仓库里，保守拒`)
+    }
+    // 路径重判：父目录若在判定之后被换成指进仓库的链接，这里拦。
+    assertOutsideRepo(file)
+    let current
+    try {
+        current = fs.statSync(file, { bigint: true })
+    } catch (error) {
+        throw guardError('EPATHCHANGED', `抓包件在判定与落笔之间被换掉了（code=${error.code || error.name}），这条不写`)
+    }
+    // 有的文件系统不报 inode（恒为 0）：这时没法确认句柄与路径是同一份，宁可不写。
+    // 这跟「被人换掉了」是两回事，得给单独的原因，别让取证的人照着假线索排查。
+    if (opened.ino === 0n || current.ino === 0n) {
+        throw guardError('EINODEMISSING', '文件系统不报 inode，无法确认抓包件是同一份：护栏保守拒，这条不写')
+    }
+    if (opened.dev !== current.dev || opened.ino !== current.ino) {
+        throw guardError('EPATHCHANGED', '抓包件在判定与落笔之间被换成了另一份，这条不写')
+    }
+    if (process.platform === 'linux') {
+        let actual = null
+        try {
+            actual = fs.readlinkSync(`/proc/self/fd/${handle}`)
+        } catch {
+            // 读不到 /proc（裁剪过的容器等）就保持与其它平台同一档保护，不额外降级。
+        }
+        if (actual) {
+            if (actual.endsWith(' (deleted)')) {
+                throw guardError('EPATHCHANGED', '抓包件在落笔前被删掉了，这条不写')
+            }
+            assertOutsideRepo(actual)
+        }
+    }
+}
+
+/**
  * 把一条记录追加进抓包件。这是唯一的写入口：落笔前再判一次「不在仓库里」，
  * 启动时判过的那一次挡不住开了几十分钟里被换掉的父目录。
  */
@@ -295,8 +371,11 @@ function appendRecord(file, record) {
     // 判据写进写入口本身（与 AGENTS 约定 5 同一个思路）：启动时判过一次，但这台中转可能开着
     // 几十分钟，父目录在这段时间里被换成指进仓库的链接时，只有落笔前这次能拦住。
     const target = assertOutsideRepo(file)
-    const handle = fs.openSync(target, 'a', 0o600)
+    let handle = null
     try {
+        handle = fs.openSync(target, 'a', 0o600)
+        // 先按句柄复核，再写第一个字节：判定与 open 之间的窗口在这里收窄，硬链接也在这里拒。
+        verifyOpenedCapture(handle, target)
         // 先把权限定下来再写：`openSync` 的 mode 会被既有 umask 削掉，而复用一份权限更宽的既有文件时，
         // 第一条（写着完整设备号的）记录不该以旧权限落地哪怕一小会儿。
         try {
@@ -306,17 +385,29 @@ function appendRecord(file, record) {
         }
         fs.writeSync(handle, `${JSON.stringify(record)}\n`)
     } finally {
-        fs.closeSync(handle)
+        if (handle !== null) fs.closeSync(handle)
     }
 }
 
 /**
- * 回显「收到的事实」时压成一行：对端能塞进请求行/头里的控制字符不能借日志插图或换行。
- * Node 的头值是 latin1，0x80–0x9f 的 C1 会原样进来（例如 U+009B 就是 CSI）；DEL 与
- * Unicode 行分隔符 U+2028 / U+2029 同样会破坏「一行一条」的口径，一起换成 `?`。
+ * 压平终端不安全字符：C0/C1/DEL、Unicode 行分隔符，以及 bidi 控制符
+ * （U+200E/F、U+202A–E、U+2066–69）。这些字符能把一行日志在视觉上拆开或伪装方向。
+ * 回显行与 deny 行共用这一份。
  */
-function received(value, limit = 80) {
-    const text = String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '?')
+function flattenForTerminal(value) {
+    return String(value ?? '').replace(
+        /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2028\u2029\u2066-\u2069]/g,
+        '?',
+    )
+}
+
+/**
+ * 回显「收到的事实」时压成一行：对端能塞进请求行/头里的控制字符不能借日志插图或换行。
+ * Node 的头值是 latin1，0x80–0x9f 的 C1 会原样进来（例如 U+009B 就是 CSI）；DEL、bidi 与
+ * Unicode 行分隔符同样会破坏「一行一条」的口径，一起换成 `?`。
+ */
+export function received(value, limit = 80) {
+    const text = flattenForTerminal(value)
     return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
@@ -440,7 +531,7 @@ export function start({
                         written = true
                     } catch (error) {
                         // 落笔前被护栏拒了不是 I/O 故障：把「被谁挡了、为什么」说出来，别伪装成磁盘问题。
-                        if (GUARD_ERROR_CODES.has(error.code)) {
+                        if (error instanceof GuardError) {
                             report(`event=error 落笔前被护栏拒了（${error.message}），这条只转发没记录\n`)
                         } else {
                             report(`event=error 抓包件写不进去（code=${error.code || error.name}），这条只转发没记录\n`)
