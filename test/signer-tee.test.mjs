@@ -501,6 +501,30 @@ test('真实路径解析不了时护栏要拒，不许退回字面判断', t => 
     }
 })
 
+test('realpath 说 ENOENT、lstat 却被拒（EACCES）：不许当成「还不存在」往上退', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-eacces-'))
+    const locked = path.join(dir, 'locked')
+    const originalLstat = fs.lstatSync
+    // 与「复用一份权限更宽的既有抓包件」那条同一个耦合：工具与用例 import 的是同一个 `fs`
+    // 模块实例，打到全局 `fs.lstatSync` 上的桩才会进 resolveRealPath()。这里模拟的是
+    // 「realpath 报 ENOENT（末段确实没有），但父目录的 lstat 被拒」——旧写法把这个 EACCES
+    // 咽下去，退到上一层照样放行，护栏就降级成了字面判据。
+    fs.lstatSync = function patched(candidate, ...rest) {
+        if (String(candidate) === locked) throw Object.assign(new Error('lstat 被拒'), { code: 'EACCES' })
+        return originalLstat.call(fs, candidate, ...rest)
+    }
+    try {
+        assert.throws(
+            () => assertOutsideRepo(path.join(locked, 'capture.jsonl')),
+            /真实路径/,
+            'EACCES 被当成了「还不存在」，护栏退回字面判断',
+        )
+    } finally {
+        fs.lstatSync = originalLstat
+        fs.rmSync(dir, { recursive: true, force: true })
+    }
+})
+
 test('悬空链接指进仓库：realpath 报 ENOENT 也不能当成「还不存在」', t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libmssdk-tee-dangling-'))
     const link = path.join(dir, 'capture.jsonl')
@@ -885,6 +909,13 @@ test('上游是非回环地址时不许走明文 http：入站拦得住，出站
     assert.doesNotThrow(() => assertUpstreamUrl('https://signer.example/sign'), '远端走 https 是文档里给的用法')
     assert.throws(() => assertUpstreamUrl('http://10.1.2.3/sign'), /https/)
     assert.throws(() => assertUpstreamUrl('ftp://127.0.0.1/sign'), /http/)
+    // 返回值必须是规范化后的那份：`start()` 拿它去 fetch，而不是再拼一次原始字符串。
+    assert.equal(
+        assertUpstreamUrl('HTTP://127.0.0.1:8899/sign'),
+        'http://127.0.0.1:8899/sign',
+        '返回值没规范化（scheme 大小写），交给 fetch 的就不是判据看过的那份',
+    )
+    assert.equal(assertUpstreamUrl('http://127.0.0.1:80/sign'), 'http://127.0.0.1/sign', '默认端口应在返回值里规范化掉')
 })
 
 test('上游回跳转时不跟着跑：带 cookie 的请求体不能被重发到别处', async () => {
@@ -968,6 +999,8 @@ test('门口拒掉的四种请求各出一行声，并带上收到的值：护�
     assert.match(text, /收到 POST \/whatever-not-sign/, `404 没带收到的请求行：${JSON.stringify(text)}`)
     assert.match(text, /收到 text\/plain/, `415 没带收到的 content-type：${JSON.stringify(text)}`)
     assert.match(text, /Origin=http:\/\/evil\.example/, `403 没带收到的 Origin：${JSON.stringify(text)}`)
+    assert.match(text, /event=deny 413[^\n]*content-type=application\/json/, `413 没带收到的 content-type：${JSON.stringify(text)}`)
+    assert.match(text, /event=deny 413[^\n]*content-length=\d+/, `413 没带收到的 content-length：${JSON.stringify(text)}`)
     assert.ok(!text.includes('SECRET-COOKIE-VALUE'), '出声也不得带出报文内容')
     assert.equal(fs.existsSync(out), false, '四条都不该落盘')
 })

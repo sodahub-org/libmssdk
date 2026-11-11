@@ -7,7 +7,7 @@
 //
 // 凭据边界：Cookie 与 Authorization 的值一律不落盘（只记字段名与个数）；`x-helios` / `x-medusa`
 // 是逐请求签名，也不记。落盘的只有设备身份、公共参数里的形状字段与请求头名——UA 的值不存。
-// 拒绝时打的 `event=deny` 会带上收到的请求行与 Origin（压成一行、截断）：那是判定依据，不是凭据。
+// 拒绝时打的 `event=deny` 会带上收到的请求行、content-type 与 Origin（压成一行、截断）：那是判定依据，不是凭据。
 // 抓包件在 POSIX 上是 0600（Windows 的 NTFS 不认这个位，那里靠的是账号所有权 + 放在仓库外），
 // 并且拒绝写进仓库目录——真实设备号属于「不得入库」的那一类。
 //
@@ -199,8 +199,10 @@ function resolveRealPath(resolved, hops = 0) {
             let dangling = false
             try {
                 dangling = fs.lstatSync(cursor).isSymbolicLink()
-            } catch {
-                // lstat 也看不见这一段：它确实还不存在，往上退。
+            } catch (error) {
+                // 与上一段同一个口径：lstat 也只有 ENOENT 能当「这一段还不存在」。EACCES / ELOOP
+                // 之类说明路径本身不成立，往上退同样会把护栏降级成字面判断，直接拒。
+                if (error.code !== 'ENOENT') throw unverifiablePathError(error)
             }
             if (dangling) {
                 // 跳数耗尽不是「路径不存在」：给它自己的码，别让报错把操作者带偏。
@@ -479,9 +481,10 @@ export function start({
             return reply(404, { ok: false, error: '只转发 POST /sign' })
         }
         // 只认 JSON：浏览器 no-cors 的 simple POST 能送 text/plain 而不必预检，这一道就是拦它的。
-        const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
-        if (contentType !== 'application/json') {
-            report(`event=deny 415 请求体不是 application/json（收到 ${received(contentType || '(没有)')}）\n`)
+        // 变量名带 request：.then 里还有一份上游响应的 content-type，同名会遮蔽外层、在 TDZ 里被读。
+        const requestContentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
+        if (requestContentType !== 'application/json') {
+            report(`event=deny 415 请求体不是 application/json（收到 ${received(requestContentType || '(没有)')}）\n`)
             return reply(415, { ok: false, error: '请求体必须是 application/json' })
         }
         // 这台机器没有跨源调用方：桌面签名客户端不发 Origin，浏览器页面才发。带 Origin 就不是该收的那种请求。
@@ -492,8 +495,13 @@ export function start({
         readBody(request)
             .then(async text => {
                 if (text === null) {
-                    // 413 最容易被误读成「中转挂了」：调用方拿到一个它没预期的状态码，这里必须留一行。
-                    report(`event=deny 413 请求体超出上限（上限 ${MAX_BODY_BYTES} 字节），这条不收\n`)
+                    // 413 同样要带上收到的事实：上限是判据，content-type / content-length 是这条请求
+                    // 自己的形状（都不含凭据）。丢了它们，操作者只能看到「超限」两个字。
+                    const statedLength = request.headers['content-length']
+                    const statedShape =
+                        `content-type=${received(requestContentType)}` +
+                        (statedLength ? ` content-length=${received(statedLength)}` : '')
+                    report(`event=deny 413 请求体超出上限（上限 ${MAX_BODY_BYTES} 字节；收到 ${statedShape}），这条不收\n`)
                     return reply(413, { ok: false, error: '请求体超出上限' })
                 }
                 let record = null
