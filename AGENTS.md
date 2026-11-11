@@ -41,6 +41,7 @@ verify/wine-multi/   手动验证：Docker + Wine 下多进程（Wine 那部分�
                      例外是 bdms-layers.mjs 分层探针的离线用例——用桩模块，不要二进制也不要凭据）
 docs/CONTRACT.md     服务契约
 docs/UPGRADING.md    升级说明：默认多进程、错误契约与端点收拢的行为变化
+CHANGELOG.md         对外变更清单：按新增 / 变更 / 移除归位，发版时更新
 docs/DEPLOY-WINDOWS.md Windows 部署
 docs/INVESTIGATION-DEVICE-ENTITLEMENT.md 设备身份与整曲权益的对照实验与结论
 deploy/README.md     Docker 部署

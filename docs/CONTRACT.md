@@ -97,7 +97,7 @@ Meting-API 的远程签名服务保持兼容，
 {
   "ok": true,
   "service": "libmssdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "queue": { "depth": 0, "limit": 4 },
   "workers": { "total": 1, "ready": 1, "busy": 0 },
   "rateLimit": {
@@ -125,10 +125,10 @@ IPv6 留两个 hextet），不会出现完整 IP。`/stat` 在预热期间也能
 
 ```jsonc
 // /livez —— 恒 200，不查任何依赖、不做任何计算：只回答「进程还在不在」
-{ "ok": true, "service": "libmssdk", "version": "0.1.0" }
+{ "ok": true, "service": "libmssdk", "version": "0.2.0" }
 
 // /readyz —— 至少一台 worker 就绪、且不在收尾过程中才 200，否则 503（无需鉴权，设备号脱敏）
-{ "ok": true, "ready": true, "service": "libmssdk", "version": "0.1.0",
+{ "ok": true, "ready": true, "service": "libmssdk", "version": "0.2.0",
   "deviceId": "746***847", "auth": true, "platform": "win32" }
 ```
 
@@ -259,7 +259,7 @@ node src/index.mjs probe --track 7501674235158431760 --cookie "sessionid_ss=…"
 
 | 版本 | `/probe`、`/track/stream` 的回包 |
 | --- | --- |
-| 本版本 | **404** + `Deprecation: @1793404800`（RFC 9745 要求值是 Structured Field 的 Date，所以头里写成 `@<秒>`；它等于 `Sat, 31 Oct 2026 00:00:00 GMT`，本版本发布之日）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`、`replacement` 写明替代命令，两个时刻也各写一份（`deprecated_at` / `sunset` 用能直接读的 HTTP-date，不把头里的 `@<秒>` 编码抄进 JSON） |
+| 0.2.x（弃用期） | **404** + `Deprecation: @1793404800`（RFC 9745 要求值是 Structured Field 的 Date，所以头里写成 `@<秒>`；它等于 `Sat, 31 Oct 2026 00:00:00 GMT`，是这一对常量在 #9 落地时定下的弃用期起点，不随发版日改动）+ `Sunset: Fri, 30 Apr 2027 23:59:59 GMT`（RFC 8594）；回包里 `code: "endpoint_removed"`、`replacement` 写明替代命令，两个时刻也各写一份（`deprecated_at` / `sunset` 用能直接读的 HTTP-date，不把头里的 `@<秒>` 编码抄进 JSON） |
 | 下一版本 | **410**，其余不变 |
 
 `Sunset` 不早于 `Deprecation`，两个日期是一对：如果「下一版本」实际晚于 `Sunset`，发版时要

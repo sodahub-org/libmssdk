@@ -1,6 +1,6 @@
 {
   "name": "libmssdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "汽水音乐（Soda Music）应用签名服务：把官方客户端的 bdms.node 封装成 HTTP / stdio 服务，供 libresoda 等第三方客户端调用",
   "type": "module",
@@ -41,6 +41,7 @@
     "docs",
     "deploy",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE.md"
   ]
