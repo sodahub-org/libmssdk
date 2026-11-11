@@ -159,7 +159,7 @@ HTTP 层只做签名与自身状态诊断：`/probe`、`/track/stream`、`/confi
 
 请求 / 响应契约见 [`docs/CONTRACT.md`](docs/CONTRACT.md)。
 
-### 行为变化（本版本）
+### 行为变化（0.2.0）
 
 - `/sign` 由主进程排队、worker 计算；没有就绪 worker 或队列已满时立即回 503，已入队的请求超过等待预算才回 503。
 - 失败状态码按「时间能否解决」分类：400 / 401 / 429 / 503 / 500，**502 不再出现**。
@@ -173,7 +173,7 @@ HTTP 层只做签名与自身状态诊断：`/probe`、`/track/stream`、`/confi
   出网代码只剩 `src/probe.mjs` 一处。
 - 交付能直接用的反向代理配置（`deploy/reverse-proxy/`）；进程内仍不做 TLS。
 
-完整升级影响见 [`docs/UPGRADING.md`](docs/UPGRADING.md)。
+完整升级影响见 [`docs/UPGRADING.md`](docs/UPGRADING.md)；逐条新增 / 变更 / 移除见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## TLS：交给反向代理
 

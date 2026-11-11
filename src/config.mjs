@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { identityFile, prepareStoredIdentity } from './identity.mjs'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
